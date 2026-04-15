@@ -1,7 +1,7 @@
 import type { FormEvent, ReactNode } from 'react'
 import { useCallback, useEffect, useMemo, useState } from 'react'
-import { format } from 'date-fns'
-import { Banknote, Building2, CreditCard, Download, Pencil, Plus, Search, SlidersHorizontal, Trash2, TrendingUp, WalletCards, X } from 'lucide-react'
+import { format, subDays } from 'date-fns'
+import { Banknote, Building2, CreditCard, Download, Pencil, Plus, Search, SlidersHorizontal, Trash2, TrendingDown, TrendingUp, WalletCards, X } from 'lucide-react'
 import { exportFilteredTransactions } from '../../exports/export-service'
 import { formatCurrency } from '../../../lib/format'
 import {
@@ -17,9 +17,17 @@ import {
 } from '../../../lib/db/repository'
 import { useAuth } from '../../auth/use-auth'
 
+type DaySummary = {
+  netIncome: number
+  totalExpenses: number
+  totalOperating: number
+  totalSales: number
+}
+
 type LoadState = {
   categories: Category[]
   months: string[]
+  previousDaySummary: DaySummary | null
   transactions: LedgerTransaction[]
   transactionTypes: TransactionType[]
 }
@@ -27,8 +35,14 @@ type LoadState = {
 const emptyState: LoadState = {
   categories: [],
   months: [],
+  previousDaySummary: null,
   transactions: [],
   transactionTypes: [],
+}
+
+function kpiDelta(current: number, previous: number | undefined) {
+  if (previous === undefined || previous === 0) return null
+  return ((current - previous) / Math.abs(previous)) * 100
 }
 
 const TYPE_COLORS: Record<string, string> = {
@@ -164,7 +178,10 @@ export function TransactionsPage() {
         months.length > 0 && !months.includes(monthOverride) ? months[0] : monthOverride
       const useDateRange = Boolean(filterDateFrom || filterDateTo)
 
-      const [transactionTypes, categories, transactions] = await Promise.all([
+      const isSingleDay =
+        useDateRange && filterDateFrom && filterDateTo && filterDateFrom === filterDateTo
+
+      const [transactionTypes, categories, transactions, previousDayTransactions] = await Promise.all([
         listTransactionTypes(),
         listCategories(),
         listTransactions({
@@ -174,7 +191,32 @@ export function TransactionsPage() {
           monthKey: useDateRange ? undefined : monthToUse,
           transactionTypeId: filterTypeId ? Number(filterTypeId) : null,
         }),
+        isSingleDay
+          ? listTransactions({
+              categoryId: filterCategoryId ? Number(filterCategoryId) : null,
+              entryDate: format(subDays(new Date(filterDateFrom + 'T00:00:00'), 1), 'yyyy-MM-dd'),
+              transactionTypeId: filterTypeId ? Number(filterTypeId) : null,
+            })
+          : Promise.resolve(null),
       ])
+
+      let previousDaySummary: DaySummary | null = null
+      if (previousDayTransactions && previousDayTransactions.length > 0) {
+        let totalSales = 0
+        let totalExpenses = 0
+        let totalOperating = 0
+        for (const t of previousDayTransactions) {
+          if (t.transactionTypeCode === 'SALE') totalSales += t.amount
+          else if (t.transactionTypeCode === 'EXPENSE') totalExpenses += t.amount
+          else if (t.transactionTypeCode === 'OPERATING EXPENSE') totalOperating += t.amount
+        }
+        previousDaySummary = {
+          netIncome: totalSales - totalExpenses - totalOperating,
+          totalExpenses,
+          totalOperating,
+          totalSales,
+        }
+      }
 
       if (monthToUse !== selectedMonth && !useDateRange) {
         setSelectedMonth(monthToUse)
@@ -183,6 +225,7 @@ export function TransactionsPage() {
       setState({
         categories,
         months: Array.from(new Set([monthToUse, ...months])).sort().reverse(),
+        previousDaySummary,
         transactions,
         transactionTypes,
       })
@@ -370,32 +413,42 @@ export function TransactionsPage() {
           {
             label: 'Total Sales',
             value: summary.totalSales,
+            prevValue: state.previousDaySummary?.totalSales,
             icon: TrendingUp,
             color: 'text-emerald-500',
             bg: 'bg-emerald-500/10',
+            delta: kpiDelta(summary.totalSales, state.previousDaySummary?.totalSales),
           },
           {
             label: 'Expenses',
             value: summary.totalExpenses,
+            prevValue: state.previousDaySummary?.totalExpenses,
             icon: CreditCard,
             color: 'text-red-500',
             bg: 'bg-red-500/10',
+            delta: kpiDelta(summary.totalExpenses, state.previousDaySummary?.totalExpenses),
+            invertDelta: true,
           },
           {
             label: 'Operating Exp.',
             value: summary.totalOperating,
+            prevValue: state.previousDaySummary?.totalOperating,
             icon: Building2,
             color: 'text-amber-500',
             bg: 'bg-amber-500/10',
+            delta: kpiDelta(summary.totalOperating, state.previousDaySummary?.totalOperating),
+            invertDelta: true,
           },
           {
             label: 'Net Income',
             value: summary.netIncome,
+            prevValue: state.previousDaySummary?.netIncome,
             icon: Banknote,
             color: summary.netIncome >= 0 ? 'text-indigo-500' : 'text-red-500',
             bg: summary.netIncome >= 0 ? 'bg-indigo-500/10' : 'bg-red-500/10',
+            delta: kpiDelta(summary.netIncome, state.previousDaySummary?.netIncome),
           },
-        ].map(({ label, value, icon: Icon, color, bg }) => (
+        ].map(({ label, value, prevValue, icon: Icon, color, bg, delta, invertDelta }) => (
           <div
             key={label}
             className="rounded-lg border border-[var(--border)] bg-[var(--panel)] p-4"
@@ -408,9 +461,34 @@ export function TransactionsPage() {
                 <Icon className={`h-3.5 w-3.5 ${color}`} />
               </span>
             </div>
-            <p className={`mt-3 text-2xl font-semibold tabular-nums tracking-tight ${color}`}>
-              {formatCurrency(value)}
-            </p>
+            <div className="mt-3 flex items-baseline gap-2">
+              <p className={`text-2xl font-semibold tabular-nums tracking-tight ${color}`}>
+                {formatCurrency(value)}
+              </p>
+              {delta != null && prevValue != null && (
+                <span
+                  className={`inline-flex cursor-default items-center gap-0.5 rounded-md px-1.5 py-0.5 text-xs font-semibold ${
+                    (invertDelta ? delta <= 0 : delta >= 0)
+                      ? 'bg-emerald-500/10 text-emerald-500'
+                      : 'bg-rose-500/10 text-rose-500'
+                  }`}
+                  title={`Yesterday: ${formatCurrency(prevValue)} → Today: ${formatCurrency(value)}\nChange: ${delta >= 0 ? '+' : ''}${formatCurrency(value - prevValue)}`}
+                >
+                  {delta >= 0 ? (
+                    <TrendingUp className="h-3 w-3" />
+                  ) : (
+                    <TrendingDown className="h-3 w-3" />
+                  )}
+                  {delta >= 0 ? '+' : ''}
+                  {delta.toFixed(1)}%
+                </span>
+              )}
+            </div>
+            {prevValue != null && (
+              <p className="mt-1 text-xs text-[var(--muted)] tabular-nums">
+                Yesterday: {formatCurrency(prevValue)}
+              </p>
+            )}
           </div>
         ))}
       </div>

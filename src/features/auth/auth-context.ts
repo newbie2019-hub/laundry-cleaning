@@ -4,6 +4,7 @@ import type { AuthUser } from './auth-types'
 export type AuthContextValue = {
   hasPermission: (permissionKey: string) => boolean
   isAuthenticated: boolean
+  refreshSession: () => Promise<void>
   signIn: (username: string, password: string) => Promise<boolean>
   signOut: () => void
   status: 'loading' | 'ready'

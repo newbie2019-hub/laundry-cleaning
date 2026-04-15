@@ -683,6 +683,34 @@ export async function saveUser(input: SaveUserInput) {
   }
 }
 
+export async function updateUserProfile(
+  userId: number,
+  input: { displayName: string; username: string; newPassword?: string },
+) {
+  const database = await getDatabase()
+
+  if (input.newPassword) {
+    const passwordHash = await hashPassword(input.newPassword)
+    await database.execute(
+      `
+        UPDATE users
+        SET username = $1, display_name = $2, password_hash = $3, updated_at = CURRENT_TIMESTAMP
+        WHERE id = $4
+      `,
+      [input.username, input.displayName, passwordHash, userId],
+    )
+  } else {
+    await database.execute(
+      `
+        UPDATE users
+        SET username = $1, display_name = $2, updated_at = CURRENT_TIMESTAMP
+        WHERE id = $3
+      `,
+      [input.username, input.displayName, userId],
+    )
+  }
+}
+
 export async function updateRolePermission(roleId: number, permissionId: number, allowed: boolean) {
   const database = await getDatabase()
   await database.execute(

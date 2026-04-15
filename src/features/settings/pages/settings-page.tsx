@@ -1,18 +1,31 @@
 import type { ChangeEvent, FormEvent } from 'react'
 import { useRef, useState } from 'react'
 import { format } from 'date-fns'
-import { Database, ImagePlus, Save, X } from 'lucide-react'
+import { Check, Database, ImagePlus, Save, User, X } from 'lucide-react'
 import { downloadDir } from '@tauri-apps/api/path'
+import { useAuth } from '../../auth/use-auth'
 import { loadAppSettings, saveAppSettings, type AppSettings } from '../../../lib/app-settings'
-import { vacuumInto } from '../../../lib/db/repository'
+import { updateUserProfile, vacuumInto } from '../../../lib/db/repository'
+
+const inputClass =
+  'h-10 w-full rounded-lg border border-[var(--border)] bg-[var(--background)] px-3 text-sm focus:outline-none focus:ring-2 focus:ring-[var(--accent)]/30'
 
 export function SettingsPage() {
+  const { user, refreshSession } = useAuth()
+
   const [appSettings, setAppSettings] = useState<AppSettings>(loadAppSettings)
   const [appSaved, setAppSaved] = useState(false)
   const logoInputRef = useRef<HTMLInputElement>(null)
 
   const [isExporting, setIsExporting] = useState(false)
   const [exportMessage, setExportMessage] = useState<string | null>(null)
+
+  const [profileDisplayName, setProfileDisplayName] = useState(user?.displayName ?? '')
+  const [profileUsername, setProfileUsername] = useState(user?.username ?? '')
+  const [profileNewPassword, setProfileNewPassword] = useState('')
+  const [profileConfirmPassword, setProfileConfirmPassword] = useState('')
+  const [profileSaving, setProfileSaving] = useState(false)
+  const [profileMessage, setProfileMessage] = useState<{ text: string; ok: boolean } | null>(null)
 
   function handleSaveAppSettings(event: FormEvent<HTMLFormElement>) {
     event.preventDefault()
@@ -56,14 +69,141 @@ export function SettingsPage() {
     }
   }
 
+  async function handleSaveProfile(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault()
+    if (!user) return
+
+    if (!profileDisplayName.trim() || !profileUsername.trim()) {
+      setProfileMessage({ text: 'Display name and username are required.', ok: false })
+      return
+    }
+
+    if (profileNewPassword && profileNewPassword !== profileConfirmPassword) {
+      setProfileMessage({ text: 'Passwords do not match.', ok: false })
+      return
+    }
+
+    if (profileNewPassword && profileNewPassword.length < 6) {
+      setProfileMessage({ text: 'Password must be at least 6 characters.', ok: false })
+      return
+    }
+
+    setProfileSaving(true)
+    setProfileMessage(null)
+
+    try {
+      await updateUserProfile(user.id, {
+        displayName: profileDisplayName.trim(),
+        newPassword: profileNewPassword || undefined,
+        username: profileUsername.trim(),
+      })
+      await refreshSession()
+      setProfileNewPassword('')
+      setProfileConfirmPassword('')
+      setProfileMessage({ text: 'Profile updated.', ok: true })
+      setTimeout(() => setProfileMessage(null), 3000)
+    } catch (err: unknown) {
+      setProfileMessage({
+        text: err instanceof Error ? err.message : 'Unable to update profile.',
+        ok: false,
+      })
+    } finally {
+      setProfileSaving(false)
+    }
+  }
+
   return (
     <section className="space-y-6">
       <header>
         <h1 className="text-xl font-semibold tracking-tight">Settings</h1>
         <p className="mt-0.5 text-sm text-[var(--muted)]">
-          App branding and database management
+          Manage your account, app branding, and database
         </p>
       </header>
+
+      {/* Account */}
+      {user && (
+        <div className="rounded-lg border border-[var(--border)] bg-[var(--panel)]">
+          <div className="border-b border-[var(--border)] px-5 py-4">
+            <div className="flex items-center gap-2">
+              <User className="h-4 w-4 text-[var(--muted)]" />
+              <h2 className="text-sm font-semibold">Account</h2>
+            </div>
+            <p className="mt-0.5 text-xs text-[var(--muted)]">Update your personal details</p>
+          </div>
+          <form className="p-5 space-y-5" onSubmit={handleSaveProfile}>
+            <div className="grid gap-4 sm:grid-cols-2">
+              <label className="block space-y-1.5">
+                <span className="text-xs font-medium text-[var(--muted)] uppercase tracking-wider">
+                  Display name
+                </span>
+                <input
+                  className={inputClass}
+                  onChange={(e) => setProfileDisplayName(e.target.value)}
+                  placeholder="Your name"
+                  value={profileDisplayName}
+                />
+              </label>
+              <label className="block space-y-1.5">
+                <span className="text-xs font-medium text-[var(--muted)] uppercase tracking-wider">
+                  Username
+                </span>
+                <input
+                  className={inputClass}
+                  onChange={(e) => setProfileUsername(e.target.value)}
+                  placeholder="Username"
+                  value={profileUsername}
+                />
+              </label>
+            </div>
+
+            <div className="grid gap-4 sm:grid-cols-2">
+              <label className="block space-y-1.5">
+                <span className="text-xs font-medium text-[var(--muted)] uppercase tracking-wider">
+                  New password
+                </span>
+                <input
+                  className={inputClass}
+                  onChange={(e) => setProfileNewPassword(e.target.value)}
+                  placeholder="Leave blank to keep current"
+                  type="password"
+                  value={profileNewPassword}
+                />
+              </label>
+              <label className="block space-y-1.5">
+                <span className="text-xs font-medium text-[var(--muted)] uppercase tracking-wider">
+                  Confirm password
+                </span>
+                <input
+                  className={inputClass}
+                  disabled={!profileNewPassword}
+                  onChange={(e) => setProfileConfirmPassword(e.target.value)}
+                  placeholder="Re-enter new password"
+                  type="password"
+                  value={profileConfirmPassword}
+                />
+              </label>
+            </div>
+
+            <div className="flex items-center gap-3">
+              <button
+                className="inline-flex items-center gap-1.5 rounded-lg bg-[var(--accent)] px-4 py-2 text-sm font-medium text-white transition hover:opacity-90 disabled:opacity-50"
+                disabled={profileSaving}
+                type="submit"
+              >
+                <Save className="h-3.5 w-3.5" />
+                {profileSaving ? 'Saving…' : 'Update profile'}
+              </button>
+              {profileMessage && (
+                <span className={`inline-flex items-center gap-1 text-xs font-medium ${profileMessage.ok ? 'text-emerald-500' : 'text-red-500'}`}>
+                  {profileMessage.ok && <Check className="h-3 w-3" />}
+                  {profileMessage.text}
+                </span>
+              )}
+            </div>
+          </form>
+        </div>
+      )}
 
       {/* App information */}
       <div className="rounded-lg border border-[var(--border)] bg-[var(--panel)]">
@@ -119,7 +259,7 @@ export function SettingsPage() {
           <label className="block space-y-1.5">
             <span className="text-xs font-medium text-[var(--muted)] uppercase tracking-wider">App name</span>
             <input
-              className="h-10 w-full rounded-lg border border-[var(--border)] bg-[var(--background)] px-3 text-sm focus:outline-none focus:ring-2 focus:ring-[var(--accent)]/30"
+              className={inputClass}
               onChange={(e) => setAppSettings((prev) => ({ ...prev, name: e.target.value }))}
               placeholder="Business Ledger"
               value={appSettings.name}

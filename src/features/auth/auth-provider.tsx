@@ -39,6 +39,11 @@ export function AuthProvider({ children }: PropsWithChildren) {
         return user?.roles.includes('admin') || user?.permissions.includes(permissionKey) || false
       },
       isAuthenticated: user !== null,
+      async refreshSession() {
+        if (!user) return
+        const refreshed = await getUserSession(user.id)
+        if (refreshed) setUser(refreshed)
+      },
       async signIn(username: string, password: string) {
         const sessionUser = await loginWithCredentials(username, password)
 

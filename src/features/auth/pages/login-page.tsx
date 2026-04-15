@@ -1,16 +1,19 @@
 import type { FormEvent } from 'react'
 import { useState } from 'react'
 import { useLocation, useNavigate } from 'react-router-dom'
+import { loadAppSettings } from '../../../lib/app-settings'
 import { useAuth } from '../use-auth'
 
 export function LoginPage() {
   const { signIn } = useAuth()
   const navigate = useNavigate()
   const location = useLocation()
-  const [username, setUsername] = useState('admin')
-  const [password, setPassword] = useState('admin123')
+  const [username, setUsername] = useState('')
+  const [password, setPassword] = useState('')
   const [error, setError] = useState<string | null>(null)
   const [isSubmitting, setIsSubmitting] = useState(false)
+
+  const appSettings = loadAppSettings()
 
   const redirectTo =
     typeof location.state === 'object' &&
@@ -46,73 +49,69 @@ export function LoginPage() {
   }
 
   return (
-    <section className="mx-auto flex min-h-screen max-w-5xl items-center px-6 py-10">
-      <div className="grid w-full gap-6 lg:grid-cols-[0.95fr_1.05fr]">
-        <article className="rounded-[2rem] border border-[var(--border)] bg-[var(--panel)] p-8 shadow-sm">
-          <p className="text-sm font-medium uppercase tracking-[0.24em] text-[var(--accent-strong)]">
-            Sign in
-          </p>
-          <h1 className="mt-3 text-4xl font-semibold tracking-tight">
-            Local desktop sign-in
+    <section className="flex min-h-screen items-center justify-center px-4">
+      <div className="w-full max-w-sm">
+        <div className="mb-8 text-center">
+          {appSettings.logoDataUrl ? (
+            <img
+              alt={appSettings.name}
+              className="mx-auto mb-4 h-12 w-12 rounded-xl object-contain"
+              src={appSettings.logoDataUrl}
+            />
+          ) : (
+            <div className="mx-auto mb-4 flex h-12 w-12 items-center justify-center rounded-xl bg-[var(--accent)] text-lg font-bold text-white">
+              {appSettings.name.charAt(0)}
+            </div>
+          )}
+          <h1 className="text-xl font-semibold tracking-tight">
+            {appSettings.name}
           </h1>
-          <p className="mt-3 text-sm leading-6 text-[var(--muted)]">
-            The app now checks session state first. If there is no active user, this
-            screen is shown before the dashboard shell loads.
+          <p className="mt-1 text-sm text-[var(--muted)]">
+            Sign in to continue
           </p>
+        </div>
 
-          <div className="mt-6 rounded-3xl border border-[var(--border)] bg-[var(--background)] p-5">
-            <p className="text-sm font-medium">Seeded admin credentials</p>
-            <p className="mt-2 text-sm text-[var(--muted)]">
-              Username: <span className="font-medium text-[var(--foreground)]">admin</span>
-            </p>
-            <p className="mt-1 text-sm text-[var(--muted)]">
-              Password: <span className="font-medium text-[var(--foreground)]">admin123</span>
-            </p>
+        <form className="space-y-4" onSubmit={handleSubmit}>
+          <div className="space-y-1.5">
+            <label className="text-xs font-medium text-[var(--muted)]" htmlFor="username">
+              Username
+            </label>
+            <input
+              autoFocus
+              className="h-10 w-full rounded-lg border border-[var(--border)] bg-[var(--background)] px-3 text-sm outline-none transition placeholder:text-[var(--muted)]/50 focus:border-[var(--accent)] focus:ring-2 focus:ring-[var(--accent)]/20"
+              id="username"
+              onChange={(event) => setUsername(event.target.value)}
+              placeholder="Enter username"
+              value={username}
+            />
           </div>
-        </article>
 
-        <article className="rounded-[2rem] border border-[var(--border)] bg-[var(--panel)] p-8 shadow-sm">
-          <form className="space-y-4" onSubmit={handleSubmit}>
-            <div className="space-y-2">
-              <label className="text-sm font-medium" htmlFor="username">
-                Username
-              </label>
-              <input
-                className="h-12 w-full rounded-2xl border border-[var(--border)] bg-[var(--background)] px-4 outline-none transition focus:border-[var(--accent)]"
-                id="username"
-                onChange={(event) => setUsername(event.target.value)}
-                value={username}
-              />
-            </div>
+          <div className="space-y-1.5">
+            <label className="text-xs font-medium text-[var(--muted)]" htmlFor="password">
+              Password
+            </label>
+            <input
+              className="h-10 w-full rounded-lg border border-[var(--border)] bg-[var(--background)] px-3 text-sm outline-none transition placeholder:text-[var(--muted)]/50 focus:border-[var(--accent)] focus:ring-2 focus:ring-[var(--accent)]/20"
+              id="password"
+              onChange={(event) => setPassword(event.target.value)}
+              placeholder="Enter password"
+              type="password"
+              value={password}
+            />
+          </div>
 
-            <div className="space-y-2">
-              <label className="text-sm font-medium" htmlFor="password">
-                Password
-              </label>
-              <input
-                className="h-12 w-full rounded-2xl border border-[var(--border)] bg-[var(--background)] px-4 outline-none transition focus:border-[var(--accent)]"
-                id="password"
-                onChange={(event) => setPassword(event.target.value)}
-                type="password"
-                value={password}
-              />
-            </div>
+          {error && (
+            <p className="text-sm text-red-500">{error}</p>
+          )}
 
-            {error ? (
-              <div className="rounded-2xl border border-red-400/40 bg-red-500/10 px-4 py-3 text-sm text-red-300">
-                {error}
-              </div>
-            ) : null}
-
-            <button
-              className="inline-flex h-12 w-full items-center justify-center rounded-2xl bg-[var(--accent)] px-5 text-sm font-medium text-white disabled:opacity-60"
-              disabled={isSubmitting}
-              type="submit"
-            >
-              {isSubmitting ? 'Signing in...' : 'Sign in'}
-            </button>
-          </form>
-        </article>
+          <button
+            className="h-10 w-full rounded-lg bg-[var(--accent)] text-sm font-medium text-white transition hover:opacity-90 disabled:opacity-50"
+            disabled={isSubmitting || !username.trim() || !password}
+            type="submit"
+          >
+            {isSubmitting ? 'Signing in…' : 'Sign in'}
+          </button>
+        </form>
       </div>
     </section>
   )
