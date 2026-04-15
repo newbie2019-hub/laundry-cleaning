@@ -2,7 +2,7 @@ import type { FormEvent, ReactNode } from 'react'
 import { useCallback, useEffect, useState } from 'react'
 import { format } from 'date-fns'
 import { AlertTriangle, Pencil, Plus, Search, Trash2, X } from 'lucide-react'
-import { formatCurrency, formatMonthLabel } from '../../../lib/format'
+import { formatCurrency } from '../../../lib/format'
 import {
   deleteIncidentReport,
   listIncidentReports,

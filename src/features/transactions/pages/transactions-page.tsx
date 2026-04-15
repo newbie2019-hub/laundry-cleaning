@@ -3,7 +3,7 @@ import { useCallback, useEffect, useMemo, useState } from 'react'
 import { format } from 'date-fns'
 import { Banknote, Building2, CreditCard, Download, Pencil, Plus, Search, SlidersHorizontal, Trash2, TrendingUp, WalletCards, X } from 'lucide-react'
 import { exportFilteredTransactions } from '../../exports/export-service'
-import { formatCurrency, formatMonthLabel } from '../../../lib/format'
+import { formatCurrency } from '../../../lib/format'
 import {
   deleteTransaction,
   listAvailableMonthKeys,

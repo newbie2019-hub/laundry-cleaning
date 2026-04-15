@@ -259,7 +259,7 @@ export function InventorySummaryPage() {
                   <CartesianGrid strokeDasharray="3 3" stroke="var(--border)" />
                   <XAxis dataKey="month" tick={{ fontSize: 11 }} />
                   <YAxis tick={{ fontSize: 11 }} tickFormatter={(v: number) => `₱${(v / 1000).toFixed(0)}k`} />
-                  <Tooltip formatter={(value: number) => formatCurrency(value)} />
+                  <Tooltip formatter={(value) => formatCurrency(Number(value) || 0)} />
                   <Legend iconSize={10} wrapperStyle={{ fontSize: 12 }} />
                   <Bar dataKey="In Cost" fill="#3b82f6" radius={[3, 3, 0, 0]} />
                   <Bar dataKey="Out Cost" fill="#f59e0b" radius={[3, 3, 0, 0]} />

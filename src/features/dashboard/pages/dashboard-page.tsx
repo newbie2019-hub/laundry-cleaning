@@ -80,8 +80,8 @@ const tooltipItemStyle: CSSProperties = { color: '#e2e8f0' }
 const axisTickProps = { fill: '#94a3b8', fontSize: 11 }
 const gridStroke = 'rgba(148,163,184,0.12)'
 
-function currencyFormatter(value: unknown, name: string): [string, string] {
-  return [formatCurrency(value as number), name]
+function currencyFormatter(value: import('recharts/types/component/DefaultTooltipContent').ValueType | undefined, name: import('recharts/types/component/DefaultTooltipContent').NameType | undefined) {
+  return [formatCurrency(Number(value) || 0), String(name ?? '')]
 }
 
 const MONTH_LABELS = [

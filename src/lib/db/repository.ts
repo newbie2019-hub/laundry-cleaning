@@ -1625,7 +1625,7 @@ export async function saveInventoryItem(draft: InventoryItemDraft, id?: number):
     `,
     [draft.name, draft.description, draft.unitType, draft.unitLabel, draft.costPerUnit, draft.isActive ? 1 : 0, draft.lowStockThreshold, draft.category, draft.supplier, draft.status, draft.lastMaintenanceDate],
   )
-  return result.lastInsertId
+  return result.lastInsertId as number
 }
 
 export async function listInventoryMovements(filters?: {
