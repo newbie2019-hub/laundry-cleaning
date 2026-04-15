@@ -1,7 +1,7 @@
 import type { FormEvent, ReactNode } from 'react'
-import { useCallback, useEffect, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import { format } from 'date-fns'
-import { AlertTriangle, Pencil, Plus, Search, Trash2, X } from 'lucide-react'
+import { AlertTriangle, Download, Pencil, Plus, Search, SlidersHorizontal, Trash2, X } from 'lucide-react'
 import { formatCurrency } from '../../../lib/format'
 import {
   deleteIncidentReport,
@@ -90,11 +90,40 @@ function emptyDraft() {
   }
 }
 
+function exportToCsv(reports: IncidentReport[]) {
+  const headers = [
+    'Date', 'Time', 'Type', 'Description', 'Customer', 'Contact',
+    'Action Taken', 'Handled By', 'Staff On Duty', 'Items Involved',
+    'Quantity', 'Estimated Loss', 'Remarks',
+  ]
+
+  const escape = (v: string) => `"${String(v ?? '').replace(/"/g, '""')}"`
+
+  const rows = reports.map((r) => [
+    r.incidentDate, r.incidentTime, r.incidentType, r.whatHappened,
+    r.customerName, r.contactNumber, r.actionTaken, r.handledBy,
+    r.staffOnDuty, r.itemsInvolved, r.quantity, r.estimatedLoss, r.remarks,
+  ].map((v) => escape(String(v))).join(','))
+
+  const csv = [headers.join(','), ...rows].join('\n')
+  const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' })
+  const url = URL.createObjectURL(blob)
+  const a = document.createElement('a')
+  a.href = url
+  a.download = `incident-reports-${format(new Date(), 'yyyy-MM-dd')}.csv`
+  a.click()
+  URL.revokeObjectURL(url)
+}
+
 export function IncidentReportsPage() {
   const { user } = useAuth()
   const [reports, setReports] = useState<IncidentReport[]>([])
   const [searchQuery, setSearchQuery] = useState('')
   const [filterType, setFilterType] = useState('')
+  const [dateFrom, setDateFrom] = useState('')
+  const [dateTo, setDateTo] = useState('')
+  const [showFilters, setShowFilters] = useState(false)
+  const filterRef = useRef<HTMLDivElement>(null)
   const [isModalOpen, setIsModalOpen] = useState(false)
   const [editingId, setEditingId] = useState<number | null>(null)
   const [draft, setDraft] = useState(emptyDraft)
@@ -103,11 +132,13 @@ export function IncidentReportsPage() {
 
   const loadReports = useCallback(async () => {
     const data = await listIncidentReports({
+      dateFrom: dateFrom || undefined,
+      dateTo: dateTo || undefined,
       incidentType: filterType || undefined,
       search: searchQuery.trim() || undefined,
     })
     setReports(data)
-  }, [filterType, searchQuery])
+  }, [dateFrom, dateTo, filterType, searchQuery])
 
   useEffect(() => {
     let mounted = true
@@ -122,6 +153,20 @@ export function IncidentReportsPage() {
       mounted = false
     }
   }, [loadReports])
+
+  useEffect(() => {
+    function handleClickOutside(e: MouseEvent) {
+      if (filterRef.current && !filterRef.current.contains(e.target as Node)) {
+        setShowFilters(false)
+      }
+    }
+    if (showFilters) {
+      document.addEventListener('mousedown', handleClickOutside)
+      return () => document.removeEventListener('mousedown', handleClickOutside)
+    }
+  }, [showFilters])
+
+  const activeFilterCount = [dateFrom, dateTo, filterType].filter(Boolean).length
 
   function set<K extends keyof ReturnType<typeof emptyDraft>>(
     key: K,
@@ -225,54 +270,114 @@ export function IncidentReportsPage() {
             Log, track, and manage all on-site incidents
           </p>
         </div>
-        <button
-          className="inline-flex items-center gap-1.5 rounded-md bg-[var(--accent)] px-3 py-2 text-sm font-medium text-white transition hover:opacity-90"
-          onClick={openNew}
-          type="button"
-        >
-          <Plus className="h-3.5 w-3.5" />
-          New report
-        </button>
+        <div className="flex items-center gap-2">
+          <button
+            className="inline-flex items-center gap-1.5 rounded-md border border-[var(--border)] bg-[var(--background)] px-3 py-2 text-sm font-medium text-[var(--foreground)] transition hover:border-[var(--accent)]/50 hover:text-[var(--accent)] disabled:opacity-50"
+            disabled={reports.length === 0}
+            onClick={() => exportToCsv(reports)}
+            type="button"
+          >
+            <Download className="h-3.5 w-3.5" />
+            Export
+          </button>
+          <button
+            className="inline-flex items-center gap-1.5 rounded-md bg-[var(--accent)] px-3 py-2 text-sm font-medium text-white transition hover:opacity-90"
+            onClick={openNew}
+            type="button"
+          >
+            <Plus className="h-3.5 w-3.5" />
+            New report
+          </button>
+        </div>
       </header>
 
-      {/* Filters */}
-      <div className="rounded-lg border border-[var(--border)] bg-[var(--panel)] p-4">
-        <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
-          {/* Search */}
-          <div className="flex flex-col gap-1">
-            <span className="text-[10px] font-semibold uppercase tracking-wider text-[var(--muted)]">
-              Search
-            </span>
-            <div className="relative">
-              <Search className="absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-[var(--muted)]" />
-              <input
-                className="h-9 w-full rounded-md border border-[var(--border)] bg-[var(--background)] pl-8 pr-3 text-sm outline-none focus:border-[var(--accent)] transition"
-                onChange={(e) => setSearchQuery(e.target.value)}
-                placeholder="Customer, description, items…"
-                type="search"
-                value={searchQuery}
-              />
-            </div>
-          </div>
+      {/* Search + Filter */}
+      <div className="flex items-center justify-end gap-2">
+        <div className="relative">
+          <Search className="absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-[var(--muted)]" />
+          <input
+            className="h-9 w-56 rounded-md border border-[var(--border)] bg-[var(--background)] pl-8 pr-3 text-sm outline-none focus:border-[var(--accent)] transition"
+            onChange={(e) => setSearchQuery(e.target.value)}
+            placeholder="Customer, description, items…"
+            type="search"
+            value={searchQuery}
+          />
+        </div>
 
-          {/* Type filter */}
-          <div className="flex flex-col gap-1">
-            <span className="text-[10px] font-semibold uppercase tracking-wider text-[var(--muted)]">
-              Type
-            </span>
-            <select
-              className={filterInputClass}
-              onChange={(e) => setFilterType(e.target.value)}
-              value={filterType}
-            >
-              <option value="">All types</option>
-              {INCIDENT_TYPES.map((t) => (
-                <option key={t} value={t}>
-                  {t}
-                </option>
-              ))}
-            </select>
-          </div>
+        <div className="relative" ref={filterRef}>
+          <button
+            className={[
+              'inline-flex items-center gap-1.5 rounded-md border px-3 py-2 text-sm font-medium transition',
+              showFilters || activeFilterCount > 0
+                ? 'border-[var(--accent)] bg-[var(--accent-soft)] text-[var(--accent-strong)]'
+                : 'border-[var(--border)] bg-[var(--background)] text-[var(--foreground)] hover:border-[var(--accent)]/50',
+            ].join(' ')}
+            onClick={() => setShowFilters((p) => !p)}
+            type="button"
+          >
+            <SlidersHorizontal className="h-3.5 w-3.5" />
+            Filters
+            {activeFilterCount > 0 && (
+              <span className="flex h-4 min-w-4 items-center justify-center rounded-full bg-[var(--accent)] px-1 text-[10px] font-bold text-white">
+                {activeFilterCount}
+              </span>
+            )}
+          </button>
+
+          {showFilters && (
+            <div className="absolute right-0 top-full z-20 mt-2 w-72 rounded-lg border border-[var(--border)] bg-[var(--panel)] p-4 shadow-lg">
+              <div className="space-y-3">
+                <div className="flex flex-col gap-1">
+                  <span className="text-[10px] font-semibold uppercase tracking-wider text-[var(--muted)]">
+                    From
+                  </span>
+                  <input
+                    className={filterInputClass}
+                    onChange={(e) => setDateFrom(e.target.value)}
+                    type="date"
+                    value={dateFrom}
+                  />
+                </div>
+                <div className="flex flex-col gap-1">
+                  <span className="text-[10px] font-semibold uppercase tracking-wider text-[var(--muted)]">
+                    To
+                  </span>
+                  <input
+                    className={filterInputClass}
+                    onChange={(e) => setDateTo(e.target.value)}
+                    type="date"
+                    value={dateTo}
+                  />
+                </div>
+                <div className="flex flex-col gap-1">
+                  <span className="text-[10px] font-semibold uppercase tracking-wider text-[var(--muted)]">
+                    Type
+                  </span>
+                  <select
+                    className={filterInputClass}
+                    onChange={(e) => setFilterType(e.target.value)}
+                    value={filterType}
+                  >
+                    <option value="">All types</option>
+                    {INCIDENT_TYPES.map((t) => (
+                      <option key={t} value={t}>
+                        {t}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+                {activeFilterCount > 0 && (
+                  <button
+                    className="w-full rounded-md border border-[var(--border)] py-1.5 text-xs font-medium text-[var(--muted)] transition hover:text-[var(--foreground)]"
+                    onClick={() => { setDateFrom(''); setDateTo(''); setFilterType('') }}
+                    type="button"
+                  >
+                    Clear filters
+                  </button>
+                )}
+              </div>
+            </div>
+          )}
         </div>
       </div>
 
@@ -285,9 +390,9 @@ export function IncidentReportsPage() {
       {/* Report list */}
       <div className="rounded-lg border border-[var(--border)] bg-[var(--panel)] overflow-hidden">
         {/* Column headers */}
-        <div className="grid grid-cols-[100px_110px_1fr_120px_100px_72px] items-center gap-3 border-b border-[var(--border)] bg-[var(--background)]/40 px-4 py-2 text-[10px] font-semibold uppercase tracking-wider text-[var(--muted)]">
+        <div className="grid grid-cols-[90px_130px_minmax(0,1.5fr)_minmax(0,1fr)_100px_64px] items-center gap-3 border-b border-[var(--border)] bg-[var(--background)]/40 px-4 py-2 text-[10px] font-semibold uppercase tracking-wider text-[var(--muted)]">
           <span>Date</span>
-          <span className="text-center">Type</span>
+          <span>Type</span>
           <span>Description</span>
           <span>Handled by</span>
           <span className="text-right">Est. Loss</span>
@@ -304,7 +409,7 @@ export function IncidentReportsPage() {
             {reports.map((report) => (
               <div
                 key={report.id}
-                className="grid grid-cols-[100px_110px_1fr_120px_100px_72px] items-center gap-3 px-4 py-3 transition hover:bg-[var(--background)]/50"
+                className="grid grid-cols-[90px_130px_minmax(0,1.5fr)_minmax(0,1fr)_100px_64px] items-center gap-3 px-4 py-3 transition hover:bg-[var(--background)]/50"
               >
                 {/* Date + time */}
                 <div>
@@ -315,7 +420,7 @@ export function IncidentReportsPage() {
                 </div>
 
                 {/* Type badge */}
-                <div className="flex justify-center">
+                <div>
                   <span className={typeBadgeClass(report.incidentType)}>
                     {report.incidentType || '—'}
                   </span>
@@ -374,23 +479,29 @@ export function IncidentReportsPage() {
         )}
       </div>
 
-      {/* Modal */}
+      {/* Side sheet */}
       {isModalOpen && (
         <div
           aria-modal="true"
-          className="fixed inset-0 z-50 flex items-center justify-center p-4"
+          className="fixed inset-0 z-50 flex justify-end"
           role="dialog"
         >
-          <div className="absolute inset-0 bg-black/60 backdrop-blur-sm" onClick={closeModal} />
+          <div
+            className="absolute inset-0 bg-black/50 backdrop-blur-sm transition-opacity"
+            onClick={closeModal}
+          />
 
-          <div className="relative z-10 flex max-h-[90vh] w-full max-w-lg flex-col rounded-xl bg-white shadow-2xl">
-            {/* Modal header */}
-            <div className="flex shrink-0 items-center justify-between border-b border-gray-200 px-5 py-4">
-              <h2 className="text-base font-semibold text-gray-900">
+          <div
+            className="relative z-10 flex h-full w-full max-w-md flex-col bg-[var(--panel)] shadow-2xl transition-transform duration-200"
+            style={{ animation: 'slide-in-right 0.2s ease-out' }}
+          >
+            {/* Header */}
+            <div className="flex shrink-0 items-center justify-between border-b border-[var(--border)] px-5 py-4">
+              <h2 className="text-base font-semibold">
                 {editingId ? 'Edit incident report' : 'New incident report'}
               </h2>
               <button
-                className="rounded p-1.5 text-gray-400 transition hover:bg-gray-100 hover:text-gray-600"
+                className="rounded p-1.5 text-[var(--muted)] transition hover:bg-[var(--background)] hover:text-[var(--foreground)]"
                 onClick={closeModal}
                 type="button"
               >
@@ -398,7 +509,7 @@ export function IncidentReportsPage() {
               </button>
             </div>
 
-            {/* Scrollable form body */}
+            {/* Form body */}
             <form
               className="flex min-h-0 flex-1 flex-col overflow-hidden"
               onSubmit={handleSubmit}
@@ -424,7 +535,6 @@ export function IncidentReportsPage() {
                   </ModalField>
                 </div>
 
-                {/* Staff on duty */}
                 <ModalField label="Staff on duty">
                   <input
                     className={modalInputClass}
@@ -435,7 +545,6 @@ export function IncidentReportsPage() {
                   />
                 </ModalField>
 
-                {/* Type of incident */}
                 <ModalField label="Type of incident" required>
                   <select
                     className={modalSelectClass}
@@ -451,7 +560,6 @@ export function IncidentReportsPage() {
                   </select>
                 </ModalField>
 
-                {/* What happened */}
                 <ModalField label="What happened" required>
                   <textarea
                     className={modalTextareaClass}
@@ -462,7 +570,6 @@ export function IncidentReportsPage() {
                   />
                 </ModalField>
 
-                {/* Customer name + Contact */}
                 <div className="grid grid-cols-2 gap-3">
                   <ModalField label="Customer name">
                     <input
@@ -484,7 +591,6 @@ export function IncidentReportsPage() {
                   </ModalField>
                 </div>
 
-                {/* Action taken */}
                 <ModalField label="Action taken">
                   <textarea
                     className={modalTextareaClass}
@@ -495,7 +601,6 @@ export function IncidentReportsPage() {
                   />
                 </ModalField>
 
-                {/* Handled by */}
                 <ModalField label="Handled by" required>
                   <input
                     className={modalInputClass}
@@ -506,7 +611,6 @@ export function IncidentReportsPage() {
                   />
                 </ModalField>
 
-                {/* Items involved + Quantity */}
                 <ModalField label="Items involved">
                   <input
                     className={modalInputClass}
@@ -542,7 +646,6 @@ export function IncidentReportsPage() {
                   </ModalField>
                 </div>
 
-                {/* Remarks */}
                 <ModalField label="Remarks">
                   <textarea
                     className={modalTextareaClass}
@@ -561,20 +664,20 @@ export function IncidentReportsPage() {
               </div>
 
               {/* Footer */}
-              <div className="flex shrink-0 items-center justify-between border-t border-gray-200 px-5 py-4">
-                <p className="text-xs text-gray-400">
+              <div className="flex shrink-0 items-center justify-between border-t border-[var(--border)] px-5 py-4">
+                <p className="text-xs text-[var(--muted)]">
                   <span className="text-red-500">*</span> Required fields
                 </p>
                 <div className="flex items-center gap-2">
                   <button
-                    className="rounded-md border border-gray-300 px-4 py-2 text-sm text-gray-600 transition hover:bg-gray-50"
+                    className="rounded-md border border-[var(--border)] px-4 py-2 text-sm text-[var(--muted)] transition hover:bg-[var(--background)]"
                     onClick={closeModal}
                     type="button"
                   >
                     Cancel
                   </button>
                   <button
-                    className="rounded-md bg-blue-600 px-4 py-2 text-sm font-medium text-white transition hover:bg-blue-700 disabled:opacity-50"
+                    className="rounded-md bg-[var(--accent)] px-4 py-2 text-sm font-medium text-white transition hover:opacity-90 disabled:opacity-50"
                     disabled={isSubmitting}
                     type="submit"
                   >

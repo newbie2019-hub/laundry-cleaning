@@ -1,8 +1,9 @@
 import type { ChangeEvent, FormEvent } from 'react'
 import { useRef, useState } from 'react'
 import { format } from 'date-fns'
-import { Check, Database, ImagePlus, Save, User, X } from 'lucide-react'
+import { Check, Database, ImagePlus, Monitor, Moon, Save, Sun, User, X } from 'lucide-react'
 import { downloadDir } from '@tauri-apps/api/path'
+import { useTheme } from 'next-themes'
 import { useAuth } from '../../auth/use-auth'
 import { loadAppSettings, saveAppSettings, type AppSettings } from '../../../lib/app-settings'
 import { updateUserProfile, vacuumInto } from '../../../lib/db/repository'
@@ -10,8 +11,15 @@ import { updateUserProfile, vacuumInto } from '../../../lib/db/repository'
 const inputClass =
   'h-10 w-full rounded-lg border border-[var(--border)] bg-[var(--background)] px-3 text-sm focus:outline-none focus:ring-2 focus:ring-[var(--accent)]/30'
 
+const themeOptions = [
+  { value: 'light', label: 'Light', icon: Sun },
+  { value: 'dark', label: 'Dark', icon: Moon },
+  { value: 'system', label: 'System', icon: Monitor },
+] as const
+
 export function SettingsPage() {
   const { user, refreshSession } = useAuth()
+  const { theme, setTheme } = useTheme()
 
   const [appSettings, setAppSettings] = useState<AppSettings>(loadAppSettings)
   const [appSaved, setAppSaved] = useState(false)
@@ -113,26 +121,66 @@ export function SettingsPage() {
   }
 
   return (
-    <section className="space-y-6">
-      <header>
+    <section className="mx-auto max-w-6xl">
+      <header className="mb-8">
         <h1 className="text-xl font-semibold tracking-tight">Settings</h1>
         <p className="mt-0.5 text-sm text-[var(--muted)]">
-          Manage your account, app branding, and database
+          Manage your account, appearance, app branding, and database
         </p>
       </header>
 
-      {/* Account */}
-      {user && (
-        <div className="rounded-lg border border-[var(--border)] bg-[var(--panel)]">
-          <div className="border-b border-[var(--border)] px-5 py-4">
-            <div className="flex items-center gap-2">
-              <User className="h-4 w-4 text-[var(--muted)]" />
-              <h2 className="text-sm font-semibold">Account</h2>
-            </div>
-            <p className="mt-0.5 text-xs text-[var(--muted)]">Update your personal details</p>
+      <div className="divide-y divide-[var(--border)]">
+        {/* Appearance */}
+        <div className="grid grid-cols-1 gap-x-10 gap-y-4 py-8 first:pt-0 md:grid-cols-[280px_1fr]">
+          <div>
+            <h2 className="text-sm font-semibold">Appearance</h2>
+            <p className="mt-1 text-xs leading-relaxed text-[var(--muted)]">
+              Choose how the app looks. Select a light or dark theme, or follow your system
+              preference.
+            </p>
           </div>
-          <form className="p-5 space-y-5" onSubmit={handleSaveProfile}>
-            <div className="grid gap-4 sm:grid-cols-2">
+          <div className="md:justify-self-end md:max-w-[480px] md:w-full">
+            <span className="mb-2 block text-xs font-medium text-[var(--muted)] uppercase tracking-wider">
+              Theme
+            </span>
+            <div className="flex gap-2">
+              {themeOptions.map((opt) => {
+                const Icon = opt.icon
+                const active = theme === opt.value
+                return (
+                  <button
+                    key={opt.value}
+                    className={[
+                      'inline-flex items-center gap-2 rounded-lg border px-4 py-2.5 text-sm font-medium transition',
+                      active
+                        ? 'border-[var(--accent)] bg-[var(--accent-soft)] text-[var(--accent-strong)]'
+                        : 'border-[var(--border)] bg-[var(--background)] text-[var(--foreground)] hover:border-[var(--accent)]/50',
+                    ].join(' ')}
+                    onClick={() => setTheme(opt.value)}
+                    type="button"
+                  >
+                    <Icon className="h-4 w-4" />
+                    {opt.label}
+                  </button>
+                )
+              })}
+            </div>
+          </div>
+        </div>
+
+        {/* Account */}
+        {user && (
+          <div className="grid grid-cols-1 gap-x-10 gap-y-4 py-8 md:grid-cols-[280px_1fr]">
+            <div>
+              <div className="flex items-center gap-2">
+                <User className="h-4 w-4 text-[var(--muted)]" />
+                <h2 className="text-sm font-semibold">Account</h2>
+              </div>
+              <p className="mt-1 text-xs leading-relaxed text-[var(--muted)]">
+                Update your display name, username, and password. Changes take effect immediately.
+              </p>
+            </div>
+            <form className="w-full max-w-[480px] space-y-4 md:justify-self-end" onSubmit={handleSaveProfile}>
               <label className="block space-y-1.5">
                 <span className="text-xs font-medium text-[var(--muted)] uppercase tracking-wider">
                   Display name
@@ -155,9 +203,6 @@ export function SettingsPage() {
                   value={profileUsername}
                 />
               </label>
-            </div>
-
-            <div className="grid gap-4 sm:grid-cols-2">
               <label className="block space-y-1.5">
                 <span className="text-xs font-medium text-[var(--muted)] uppercase tracking-wider">
                   New password
@@ -183,57 +228,56 @@ export function SettingsPage() {
                   value={profileConfirmPassword}
                 />
               </label>
-            </div>
 
-            <div className="flex items-center gap-3">
-              <button
-                className="inline-flex items-center gap-1.5 rounded-lg bg-[var(--accent)] px-4 py-2 text-sm font-medium text-white transition hover:opacity-90 disabled:opacity-50"
-                disabled={profileSaving}
-                type="submit"
-              >
-                <Save className="h-3.5 w-3.5" />
-                {profileSaving ? 'Saving…' : 'Update profile'}
-              </button>
-              {profileMessage && (
-                <span className={`inline-flex items-center gap-1 text-xs font-medium ${profileMessage.ok ? 'text-emerald-500' : 'text-red-500'}`}>
-                  {profileMessage.ok && <Check className="h-3 w-3" />}
-                  {profileMessage.text}
-                </span>
-              )}
-            </div>
-          </form>
-        </div>
-      )}
-
-      {/* App information */}
-      <div className="rounded-lg border border-[var(--border)] bg-[var(--panel)]">
-        <div className="border-b border-[var(--border)] px-5 py-4">
-          <h2 className="text-sm font-semibold">App information</h2>
-          <p className="mt-0.5 text-xs text-[var(--muted)]">Branding shown throughout the app</p>
-        </div>
-        <form className="p-5 space-y-5" onSubmit={handleSaveAppSettings}>
-          <div className="space-y-2">
-            <span className="text-xs font-medium text-[var(--muted)] uppercase tracking-wider">Logo</span>
-            <div className="flex items-center gap-4">
-              <div className="flex h-14 w-14 shrink-0 items-center justify-center rounded-xl border border-[var(--border)] bg-[var(--background)] overflow-hidden">
-                {appSettings.logoDataUrl ? (
-                  <img
-                    alt="App logo"
-                    className="h-full w-full object-contain"
-                    src={appSettings.logoDataUrl}
-                  />
-                ) : (
-                  <ImagePlus className="h-5 w-5 text-[var(--muted)]" />
+              <div className="flex items-center justify-end gap-3">
+                {profileMessage && (
+                  <span className={`inline-flex items-center gap-1 text-xs font-medium ${profileMessage.ok ? 'text-emerald-500' : 'text-red-500'}`}>
+                    {profileMessage.ok && <Check className="h-3 w-3" />}
+                    {profileMessage.text}
+                  </span>
                 )}
-              </div>
-              <div className="flex flex-col gap-2">
                 <button
-                  className="inline-flex items-center gap-1.5 rounded-md border border-[var(--border)] bg-[var(--background)] px-3 py-1.5 text-xs font-medium text-[var(--foreground)] transition hover:border-[var(--accent)]/50"
+                  className="inline-flex items-center gap-1.5 rounded-lg bg-[var(--accent)] px-4 py-2 text-sm font-medium text-white transition hover:opacity-90 disabled:opacity-50"
+                  disabled={profileSaving}
+                  type="submit"
+                >
+                  <Save className="h-3.5 w-3.5" />
+                  {profileSaving ? 'Saving…' : 'Update profile'}
+                </button>
+              </div>
+            </form>
+          </div>
+        )}
+
+        {/* App information */}
+        <div className="grid grid-cols-1 gap-x-10 gap-y-4 py-8 md:grid-cols-[280px_1fr]">
+          <div>
+            <h2 className="text-sm font-semibold">App information</h2>
+            <p className="mt-1 text-xs leading-relaxed text-[var(--muted)]">
+              Branding shown throughout the app including the sidebar, login screen, and exports.
+            </p>
+          </div>
+          <form className="w-full max-w-[480px] space-y-5 md:justify-self-end" onSubmit={handleSaveAppSettings}>
+            <div className="space-y-2">
+              <span className="text-xs font-medium text-[var(--muted)] uppercase tracking-wider">Logo</span>
+              <div className="flex items-center gap-4">
+                <button
+                  className="group relative flex h-14 w-14 shrink-0 cursor-pointer items-center justify-center rounded-xl border border-[var(--border)] bg-[var(--background)] overflow-hidden transition hover:border-[var(--accent)]/50"
                   onClick={() => logoInputRef.current?.click()}
                   type="button"
                 >
-                  <ImagePlus className="h-3.5 w-3.5" />
-                  Upload image
+                  {appSettings.logoDataUrl ? (
+                    <img
+                      alt="App logo"
+                      className="h-full w-full object-contain"
+                      src={appSettings.logoDataUrl}
+                    />
+                  ) : (
+                    <ImagePlus className="h-5 w-5 text-[var(--muted)]" />
+                  )}
+                  <div className="absolute inset-0 flex items-center justify-center bg-black/40 opacity-0 transition group-hover:opacity-100">
+                    <ImagePlus className="h-4 w-4 text-white" />
+                  </div>
                 </button>
                 {appSettings.logoDataUrl && (
                   <button
@@ -245,82 +289,74 @@ export function SettingsPage() {
                     Remove
                   </button>
                 )}
+                <input
+                  accept="image/*"
+                  className="hidden"
+                  onChange={handleLogoChange}
+                  ref={logoInputRef}
+                  type="file"
+                />
               </div>
-              <input
-                accept="image/*"
-                className="hidden"
-                onChange={handleLogoChange}
-                ref={logoInputRef}
-                type="file"
-              />
             </div>
+
+            <label className="block space-y-1.5">
+              <span className="text-xs font-medium text-[var(--muted)] uppercase tracking-wider">App name</span>
+              <input
+                className={inputClass}
+                onChange={(e) => setAppSettings((prev) => ({ ...prev, name: e.target.value }))}
+                placeholder="Business Ledger"
+                value={appSettings.name}
+              />
+            </label>
+
+            <label className="block space-y-1.5">
+              <span className="text-xs font-medium text-[var(--muted)] uppercase tracking-wider">Description</span>
+              <textarea
+                className="w-full rounded-lg border border-[var(--border)] bg-[var(--background)] px-3 py-2.5 text-sm resize-none focus:outline-none focus:ring-2 focus:ring-[var(--accent)]/30"
+                onChange={(e) => setAppSettings((prev) => ({ ...prev, description: e.target.value }))}
+                placeholder="A short description of what this app tracks…"
+                rows={3}
+                value={appSettings.description}
+              />
+            </label>
+
+            <div className="flex justify-end">
+              <button
+                className="inline-flex items-center gap-1.5 rounded-lg bg-[var(--accent)] px-4 py-2 text-sm font-medium text-white transition hover:opacity-90"
+                type="submit"
+              >
+                <Save className="h-3.5 w-3.5" />
+                {appSaved ? 'Saved!' : 'Save changes'}
+              </button>
+            </div>
+          </form>
+        </div>
+
+        {/* Database backup */}
+        <div className="grid grid-cols-1 gap-x-10 gap-y-4 py-8 md:grid-cols-[280px_1fr]">
+          <div>
+            <h2 className="text-sm font-semibold">Database backup</h2>
+            <p className="mt-1 text-xs leading-relaxed text-[var(--muted)]">
+              Export all app data for safekeeping. The backup includes every record in the database
+              and can be used to fully restore the app.
+            </p>
           </div>
-
-          <label className="block space-y-1.5">
-            <span className="text-xs font-medium text-[var(--muted)] uppercase tracking-wider">App name</span>
-            <input
-              className={inputClass}
-              onChange={(e) => setAppSettings((prev) => ({ ...prev, name: e.target.value }))}
-              placeholder="Business Ledger"
-              value={appSettings.name}
-            />
-          </label>
-
-          <label className="block space-y-1.5">
-            <span className="text-xs font-medium text-[var(--muted)] uppercase tracking-wider">Description</span>
-            <textarea
-              className="w-full rounded-lg border border-[var(--border)] bg-[var(--background)] px-3 py-2.5 text-sm resize-none focus:outline-none focus:ring-2 focus:ring-[var(--accent)]/30"
-              onChange={(e) => setAppSettings((prev) => ({ ...prev, description: e.target.value }))}
-              placeholder="A short description of what this app tracks…"
-              rows={3}
-              value={appSettings.description}
-            />
-          </label>
-
-          <div className="flex items-center gap-3">
+          <div className="w-full max-w-[480px] space-y-4 md:justify-self-end">
+            {exportMessage && (
+              <p className={`text-xs ${exportMessage.includes('failed') ? 'text-red-500' : 'text-emerald-500'}`}>
+                {exportMessage}
+              </p>
+            )}
             <button
-              className="inline-flex items-center gap-1.5 rounded-lg bg-[var(--accent)] px-4 py-2 text-sm font-medium text-white transition hover:opacity-90"
-              type="submit"
+              className="inline-flex items-center gap-2 rounded-lg border border-[var(--border)] bg-[var(--background)] px-4 py-2.5 text-sm font-medium text-[var(--foreground)] transition hover:border-[var(--accent)]/50 hover:text-[var(--accent)] disabled:opacity-50"
+              disabled={isExporting}
+              onClick={() => { void handleExportDatabase() }}
+              type="button"
             >
-              <Save className="h-3.5 w-3.5" />
-              {appSaved ? 'Saved!' : 'Save changes'}
+              <Database className="h-4 w-4" />
+              {isExporting ? 'Exporting…' : 'Download backup'}
             </button>
           </div>
-        </form>
-      </div>
-
-      {/* Database backup */}
-      <div className="rounded-lg border border-[var(--border)] bg-[var(--panel)]">
-        <div className="border-b border-[var(--border)] px-5 py-4">
-          <h2 className="text-sm font-semibold">Database backup</h2>
-          <p className="mt-0.5 text-xs text-[var(--muted)]">
-            Export all app data for safekeeping
-          </p>
-        </div>
-        <div className="p-5 space-y-4">
-          <div className="rounded-lg border border-[var(--border)] bg-[var(--background)] p-4 space-y-1">
-            <p className="text-sm font-medium">Export database file</p>
-            <p className="text-xs text-[var(--muted)]">
-              Saves a complete copy of the SQLite database (<code>.db</code>) to your Downloads
-              folder. The file can be opened with any SQLite browser and used to restore the app.
-            </p>
-          </div>
-
-          {exportMessage && (
-            <p className={`text-xs ${exportMessage.includes('failed') ? 'text-red-500' : 'text-emerald-500'}`}>
-              {exportMessage}
-            </p>
-          )}
-
-          <button
-            className="inline-flex items-center gap-2 rounded-lg border border-[var(--border)] bg-[var(--background)] px-4 py-2.5 text-sm font-medium text-[var(--foreground)] transition hover:border-[var(--accent)]/50 hover:text-[var(--accent)] disabled:opacity-50"
-            disabled={isExporting}
-            onClick={() => { void handleExportDatabase() }}
-            type="button"
-          >
-            <Database className="h-4 w-4" />
-            {isExporting ? 'Exporting…' : 'Download backup'}
-          </button>
         </div>
       </div>
     </section>

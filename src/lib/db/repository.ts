@@ -1310,6 +1310,8 @@ function rowToIncidentReport(row: IncidentReportRow): IncidentReport {
 }
 
 export async function listIncidentReports(filters?: {
+  dateFrom?: string
+  dateTo?: string
   incidentType?: string
   month?: string
   search?: string
@@ -1318,6 +1320,16 @@ export async function listIncidentReports(filters?: {
 
   const conditions: string[] = []
   const params: unknown[] = []
+
+  if (filters?.dateFrom) {
+    conditions.push(`ir.incident_date >= $${params.length + 1}`)
+    params.push(filters.dateFrom)
+  }
+
+  if (filters?.dateTo) {
+    conditions.push(`ir.incident_date <= $${params.length + 1}`)
+    params.push(filters.dateTo)
+  }
 
   if (filters?.month) {
     conditions.push(`substr(ir.incident_date, 1, 7) = $${params.length + 1}`)

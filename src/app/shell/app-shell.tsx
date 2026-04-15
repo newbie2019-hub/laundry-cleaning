@@ -1,6 +1,5 @@
 import type { LucideIcon } from 'lucide-react'
-import { AlertTriangle, ArrowLeftRight, BarChart3, ChevronDown, LayoutDashboard, LogOut, Package, PieChart, Settings, SunMoon, Tags, Users, WalletCards } from 'lucide-react'
-import { useTheme } from 'next-themes'
+import { AlertTriangle, ArrowLeftRight, BarChart3, ChevronDown, LayoutDashboard, LogOut, Package, PieChart, Settings, Tags, Users, WalletCards } from 'lucide-react'
 import { useCallback, useEffect, useState } from 'react'
 import { NavLink, Outlet, useLocation, useNavigate } from 'react-router-dom'
 import { loadAppSettings, type AppSettings } from '../../lib/app-settings'
@@ -184,10 +183,8 @@ function NavItemEntry({ item, collapsed }: { item: NavItem; collapsed: boolean }
 }
 
 export function AppShell() {
-  const { resolvedTheme, setTheme } = useTheme()
   const { signOut, user } = useAuth()
   const navigate = useNavigate()
-  const isDark = resolvedTheme === 'dark'
   const [appSettings, setAppSettings] = useState<AppSettings>(loadAppSettings)
   const [collapsed, setCollapsed] = useState(
     () => localStorage.getItem(SIDEBAR_COLLAPSED_KEY) === 'true',
@@ -264,19 +261,6 @@ export function AppShell() {
 
         {/* Bottom section */}
         <div className="shrink-0 border-t border-[var(--border)] p-2 space-y-1">
-          {/* Theme toggle */}
-          <button
-            className={`flex w-full items-center rounded-md py-2.5 text-sm text-[var(--muted)] transition hover:bg-[var(--background)] hover:text-[var(--foreground)] ${
-              collapsed ? 'justify-center px-2.5' : 'gap-3 px-3'
-            }`}
-            onClick={() => setTheme(isDark ? 'light' : 'dark')}
-            title={collapsed ? (isDark ? 'Light mode' : 'Dark mode') : undefined}
-            type="button"
-          >
-            <SunMoon className="h-4 w-4 shrink-0" />
-            {!collapsed && <span>{isDark ? 'Light mode' : 'Dark mode'}</span>}
-          </button>
-
           {/* User info */}
           {collapsed ? (
             <div className="flex flex-col items-center gap-2 py-2">
