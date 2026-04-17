@@ -327,6 +327,32 @@ pub fn builder() -> Builder {
       "#,
       kind: MigrationKind::Up,
     },
+    Migration {
+      version: 8,
+      description: "create_inventory_maintenance_records",
+      sql: r#"
+        CREATE TABLE IF NOT EXISTS inventory_maintenance_records (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          item_id INTEGER NOT NULL,
+          service_date TEXT NOT NULL,
+          service_type TEXT NOT NULL DEFAULT 'preventive',
+          performed_by TEXT NOT NULL DEFAULT '',
+          cost REAL NOT NULL DEFAULT 0,
+          description TEXT NOT NULL DEFAULT '',
+          next_service_date TEXT NOT NULL DEFAULT '',
+          status TEXT NOT NULL DEFAULT 'completed',
+          created_by INTEGER,
+          created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+          updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+          FOREIGN KEY (item_id) REFERENCES inventory_items (id) ON DELETE CASCADE,
+          FOREIGN KEY (created_by) REFERENCES users (id)
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_maintenance_item ON inventory_maintenance_records(item_id);
+        CREATE INDEX IF NOT EXISTS idx_maintenance_date ON inventory_maintenance_records(service_date);
+      "#,
+      kind: MigrationKind::Up,
+    },
   ];
 
   Builder::default().add_migrations(DB_URL, migrations)

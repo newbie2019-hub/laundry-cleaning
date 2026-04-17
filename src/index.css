@@ -73,3 +73,20 @@ p {
     transform: translateX(0);
   }
 }
+
+/* Global table striping and hover */
+table tbody > tr {
+  transition: background-color 0.15s ease;
+}
+
+table tbody > tr:nth-child(even) {
+  background-color: rgba(148, 163, 184, 0.06);
+}
+
+.dark table tbody > tr:nth-child(even) {
+  background-color: rgba(148, 163, 184, 0.08);
+}
+
+table tbody > tr:hover {
+  background-color: var(--accent-soft) !important;
+}

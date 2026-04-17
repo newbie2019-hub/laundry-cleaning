@@ -284,7 +284,7 @@ export function InventoryMovementsPage() {
             </thead>
             <tbody className="divide-y divide-[var(--border)]">
               {displayed.map((mov) => (
-                <tr key={mov.id} className="transition hover:bg-[var(--background)]">
+                <tr key={mov.id}>
                   <td className="px-4 py-3 tabular-nums text-[var(--muted)] whitespace-nowrap">{mov.movementDate}</td>
                   <td className="px-4 py-3 font-medium max-w-[12rem] truncate">{mov.itemName}</td>
                   <td className="px-4 py-3">{movBadge(mov.movementType)}</td>

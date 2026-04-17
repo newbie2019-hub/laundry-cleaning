@@ -8,10 +8,12 @@ import {
   Banknote,
   Box,
   Filter,
+  Hammer,
   Package,
   Pencil,
   Plus,
   Search,
+  Wrench,
   X,
 } from 'lucide-react'
 import { formatCurrency } from '../../../lib/format'
@@ -22,6 +24,8 @@ import {
   type InventoryItem,
 } from '../../../lib/db/repository'
 import { useAuth } from '../../auth/use-auth'
+import { MaintenanceModal } from '../components/maintenance-modal'
+import { QuickMovementModal } from '../components/quick-movement-modal'
 
 const ITEM_CATEGORIES = [
   { value: 'consumable', label: 'Consumable' },
@@ -152,16 +156,8 @@ export function InventoryPage() {
   const [formError, setFormError] = useState<string | null>(null)
   const [isSubmitting, setIsSubmitting] = useState(false)
 
-  // Movement quick modal
-  const [isMovModalOpen, setIsMovModalOpen] = useState(false)
-  const [movItem, setMovItem] = useState<InventoryItem | null>(null)
-  const [movType, setMovType] = useState<'IN' | 'OUT'>('IN')
-  const [movQty, setMovQty] = useState('')
-  const [movUnitCost, setMovUnitCost] = useState('')
-  const [movNotes, setMovNotes] = useState('')
-  const [movDate, setMovDate] = useState(format(new Date(), 'yyyy-MM-dd'))
-  const [movError, setMovError] = useState<string | null>(null)
-  const [movSubmitting, setMovSubmitting] = useState(false)
+  const [quickMov, setQuickMov] = useState<{ item: InventoryItem; type: 'IN' | 'OUT' } | null>(null)
+  const [serviceItem, setServiceItem] = useState<InventoryItem | null>(null)
 
   const loadItems = useCallback(async () => {
     setLoading(true)
@@ -197,6 +193,12 @@ export function InventoryPage() {
   const totalItems = items.length
   const lowStockCount = useMemo(() => items.filter((i) => i.isLowStock).length, [items])
   const totalValue = useMemo(() => items.reduce((s, i) => s + i.stockValue, 0), [items])
+  const equipmentItems = useMemo(() => items.filter((i) => i.category === 'equipment'), [items])
+  const equipmentOperationalCount = useMemo(
+    () => equipmentItems.filter((i) => i.status === 'operational' || !i.status).length,
+    [equipmentItems],
+  )
+  const equipmentNeedsAttention = equipmentItems.length - equipmentOperationalCount
   const isEquipmentCategory = formCategory === 'equipment'
 
   // ── Item modal ──
@@ -301,52 +303,9 @@ export function InventoryPage() {
     }
   }
 
-  // ── Quick movement modal ──
-
   function openQuickMov(item: InventoryItem, type: 'IN' | 'OUT') {
-    setMovItem(item)
-    setMovType(type)
-    setMovQty('')
-    setMovUnitCost(String(item.costPerUnit))
-    setMovNotes('')
-    setMovDate(format(new Date(), 'yyyy-MM-dd'))
-    setMovError(null)
-    setIsMovModalOpen(true)
+    setQuickMov({ item, type })
   }
-
-  async function handleMovSubmit(e: FormEvent) {
-    e.preventDefault()
-    if (!movItem || !user) return
-    const qty = parseFloat(movQty)
-    if (isNaN(qty) || qty <= 0) { setMovError('Quantity must be a positive number.'); return }
-    const unitCost = parseFloat(movUnitCost || '0')
-    if (isNaN(unitCost) || unitCost < 0) { setMovError('Unit cost must be non-negative.'); return }
-
-    setMovSubmitting(true)
-    setMovError(null)
-    try {
-      await saveInventoryMovement(
-        {
-          itemId: movItem.id,
-          movementDate: movDate,
-          movementType: movType,
-          notes: movNotes.trim(),
-          quantity: qty,
-          unitCost,
-        },
-        user.id,
-      )
-      setIsMovModalOpen(false)
-      await loadItems()
-    } catch {
-      setMovError('Failed to record movement.')
-    } finally {
-      setMovSubmitting(false)
-    }
-  }
-
-  const QUICK_NOTES_IN = ['Restock', 'Return', 'Adjustment']
-  const QUICK_NOTES_OUT = ['Daily Usage', 'Damaged', 'Expired', 'Lost', 'Adjustment']
 
   const hasActiveFilters = categoryFilter || stockFilter !== 'all' || showInactive
 
@@ -378,7 +337,7 @@ export function InventoryPage() {
       )}
 
       {/* Stats */}
-      <div className="grid grid-cols-3 gap-3">
+      <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">
         {[
           {
             label: 'Total Items',
@@ -395,6 +354,19 @@ export function InventoryPage() {
             color: lowStockCount > 0 ? 'text-amber-500' : 'text-emerald-500',
             bg: lowStockCount > 0 ? 'bg-amber-500/10' : 'bg-emerald-500/10',
             sub: lowStockCount > 0 ? 'need restocking' : 'all stocked',
+          },
+          {
+            label: 'Equipment',
+            value: String(equipmentItems.length),
+            icon: Hammer,
+            color: equipmentNeedsAttention > 0 ? 'text-purple-500' : 'text-emerald-500',
+            bg: equipmentNeedsAttention > 0 ? 'bg-purple-500/10' : 'bg-emerald-500/10',
+            sub:
+              equipmentItems.length === 0
+                ? 'none registered'
+                : equipmentNeedsAttention > 0
+                  ? `${equipmentNeedsAttention} need${equipmentNeedsAttention === 1 ? 's' : ''} attention`
+                  : 'all operational',
           },
           {
             label: 'Total Value',
@@ -508,7 +480,7 @@ export function InventoryPage() {
               {displayed.map((item) => (
                 <tr
                   key={item.id}
-                  className={['transition hover:bg-[var(--background)]', !item.isActive ? 'opacity-50' : ''].join(' ')}
+                  className={!item.isActive ? 'opacity-50' : ''}
                 >
                   <td className="px-4 py-3">
                     <div className="flex items-center gap-2">
@@ -552,24 +524,38 @@ export function InventoryPage() {
                     <div className="flex items-center gap-1 justify-end">
                       {canManage && (
                         <>
-                          <button
-                            aria-label="Stock In"
-                            className="rounded p-1.5 text-emerald-500 transition hover:bg-emerald-500/10"
-                            onClick={() => openQuickMov(item, 'IN')}
-                            title="Restock"
-                            type="button"
-                          >
-                            <ArrowDownToLine className="h-4 w-4" />
-                          </button>
-                          <button
-                            aria-label="Stock Out"
-                            className="rounded p-1.5 text-red-400 transition hover:bg-red-500/10"
-                            onClick={() => openQuickMov(item, 'OUT')}
-                            title="Use / Remove"
-                            type="button"
-                          >
-                            <ArrowUpFromLine className="h-4 w-4" />
-                          </button>
+                          {item.category === 'equipment' ? (
+                            <button
+                              aria-label="Service"
+                              className="rounded p-1.5 text-purple-500 transition hover:bg-purple-500/10"
+                              onClick={() => setServiceItem(item)}
+                              title="Service / maintenance"
+                              type="button"
+                            >
+                              <Wrench className="h-4 w-4" />
+                            </button>
+                          ) : (
+                            <>
+                              <button
+                                aria-label="Stock In"
+                                className="rounded p-1.5 text-emerald-500 transition hover:bg-emerald-500/10"
+                                onClick={() => openQuickMov(item, 'IN')}
+                                title="Restock"
+                                type="button"
+                              >
+                                <ArrowDownToLine className="h-4 w-4" />
+                              </button>
+                              <button
+                                aria-label="Stock Out"
+                                className="rounded p-1.5 text-red-400 transition hover:bg-red-500/10"
+                                onClick={() => openQuickMov(item, 'OUT')}
+                                title="Use / Remove"
+                                type="button"
+                              >
+                                <ArrowUpFromLine className="h-4 w-4" />
+                              </button>
+                            </>
+                          )}
                           <button
                             aria-label="Edit"
                             className="rounded p-1.5 text-[var(--muted)] transition hover:bg-[var(--background)] hover:text-[var(--foreground)]"
@@ -697,102 +683,31 @@ export function InventoryPage() {
         </div>
       )}
 
-      {/* ── QUICK MOVEMENT MODAL ── */}
-      {isMovModalOpen && movItem && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4">
-          <div className="w-full max-w-md rounded-xl bg-white shadow-xl">
-            <div className="flex items-center justify-between border-b border-gray-200 px-5 py-4">
-              <div>
-                <h2 className="text-base font-semibold text-gray-900">
-                  {movType === 'IN' ? 'Restock' : 'Record Usage'}
-                </h2>
-                <p className="text-xs text-gray-500 mt-0.5">{movItem.name}</p>
-              </div>
-              <button className="rounded p-1 text-gray-400 hover:bg-gray-100 hover:text-gray-600" onClick={() => setIsMovModalOpen(false)} type="button">
-                <X className="h-4 w-4" />
-              </button>
-            </div>
+      <QuickMovementModal
+        initialType={quickMov?.type ?? 'IN'}
+        item={quickMov?.item ?? null}
+        onClose={() => setQuickMov(null)}
+        onSaved={loadItems}
+        open={quickMov !== null}
+        userId={user?.id ?? null}
+      />
 
-            <form className="space-y-4 p-5" onSubmit={handleMovSubmit}>
-              <div className="flex gap-2">
-                {(['IN', 'OUT'] as const).map((type) => (
-                  <button
-                    key={type}
-                    className={[
-                      'flex flex-1 items-center justify-center gap-2 rounded-md border py-2 text-sm font-medium transition',
-                      movType === type
-                        ? type === 'IN' ? 'border-emerald-500 bg-emerald-50 text-emerald-700' : 'border-red-400 bg-red-50 text-red-600'
-                        : 'border-gray-300 bg-gray-50 text-gray-500 hover:bg-gray-100',
-                    ].join(' ')}
-                    onClick={() => setMovType(type)}
-                    type="button"
-                  >
-                    {type === 'IN' ? <ArrowDownToLine className="h-4 w-4" /> : <ArrowUpFromLine className="h-4 w-4" />}
-                    {type === 'IN' ? 'Stock In' : 'Stock Out'}
-                  </button>
-                ))}
-              </div>
-
-              <div className="rounded-md bg-gray-50 border border-gray-200 px-3 py-2 text-xs text-gray-600 flex gap-4">
-                <span>Current: <strong>{formatQty(movItem.currentStock, movItem.unitLabel)}</strong></span>
-                <span>Min: <strong>{formatQty(movItem.lowStockThreshold, movItem.unitLabel)}</strong></span>
-              </div>
-
-              <ModalField label="Date" required>
-                <input className={inputClass} onChange={(e) => setMovDate(e.target.value)} type="date" value={movDate} />
-              </ModalField>
-
-              <div className="grid grid-cols-2 gap-3">
-                <ModalField label="Quantity" required>
-                  <input className={inputClass} min="0.001" onChange={(e) => setMovQty(e.target.value)} placeholder="0" step="any" type="number" value={movQty} />
-                </ModalField>
-                <ModalField label="Unit Cost">
-                  <input className={inputClass} min="0" onChange={(e) => setMovUnitCost(e.target.value)} placeholder="0.00" step="0.01" type="number" value={movUnitCost} />
-                </ModalField>
-              </div>
-
-              <ModalField label="Notes">
-                <input className={inputClass} onChange={(e) => setMovNotes(e.target.value)} placeholder="Reason or notes" type="text" value={movNotes} />
-                <div className="flex flex-wrap gap-1.5 mt-1.5">
-                  {(movType === 'IN' ? QUICK_NOTES_IN : QUICK_NOTES_OUT).map((note) => (
-                    <button
-                      key={note}
-                      className={[
-                        'rounded-full border px-2.5 py-1 text-[11px] font-medium transition',
-                        movNotes === note
-                          ? 'border-blue-400 bg-blue-50 text-blue-700'
-                          : 'border-gray-200 bg-white text-gray-500 hover:bg-gray-50',
-                      ].join(' ')}
-                      onClick={() => setMovNotes(note)}
-                      type="button"
-                    >
-                      {note}
-                    </button>
-                  ))}
-                </div>
-              </ModalField>
-
-              {movError && <p className="rounded-md bg-red-50 px-3 py-2 text-sm text-red-600">{movError}</p>}
-
-              <div className="flex justify-end gap-2 pt-1">
-                <button className="rounded-md border border-gray-300 bg-white px-4 py-2 text-sm font-medium text-gray-700 hover:bg-gray-50" onClick={() => setIsMovModalOpen(false)} type="button">
-                  Cancel
-                </button>
-                <button
-                  className={[
-                    'rounded-md px-4 py-2 text-sm font-medium text-white disabled:opacity-50',
-                    movType === 'IN' ? 'bg-emerald-600 hover:bg-emerald-700' : 'bg-red-500 hover:bg-red-600',
-                  ].join(' ')}
-                  disabled={movSubmitting}
-                  type="submit"
-                >
-                  {movSubmitting ? 'Saving…' : movType === 'IN' ? 'Record Restock' : 'Record Usage'}
-                </button>
-              </div>
-            </form>
-          </div>
-        </div>
-      )}
+      <MaintenanceModal
+        item={
+          serviceItem
+            ? {
+                currentStatus: serviceItem.status,
+                id: serviceItem.id,
+                lastMaintenanceDate: serviceItem.lastMaintenanceDate,
+                name: serviceItem.name,
+              }
+            : null
+        }
+        onClose={() => setServiceItem(null)}
+        onSaved={loadItems}
+        open={serviceItem !== null}
+        userId={user?.id ?? null}
+      />
     </section>
   )
 }

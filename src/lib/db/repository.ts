@@ -1208,6 +1208,283 @@ export async function getDashboardDataByRange(
   }
 }
 
+export type TransactionsSummaryKpis = {
+  avgDailySales: number
+  netIncome: number
+  operatingExpense: number
+  salesPerStaffShift: number
+  totalExpenses: number
+  totalOperatingExpense: number
+  totalSales: number
+  totalStaffShifts: number
+  transactionCount: number
+}
+
+export type TransactionsSummary = {
+  categoryBreakdown: Array<{
+    categoryLabel: string
+    count: number
+    totalAmount: number
+    transactionTypeCode: string
+  }>
+  dailySeries: Array<{
+    date: string
+    expense: number
+    netIncome: number
+    operatingExpense: number
+    sales: number
+  }>
+  dateFrom: string
+  dateTo: string
+  kpis: TransactionsSummaryKpis
+  monthlySeries: Array<{
+    expense: number
+    monthKey: string
+    netIncome: number
+    operatingExpense: number
+    sales: number
+  }>
+  typeBreakdown: Array<{
+    count: number
+    totalAmount: number
+    transactionTypeCode: string
+  }>
+  weekdayBreakdown: Array<{
+    expense: number
+    operatingExpense: number
+    sales: number
+    weekday: number
+  }>
+}
+
+export async function getTransactionsSummary(
+  dateFrom: string,
+  dateTo: string,
+): Promise<TransactionsSummary> {
+  const database = await getDatabase()
+
+  const [
+    kpiRows,
+    dailyRows,
+    typeRows,
+    categoryRows,
+    monthlyRows,
+    weekdayRows,
+  ] = await Promise.all([
+    database.select<
+      Array<{
+        expense: number
+        operatingExpense: number
+        totalSales: number
+        totalStaffShifts: number
+        transactionCount: number
+      }>
+    >(
+      `
+        SELECT
+          COALESCE(SUM(CASE WHEN transaction_types.code = 'SALE' THEN transactions.amount END), 0) AS totalSales,
+          COALESCE(SUM(CASE WHEN transaction_types.code = 'EXPENSE' THEN transactions.amount END), 0) AS expense,
+          COALESCE(SUM(CASE WHEN transaction_types.code = 'OPERATING EXPENSE' THEN transactions.amount END), 0) AS operatingExpense,
+          COUNT(*) AS transactionCount,
+          COALESCE(SUM(CASE WHEN transaction_types.code = 'SALE' THEN transactions.staff_count END), 0) AS totalStaffShifts
+        FROM transactions
+        JOIN transaction_types ON transaction_types.id = transactions.transaction_type_id
+        WHERE transactions.entry_date >= $1 AND transactions.entry_date <= $2
+      `,
+      [dateFrom, dateTo],
+    ),
+    database.select<
+      Array<{
+        date: string
+        expense: number
+        operatingExpense: number
+        sales: number
+      }>
+    >(
+      `
+        SELECT
+          transactions.entry_date AS date,
+          COALESCE(SUM(CASE WHEN transaction_types.code = 'SALE' THEN transactions.amount END), 0) AS sales,
+          COALESCE(SUM(CASE WHEN transaction_types.code = 'EXPENSE' THEN transactions.amount END), 0) AS expense,
+          COALESCE(SUM(CASE WHEN transaction_types.code = 'OPERATING EXPENSE' THEN transactions.amount END), 0) AS operatingExpense
+        FROM transactions
+        JOIN transaction_types ON transaction_types.id = transactions.transaction_type_id
+        WHERE transactions.entry_date >= $1 AND transactions.entry_date <= $2
+        GROUP BY transactions.entry_date
+        ORDER BY transactions.entry_date
+      `,
+      [dateFrom, dateTo],
+    ),
+    database.select<
+      Array<{
+        count: number
+        totalAmount: number
+        transactionTypeCode: string
+      }>
+    >(
+      `
+        SELECT
+          transaction_types.code AS transactionTypeCode,
+          COALESCE(SUM(transactions.amount), 0) AS totalAmount,
+          COUNT(*) AS count
+        FROM transactions
+        JOIN transaction_types ON transaction_types.id = transactions.transaction_type_id
+        WHERE transactions.entry_date >= $1 AND transactions.entry_date <= $2
+        GROUP BY transaction_types.code
+        ORDER BY totalAmount DESC
+      `,
+      [dateFrom, dateTo],
+    ),
+    database.select<
+      Array<{
+        categoryLabel: string
+        count: number
+        totalAmount: number
+        transactionTypeCode: string
+      }>
+    >(
+      `
+        SELECT
+          categories.label AS categoryLabel,
+          transaction_types.code AS transactionTypeCode,
+          COALESCE(SUM(transactions.amount), 0) AS totalAmount,
+          COUNT(transactions.id) AS count
+        FROM transactions
+        JOIN categories ON categories.id = transactions.category_id
+        JOIN transaction_types ON transaction_types.id = transactions.transaction_type_id
+        WHERE transactions.entry_date >= $1 AND transactions.entry_date <= $2
+        GROUP BY categories.label, transaction_types.code
+        ORDER BY transaction_types.code, totalAmount DESC
+      `,
+      [dateFrom, dateTo],
+    ),
+    database.select<
+      Array<{
+        expense: number
+        monthKey: string
+        operatingExpense: number
+        sales: number
+      }>
+    >(
+      `
+        SELECT
+          substr(transactions.entry_date, 1, 7) AS monthKey,
+          COALESCE(SUM(CASE WHEN transaction_types.code = 'SALE' THEN transactions.amount END), 0) AS sales,
+          COALESCE(SUM(CASE WHEN transaction_types.code = 'EXPENSE' THEN transactions.amount END), 0) AS expense,
+          COALESCE(SUM(CASE WHEN transaction_types.code = 'OPERATING EXPENSE' THEN transactions.amount END), 0) AS operatingExpense
+        FROM transactions
+        JOIN transaction_types ON transaction_types.id = transactions.transaction_type_id
+        WHERE transactions.entry_date >= $1 AND transactions.entry_date <= $2
+        GROUP BY substr(transactions.entry_date, 1, 7)
+        ORDER BY monthKey
+      `,
+      [dateFrom, dateTo],
+    ),
+    database.select<
+      Array<{
+        expense: number
+        operatingExpense: number
+        sales: number
+        weekday: string
+      }>
+    >(
+      `
+        SELECT
+          strftime('%w', transactions.entry_date) AS weekday,
+          COALESCE(SUM(CASE WHEN transaction_types.code = 'SALE' THEN transactions.amount END), 0) AS sales,
+          COALESCE(SUM(CASE WHEN transaction_types.code = 'EXPENSE' THEN transactions.amount END), 0) AS expense,
+          COALESCE(SUM(CASE WHEN transaction_types.code = 'OPERATING EXPENSE' THEN transactions.amount END), 0) AS operatingExpense
+        FROM transactions
+        JOIN transaction_types ON transaction_types.id = transactions.transaction_type_id
+        WHERE transactions.entry_date >= $1 AND transactions.entry_date <= $2
+        GROUP BY strftime('%w', transactions.entry_date)
+        ORDER BY weekday
+      `,
+      [dateFrom, dateTo],
+    ),
+  ])
+
+  const kpiRow = kpiRows[0] ?? {
+    expense: 0,
+    operatingExpense: 0,
+    totalSales: 0,
+    totalStaffShifts: 0,
+    transactionCount: 0,
+  }
+
+  const totalSales = toNumber(kpiRow.totalSales)
+  const expense = toNumber(kpiRow.expense)
+  const operatingExpense = toNumber(kpiRow.operatingExpense)
+  const totalExpenses = expense + operatingExpense
+  const totalStaffShifts = toNumber(kpiRow.totalStaffShifts)
+  const transactionCount = toNumber(kpiRow.transactionCount)
+
+  const rangeDays = Math.max(
+    1,
+    differenceInCalendarDays(
+      new Date(`${dateTo}T00:00:00`),
+      new Date(`${dateFrom}T00:00:00`),
+    ) + 1,
+  )
+
+  return {
+    categoryBreakdown: categoryRows.map((row) => ({
+      categoryLabel: row.categoryLabel,
+      count: toNumber(row.count),
+      totalAmount: toNumber(row.totalAmount),
+      transactionTypeCode: row.transactionTypeCode,
+    })),
+    dailySeries: dailyRows.map((row) => {
+      const dailySales = toNumber(row.sales)
+      const dailyExpense = toNumber(row.expense)
+      const dailyOperating = toNumber(row.operatingExpense)
+      return {
+        date: row.date,
+        expense: dailyExpense,
+        netIncome: dailySales - dailyExpense - dailyOperating,
+        operatingExpense: dailyOperating,
+        sales: dailySales,
+      }
+    }),
+    dateFrom,
+    dateTo,
+    kpis: {
+      avgDailySales: totalSales / rangeDays,
+      netIncome: totalSales - totalExpenses,
+      operatingExpense,
+      salesPerStaffShift: totalStaffShifts > 0 ? totalSales / totalStaffShifts : 0,
+      totalExpenses,
+      totalOperatingExpense: operatingExpense,
+      totalSales,
+      totalStaffShifts,
+      transactionCount,
+    },
+    monthlySeries: monthlyRows.map((row) => {
+      const monthSales = toNumber(row.sales)
+      const monthExpense = toNumber(row.expense)
+      const monthOperating = toNumber(row.operatingExpense)
+      return {
+        expense: monthExpense,
+        monthKey: row.monthKey,
+        netIncome: monthSales - monthExpense - monthOperating,
+        operatingExpense: monthOperating,
+        sales: monthSales,
+      }
+    }),
+    typeBreakdown: typeRows.map((row) => ({
+      count: toNumber(row.count),
+      totalAmount: toNumber(row.totalAmount),
+      transactionTypeCode: row.transactionTypeCode,
+    })),
+    weekdayBreakdown: weekdayRows.map((row) => ({
+      expense: toNumber(row.expense),
+      operatingExpense: toNumber(row.operatingExpense),
+      sales: toNumber(row.sales),
+      weekday: Number(row.weekday),
+    })),
+  }
+}
+
 export async function getAppSummaryCounts() {
   const database = await getDatabase()
   const [transactionTypes, categories, roles, permissions, incomeShareRules, users, transactions] =
@@ -1670,6 +1947,7 @@ export async function saveInventoryItem(draft: InventoryItemDraft, id?: number):
 
 export async function listInventoryMovements(filters?: {
   itemId?: number | null
+  limit?: number
   monthKey?: string
   movementType?: string
 }): Promise<InventoryMovement[]> {
@@ -1693,6 +1971,7 @@ export async function listInventoryMovements(filters?: {
   }
 
   const where = conditions.length > 0 ? `WHERE ${conditions.join(' AND ')}` : ''
+  const limitClause = filters?.limit != null ? `LIMIT ${Number(filters.limit)}` : ''
 
   const rows = await database.select<InventoryMovementRow[]>(
     `
@@ -1713,6 +1992,7 @@ export async function listInventoryMovements(filters?: {
       LEFT JOIN users u ON u.id = m.created_by
       ${where}
       ORDER BY m.movement_date DESC, m.id DESC
+      ${limitClause}
     `,
     params,
   )
@@ -1771,8 +2051,10 @@ export async function deleteInventoryMovement(id: number): Promise<void> {
 }
 
 export type InventoryItemSummary = {
+  category: string
   currentStock: number
   id: number
+  lowStockThreshold: number
   name: string
   stockValue: number
   totalIn: number
@@ -1780,29 +2062,37 @@ export type InventoryItemSummary = {
   totalOut: number
   totalOutCost: number
   unitLabel: string
+  wastageCostThisMonth: number
 }
 
 type InventoryItemSummaryRow = {
+  category: string
+  costPerUnit: number
   currentStock: number
   id: number
+  lowStockThreshold: number
   name: string
   totalIn: number
   totalInCost: number
   totalOut: number
   totalOutCost: number
   unitLabel: string
+  wastageCostThisMonth: number
 }
 
 export async function getInventoryItemSummaries(monthKey?: string): Promise<InventoryItemSummary[]> {
   const database = await getDatabase()
   const monthFilter = monthKey ? `AND substr(m.movement_date, 1, 7) = $1` : ''
-  const params = monthKey ? [monthKey] : []
+  const wastageMonthFilter = monthKey ? `AND substr(mw.movement_date, 1, 7) = $2` : ''
+  const params = monthKey ? [monthKey, monthKey] : []
 
   const rows = await database.select<InventoryItemSummaryRow[]>(
     `
       SELECT
         i.id,
         i.name,
+        i.category,
+        i.low_stock_threshold AS lowStockThreshold,
         i.unit_label AS unitLabel,
         i.cost_per_unit AS costPerUnit,
         COALESCE(SUM(CASE WHEN m.movement_type = 'IN' THEN m.quantity ELSE 0 END), 0) AS totalIn,
@@ -1812,7 +2102,19 @@ export async function getInventoryItemSummaries(monthKey?: string): Promise<Inve
         COALESCE((
           SELECT SUM(CASE WHEN m2.movement_type = 'IN' THEN m2.quantity ELSE -m2.quantity END)
           FROM inventory_movements m2 WHERE m2.item_id = i.id
-        ), 0) AS currentStock
+        ), 0) AS currentStock,
+        COALESCE((
+          SELECT SUM(mw.quantity * mw.unit_cost)
+          FROM inventory_movements mw
+          WHERE mw.item_id = i.id
+            AND mw.movement_type = 'OUT'
+            ${wastageMonthFilter}
+            AND (
+              LOWER(COALESCE(mw.notes, '')) LIKE '%damaged%'
+              OR LOWER(COALESCE(mw.notes, '')) LIKE '%expired%'
+              OR LOWER(COALESCE(mw.notes, '')) LIKE '%lost%'
+            )
+        ), 0) AS wastageCostThisMonth
       FROM inventory_items i
       LEFT JOIN inventory_movements m ON m.item_id = i.id ${monthFilter}
       WHERE i.is_active = 1
@@ -1824,16 +2126,20 @@ export async function getInventoryItemSummaries(monthKey?: string): Promise<Inve
 
   return rows.map((row) => {
     const currentStock = toNumber(row.currentStock)
+    const costPerUnit = toNumber(row.costPerUnit)
     return {
+      category: row.category,
       currentStock,
       id: row.id,
+      lowStockThreshold: toNumber(row.lowStockThreshold),
       name: row.name,
-      stockValue: currentStock * toNumber((row as unknown as Record<string, number>).costPerUnit ?? 0),
+      stockValue: currentStock * costPerUnit,
       totalIn: toNumber(row.totalIn),
       totalInCost: toNumber(row.totalInCost),
       totalOut: toNumber(row.totalOut),
       totalOutCost: toNumber(row.totalOutCost),
       unitLabel: row.unitLabel,
+      wastageCostThisMonth: toNumber(row.wastageCostThisMonth),
     }
   })
 }
@@ -1973,6 +2279,648 @@ export async function getLowStockItems(): Promise<LowStockItem[]> {
       unitLabel: row.unitLabel,
     }
   })
+}
+
+export type InventoryActionCounts = {
+  equipmentDown: number
+  lowStock: number
+  needsReorder: number
+  outOfStock: number
+}
+
+export async function getInventoryActionCounts(usageWindowDays = 30): Promise<InventoryActionCounts> {
+  const database = await getDatabase()
+  const fromDate = format(subDays(new Date(), usageWindowDays), 'yyyy-MM-dd')
+  const rows = await database.select<
+    Array<{
+      equipmentDown: number
+      lowStock: number
+      needsReorder: number
+      outOfStock: number
+    }>
+  >(
+    `
+      WITH item_stock AS (
+        SELECT
+          i.id,
+          i.category,
+          i.status,
+          i.low_stock_threshold AS threshold,
+          COALESCE((
+            SELECT SUM(CASE WHEN m.movement_type = 'IN' THEN m.quantity ELSE -m.quantity END)
+            FROM inventory_movements m WHERE m.item_id = i.id
+          ), 0) AS current_stock,
+          COALESCE((
+            SELECT SUM(m.quantity)
+            FROM inventory_movements m
+            WHERE m.item_id = i.id
+              AND m.movement_type = 'OUT'
+              AND m.movement_date >= $1
+          ), 0) / $2 AS avg_daily_out
+        FROM inventory_items i
+        WHERE i.is_active = 1
+      )
+      SELECT
+        SUM(CASE WHEN current_stock <= 0 THEN 1 ELSE 0 END) AS outOfStock,
+        SUM(CASE WHEN current_stock > 0 AND current_stock <= threshold THEN 1 ELSE 0 END) AS lowStock,
+        SUM(CASE WHEN category = 'equipment' AND status IN ('maintenance', 'out_of_service') THEN 1 ELSE 0 END) AS equipmentDown,
+        SUM(CASE
+          WHEN category != 'equipment' AND (
+            current_stock <= threshold
+            OR (avg_daily_out > 0 AND (current_stock / avg_daily_out) < 7)
+          ) THEN 1
+          ELSE 0
+        END) AS needsReorder
+      FROM item_stock
+    `,
+    [fromDate, usageWindowDays],
+  )
+  const r = rows[0]
+  return {
+    equipmentDown: toNumber(r?.equipmentDown),
+    lowStock: toNumber(r?.lowStock),
+    needsReorder: toNumber(r?.needsReorder),
+    outOfStock: toNumber(r?.outOfStock),
+  }
+}
+
+export type InventoryCoverageRow = {
+  avgDailyUsage: number
+  costPerUnit: number
+  currentStock: number
+  daysOfSupply: number | null
+  id: number
+  lowStockThreshold: number
+  name: string
+  suggestedReorderQty: number
+  unitLabel: string
+}
+
+export async function getInventoryCoverage(usageWindowDays = 30): Promise<InventoryCoverageRow[]> {
+  const database = await getDatabase()
+  const fromDate = format(subDays(new Date(), usageWindowDays), 'yyyy-MM-dd')
+  const safetyBuffer = 0.1
+
+  const rows = await database.select<
+    Array<{
+      avgDailyOut: number
+      costPerUnit: number
+      currentStock: number
+      id: number
+      lowStockThreshold: number
+      name: string
+      unitLabel: string
+    }>
+  >(
+    `
+      SELECT
+        i.id,
+        i.name,
+        i.unit_label AS unitLabel,
+        i.low_stock_threshold AS lowStockThreshold,
+        i.cost_per_unit AS costPerUnit,
+        COALESCE((
+          SELECT SUM(CASE WHEN m.movement_type = 'IN' THEN m.quantity ELSE -m.quantity END)
+          FROM inventory_movements m WHERE m.item_id = i.id
+        ), 0) AS currentStock,
+        COALESCE((
+          SELECT SUM(m.quantity)
+          FROM inventory_movements m
+          WHERE m.item_id = i.id
+            AND m.movement_type = 'OUT'
+            AND m.movement_date >= $1
+        ), 0) / $2 AS avgDailyOut
+      FROM inventory_items i
+      WHERE i.is_active = 1 AND i.category != 'equipment'
+      ORDER BY i.name
+    `,
+    [fromDate, usageWindowDays],
+  )
+
+  return rows.map((row) => {
+    const currentStock = toNumber(row.currentStock)
+    const avgDailyUsage = toNumber(row.avgDailyOut)
+    const threshold = toNumber(row.lowStockThreshold)
+    const costPerUnit = toNumber(row.costPerUnit)
+    let daysOfSupply: number | null = null
+    if (avgDailyUsage > 0) {
+      daysOfSupply = currentStock / avgDailyUsage
+    }
+    const baseReorder = Math.max(0, threshold - currentStock)
+    const suggestedReorderQty =
+      avgDailyUsage > 0
+        ? Math.ceil(baseReorder + avgDailyUsage * usageWindowDays * safetyBuffer)
+        : Math.ceil(baseReorder || threshold || 1)
+
+    return {
+      avgDailyUsage,
+      costPerUnit,
+      currentStock,
+      daysOfSupply,
+      id: row.id,
+      lowStockThreshold: threshold,
+      name: row.name,
+      suggestedReorderQty,
+      unitLabel: row.unitLabel,
+    }
+  })
+}
+
+export type InventoryWastageSummary = {
+  byReason: { damaged: number; expired: number; lost: number }
+  totalCost: number
+  totalQty: number
+}
+
+export async function getInventoryWastage(monthKey: string): Promise<InventoryWastageSummary> {
+  const database = await getDatabase()
+  const rows = await database.select<
+    Array<{
+      damagedCost: number
+      damagedQty: number
+      expiredCost: number
+      expiredQty: number
+      lostCost: number
+      lostQty: number
+      totalCost: number
+      totalQty: number
+    }>
+  >(
+    `
+      SELECT
+        COALESCE(SUM(CASE
+          WHEN movement_type = 'OUT' AND LOWER(COALESCE(notes, '')) LIKE '%damaged%'
+          THEN quantity ELSE 0 END), 0) AS damagedQty,
+        COALESCE(SUM(CASE
+          WHEN movement_type = 'OUT' AND LOWER(COALESCE(notes, '')) LIKE '%damaged%'
+          THEN quantity * unit_cost ELSE 0 END), 0) AS damagedCost,
+        COALESCE(SUM(CASE
+          WHEN movement_type = 'OUT' AND LOWER(COALESCE(notes, '')) LIKE '%expired%'
+            AND LOWER(COALESCE(notes, '')) NOT LIKE '%damaged%'
+          THEN quantity ELSE 0 END), 0) AS expiredQty,
+        COALESCE(SUM(CASE
+          WHEN movement_type = 'OUT' AND LOWER(COALESCE(notes, '')) LIKE '%expired%'
+            AND LOWER(COALESCE(notes, '')) NOT LIKE '%damaged%'
+          THEN quantity * unit_cost ELSE 0 END), 0) AS expiredCost,
+        COALESCE(SUM(CASE
+          WHEN movement_type = 'OUT'
+            AND LOWER(COALESCE(notes, '')) LIKE '%lost%'
+            AND LOWER(COALESCE(notes, '')) NOT LIKE '%lost and found%'
+            AND LOWER(COALESCE(notes, '')) NOT LIKE '%damaged%'
+            AND LOWER(COALESCE(notes, '')) NOT LIKE '%expired%'
+          THEN quantity ELSE 0 END), 0) AS lostQty,
+        COALESCE(SUM(CASE
+          WHEN movement_type = 'OUT'
+            AND LOWER(COALESCE(notes, '')) LIKE '%lost%'
+            AND LOWER(COALESCE(notes, '')) NOT LIKE '%lost and found%'
+            AND LOWER(COALESCE(notes, '')) NOT LIKE '%damaged%'
+            AND LOWER(COALESCE(notes, '')) NOT LIKE '%expired%'
+          THEN quantity * unit_cost ELSE 0 END), 0) AS lostCost,
+        COALESCE(SUM(CASE
+          WHEN movement_type = 'OUT' AND (
+            LOWER(COALESCE(notes, '')) LIKE '%damaged%'
+            OR LOWER(COALESCE(notes, '')) LIKE '%expired%'
+            OR (LOWER(COALESCE(notes, '')) LIKE '%lost%' AND LOWER(COALESCE(notes, '')) NOT LIKE '%lost and found%')
+          )
+          THEN quantity ELSE 0 END), 0) AS totalQty,
+        COALESCE(SUM(CASE
+          WHEN movement_type = 'OUT' AND (
+            LOWER(COALESCE(notes, '')) LIKE '%damaged%'
+            OR LOWER(COALESCE(notes, '')) LIKE '%expired%'
+            OR (LOWER(COALESCE(notes, '')) LIKE '%lost%' AND LOWER(COALESCE(notes, '')) NOT LIKE '%lost and found%')
+          )
+          THEN quantity * unit_cost ELSE 0 END), 0) AS totalCost
+      FROM inventory_movements
+      WHERE substr(movement_date, 1, 7) = $1
+        AND movement_type = 'OUT'
+    `,
+    [monthKey],
+  )
+  const r = rows[0]
+  const damagedCost = toNumber(r?.damagedCost)
+  const expiredCost = toNumber(r?.expiredCost)
+  const lostCost = toNumber(r?.lostCost)
+  return {
+    byReason: { damaged: damagedCost, expired: expiredCost, lost: lostCost },
+    totalCost: toNumber(r?.totalCost),
+    totalQty: toNumber(r?.totalQty),
+  }
+}
+
+export type InventoryCategoryBreakdownRow = {
+  category: string
+  stockValue: number
+  totalIn: number
+  totalOut: number
+}
+
+export async function getInventoryCategoryBreakdown(monthKey: string): Promise<InventoryCategoryBreakdownRow[]> {
+  const database = await getDatabase()
+  const rows = await database.select<
+    Array<{
+      category: string
+      stockValue: number
+      totalIn: number
+      totalOut: number
+    }>
+  >(
+    `
+      SELECT
+        i.category,
+        SUM(
+          COALESCE((
+            SELECT SUM(CASE WHEN m2.movement_type = 'IN' THEN m2.quantity ELSE -m2.quantity END)
+            FROM inventory_movements m2 WHERE m2.item_id = i.id
+          ), 0) * i.cost_per_unit
+        ) AS stockValue,
+        COALESCE(SUM(CASE WHEN m.movement_type = 'IN' THEN m.quantity ELSE 0 END), 0) AS totalIn,
+        COALESCE(SUM(CASE WHEN m.movement_type = 'OUT' THEN m.quantity ELSE 0 END), 0) AS totalOut
+      FROM inventory_items i
+      LEFT JOIN inventory_movements m ON m.item_id = i.id AND substr(m.movement_date, 1, 7) = $1
+      WHERE i.is_active = 1
+      GROUP BY i.category
+      ORDER BY i.category
+    `,
+    [monthKey],
+  )
+
+  return rows.map((row) => ({
+    category: row.category,
+    stockValue: toNumber(row.stockValue),
+    totalIn: toNumber(row.totalIn),
+    totalOut: toNumber(row.totalOut),
+  }))
+}
+
+export type EquipmentStatusItem = {
+  daysSinceMaintenance: number | null
+  id: number
+  lastMaintenanceDate: string
+  name: string
+  status: string
+}
+
+export type EquipmentStatusSummary = {
+  byStatus: Record<string, EquipmentStatusItem[]>
+  counts: Record<string, number>
+}
+
+export async function getEquipmentStatusSummary(): Promise<EquipmentStatusSummary> {
+  const database = await getDatabase()
+  const rows = await database.select<
+    Array<{
+      id: number
+      lastMaintenanceDate: string
+      name: string
+      status: string
+    }>
+  >(
+    `
+      SELECT
+        i.id,
+        i.name,
+        COALESCE(i.status, '') AS status,
+        COALESCE(i.last_maintenance_date, '') AS lastMaintenanceDate
+      FROM inventory_items i
+      WHERE i.is_active = 1 AND i.category = 'equipment'
+      ORDER BY i.status, i.name
+    `,
+  )
+
+  const byStatus: Record<string, EquipmentStatusItem[]> = {
+    maintenance: [],
+    operational: [],
+    out_of_service: [],
+    retired: [],
+    unknown: [],
+  }
+  const counts: Record<string, number> = {
+    maintenance: 0,
+    operational: 0,
+    out_of_service: 0,
+    retired: 0,
+    unknown: 0,
+  }
+
+  const today = new Date()
+  for (const row of rows) {
+    const rawStatus = row.status?.trim() || 'operational'
+    const st = byStatus[rawStatus] != null ? rawStatus : 'unknown'
+    let daysSinceMaintenance: number | null = null
+    if (row.lastMaintenanceDate) {
+      daysSinceMaintenance = differenceInCalendarDays(today, new Date(row.lastMaintenanceDate + 'T12:00:00'))
+    }
+    const item: EquipmentStatusItem = {
+      daysSinceMaintenance,
+      id: row.id,
+      lastMaintenanceDate: row.lastMaintenanceDate,
+      name: row.name,
+      status: st,
+    }
+    byStatus[st].push(item)
+    counts[st] = (counts[st] ?? 0) + 1
+  }
+
+  return { byStatus, counts }
+}
+
+export type SlowMoverItem = {
+  currentStock: number
+  id: number
+  name: string
+  stockValue: number
+  unitLabel: string
+}
+
+export async function getSlowMovers(daysSinceLastOut = 60): Promise<SlowMoverItem[]> {
+  const database = await getDatabase()
+  const fromDate = format(subDays(new Date(), daysSinceLastOut), 'yyyy-MM-dd')
+  const rows = await database.select<
+    Array<{
+      costPerUnit: number
+      currentStock: number
+      id: number
+      name: string
+      unitLabel: string
+    }>
+  >(
+    `
+      SELECT * FROM (
+        SELECT
+          i.id,
+          i.name,
+          i.unit_label AS unitLabel,
+          i.cost_per_unit AS costPerUnit,
+          COALESCE((
+            SELECT SUM(CASE WHEN m.movement_type = 'IN' THEN m.quantity ELSE -m.quantity END)
+            FROM inventory_movements m WHERE m.item_id = i.id
+          ), 0) AS currentStock
+        FROM inventory_items i
+        WHERE i.is_active = 1
+          AND NOT EXISTS (
+            SELECT 1 FROM inventory_movements m
+            WHERE m.item_id = i.id
+              AND m.movement_type = 'OUT'
+              AND m.movement_date >= $1
+          )
+      ) t
+      WHERE t.currentStock > 0
+      ORDER BY t.name
+    `,
+    [fromDate],
+  )
+
+  return rows.map((row) => {
+    const currentStock = toNumber(row.currentStock)
+    const costPerUnit = toNumber(row.costPerUnit)
+    return {
+      currentStock,
+      id: row.id,
+      name: row.name,
+      stockValue: currentStock * costPerUnit,
+      unitLabel: row.unitLabel,
+    }
+  })
+}
+
+export async function getRecentInventoryMovements(limit = 10): Promise<InventoryMovement[]> {
+  return listInventoryMovements({ limit })
+}
+
+// ─── Inventory Maintenance Records ───────────────────────────────────────────
+
+export type MaintenanceStatus = 'scheduled' | 'in_progress' | 'completed' | 'cancelled'
+
+export type MaintenanceRecord = {
+  cost: number
+  createdAt: string
+  createdByName: string | null
+  description: string
+  id: number
+  itemId: number
+  itemName: string
+  nextServiceDate: string
+  performedBy: string
+  serviceDate: string
+  serviceType: string
+  status: MaintenanceStatus
+}
+
+export type MaintenanceRecordDraft = {
+  cost: number
+  description: string
+  itemId: number
+  nextServiceDate: string
+  performedBy: string
+  serviceDate: string
+  serviceType: string
+  status: MaintenanceStatus
+}
+
+type MaintenanceRecordRow = {
+  cost: number
+  created_at: string
+  created_by_name: string | null
+  description: string
+  id: number
+  item_id: number
+  item_name: string
+  next_service_date: string
+  performed_by: string
+  service_date: string
+  service_type: string
+  status: string
+}
+
+function rowToMaintenanceRecord(row: MaintenanceRecordRow): MaintenanceRecord {
+  return {
+    cost: toNumber(row.cost),
+    createdAt: row.created_at,
+    createdByName: row.created_by_name,
+    description: row.description,
+    id: row.id,
+    itemId: row.item_id,
+    itemName: row.item_name,
+    nextServiceDate: row.next_service_date,
+    performedBy: row.performed_by,
+    serviceDate: row.service_date,
+    serviceType: row.service_type,
+    status: row.status as MaintenanceStatus,
+  }
+}
+
+export async function listMaintenanceRecords(filters?: {
+  itemId?: number
+  limit?: number
+  status?: MaintenanceStatus
+}): Promise<MaintenanceRecord[]> {
+  const database = await getDatabase()
+  const conditions: string[] = []
+  const params: unknown[] = []
+
+  if (filters?.itemId) {
+    params.push(filters.itemId)
+    conditions.push(`mr.item_id = $${params.length}`)
+  }
+  if (filters?.status) {
+    params.push(filters.status)
+    conditions.push(`mr.status = $${params.length}`)
+  }
+
+  const where = conditions.length > 0 ? `WHERE ${conditions.join(' AND ')}` : ''
+  const limitClause = filters?.limit != null ? `LIMIT ${Number(filters.limit)}` : ''
+
+  const rows = await database.select<MaintenanceRecordRow[]>(
+    `
+      SELECT
+        mr.id,
+        mr.item_id,
+        mr.service_date,
+        mr.service_type,
+        mr.performed_by,
+        mr.cost,
+        mr.description,
+        mr.next_service_date,
+        mr.status,
+        mr.created_at,
+        i.name AS item_name,
+        u.display_name AS created_by_name
+      FROM inventory_maintenance_records mr
+      JOIN inventory_items i ON i.id = mr.item_id
+      LEFT JOIN users u ON u.id = mr.created_by
+      ${where}
+      ORDER BY mr.service_date DESC, mr.id DESC
+      ${limitClause}
+    `,
+    params,
+  )
+
+  return rows.map(rowToMaintenanceRecord)
+}
+
+async function applyMaintenanceStatusToItem(
+  database: Database,
+  itemId: number,
+  status: MaintenanceStatus,
+  serviceDate: string,
+) {
+  if (status === 'completed') {
+    await database.execute(
+      `
+        UPDATE inventory_items
+        SET status = 'operational',
+            last_maintenance_date = $1,
+            updated_at = CURRENT_TIMESTAMP
+        WHERE id = $2 AND category = 'equipment'
+      `,
+      [serviceDate, itemId],
+    )
+  } else if (status === 'in_progress' || status === 'scheduled') {
+    await database.execute(
+      `
+        UPDATE inventory_items
+        SET status = 'maintenance',
+            updated_at = CURRENT_TIMESTAMP
+        WHERE id = $1 AND category = 'equipment'
+      `,
+      [itemId],
+    )
+  }
+}
+
+export async function saveMaintenanceRecord(
+  draft: MaintenanceRecordDraft,
+  userId: number,
+  id?: number,
+): Promise<number> {
+  const database = await getDatabase()
+
+  if (id) {
+    await database.execute(
+      `
+        UPDATE inventory_maintenance_records SET
+          item_id = $1,
+          service_date = $2,
+          service_type = $3,
+          performed_by = $4,
+          cost = $5,
+          description = $6,
+          next_service_date = $7,
+          status = $8,
+          updated_at = CURRENT_TIMESTAMP
+        WHERE id = $9
+      `,
+      [
+        draft.itemId,
+        draft.serviceDate,
+        draft.serviceType,
+        draft.performedBy,
+        draft.cost,
+        draft.description,
+        draft.nextServiceDate,
+        draft.status,
+        id,
+      ],
+    )
+    await applyMaintenanceStatusToItem(database, draft.itemId, draft.status, draft.serviceDate)
+    return id
+  }
+
+  const result = await database.execute(
+    `
+      INSERT INTO inventory_maintenance_records (
+        item_id, service_date, service_type, performed_by, cost,
+        description, next_service_date, status, created_by
+      ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+    `,
+    [
+      draft.itemId,
+      draft.serviceDate,
+      draft.serviceType,
+      draft.performedBy,
+      draft.cost,
+      draft.description,
+      draft.nextServiceDate,
+      draft.status,
+      userId,
+    ],
+  )
+  await applyMaintenanceStatusToItem(database, draft.itemId, draft.status, draft.serviceDate)
+  return result.lastInsertId as number
+}
+
+export async function deleteMaintenanceRecord(id: number): Promise<void> {
+  const database = await getDatabase()
+  await database.execute('DELETE FROM inventory_maintenance_records WHERE id = $1', [id])
+}
+
+export async function getUpcomingMaintenance(limit = 5): Promise<MaintenanceRecord[]> {
+  const database = await getDatabase()
+  const rows = await database.select<MaintenanceRecordRow[]>(
+    `
+      SELECT
+        mr.id,
+        mr.item_id,
+        mr.service_date,
+        mr.service_type,
+        mr.performed_by,
+        mr.cost,
+        mr.description,
+        mr.next_service_date,
+        mr.status,
+        mr.created_at,
+        i.name AS item_name,
+        u.display_name AS created_by_name
+      FROM inventory_maintenance_records mr
+      JOIN inventory_items i ON i.id = mr.item_id
+      LEFT JOIN users u ON u.id = mr.created_by
+      WHERE mr.status IN ('scheduled', 'in_progress')
+      ORDER BY mr.service_date ASC, mr.id ASC
+      LIMIT $1
+    `,
+    [limit],
+  )
+  return rows.map(rowToMaintenanceRecord)
 }
 
 export async function getRecentTransactions(limit = 5): Promise<LedgerTransaction[]> {

@@ -10,6 +10,7 @@ import { InventoryMovementsPage } from '../features/inventory/pages/inventory-mo
 import { InventorySummaryPage } from '../features/inventory/pages/inventory-summary-page'
 import { SettingsPage } from '../features/settings/pages/settings-page'
 import { TransactionsPage } from '../features/transactions/pages/transactions-page'
+import { TransactionsSummaryPage } from '../features/transactions/pages/transactions-summary-page'
 import { UsersPage } from '../features/users/pages/users-page'
 import { AppShell } from './shell/app-shell'
 
@@ -32,6 +33,10 @@ const router = createHashRouter([
           {
             path: '/transactions',
             element: <TransactionsPage />,
+          },
+          {
+            path: '/transactions-summary',
+            element: <TransactionsSummaryPage />,
           },
           {
             path: '/incident-reports',

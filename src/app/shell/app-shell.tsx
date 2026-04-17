@@ -25,6 +25,7 @@ const navigationItems: NavItem[] = [
     label: 'Transactions',
     icon: WalletCards,
     children: [
+      { to: '/transactions-summary', label: 'Summary', icon: BarChart3 },
       { to: '/categories', label: 'Categories', icon: Tags },
       { to: '/income-share', label: 'Income Share', icon: PieChart },
     ],
