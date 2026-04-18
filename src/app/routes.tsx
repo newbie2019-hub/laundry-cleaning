@@ -2,6 +2,7 @@ import { createHashRouter, Navigate, RouterProvider } from 'react-router-dom'
 import { RedirectIfAuthenticated, RequireAuth } from '../features/auth/auth-provider'
 import { LoginPage } from '../features/auth/pages/login-page'
 import { CategoriesPage } from '../features/categories/pages/categories-page'
+import { CustomersPage } from '../features/customers/pages/customers-page'
 import { DashboardPage } from '../features/dashboard/pages/dashboard-page'
 import { IncidentReportsPage } from '../features/incident-reports/pages/incident-reports-page'
 import { IncomeSharePage } from '../features/income-share/pages/income-share-page'
@@ -33,6 +34,10 @@ const router = createHashRouter([
           {
             path: '/transactions',
             element: <TransactionsPage />,
+          },
+          {
+            path: '/customers',
+            element: <CustomersPage />,
           },
           {
             path: '/transactions-summary',

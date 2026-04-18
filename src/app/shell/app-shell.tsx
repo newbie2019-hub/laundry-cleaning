@@ -1,5 +1,5 @@
 import type { LucideIcon } from 'lucide-react'
-import { AlertTriangle, ArrowLeftRight, BarChart3, ChevronDown, LayoutDashboard, LogOut, Package, PieChart, Settings, Tags, Users, WalletCards } from 'lucide-react'
+import { AlertTriangle, ArrowLeftRight, BarChart3, ChevronDown, LayoutDashboard, LogOut, Package, PieChart, Settings, Tags, UserRound, Users, WalletCards } from 'lucide-react'
 import { useCallback, useEffect, useState } from 'react'
 import { NavLink, Outlet, useLocation, useNavigate } from 'react-router-dom'
 import { loadAppSettings, type AppSettings } from '../../lib/app-settings'
@@ -29,6 +29,11 @@ const navigationItems: NavItem[] = [
       { to: '/categories', label: 'Categories', icon: Tags },
       { to: '/income-share', label: 'Income Share', icon: PieChart },
     ],
+  },
+  {
+    to: '/customers',
+    label: 'Customers',
+    icon: UserRound,
   },
   {
     to: '/inventory',

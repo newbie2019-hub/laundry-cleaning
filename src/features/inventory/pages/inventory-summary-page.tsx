@@ -3,19 +3,27 @@ import { useCallback, useEffect, useMemo, useState } from 'react'
 import { format } from 'date-fns'
 import {
   AlertTriangle,
+  ArrowDown,
   ArrowDownToLine,
+  ArrowUp,
+  ArrowUpDown,
   ArrowUpFromLine,
   BarChart3,
   Banknote,
+  Clock,
   Download,
+  Flame,
   Package,
+  PackageX,
   Scale,
+  ShoppingCart,
   Skull,
   TrendingDown,
   TrendingUp,
   Wrench,
 } from 'lucide-react'
-import { Link } from 'react-router-dom'
+import { toastBrowserExportSuccess } from '../../../lib/export-toast'
+import { saveBytesAsDownload } from '../../../lib/save-file-download'
 import {
   Bar,
   BarChart,
@@ -32,24 +40,20 @@ import { formatCurrency, formatMonthLabel } from '../../../lib/format'
 import {
   getEquipmentStatusSummary,
   getInventoryActionCounts,
-  getInventoryCategoryBreakdown,
   getInventoryCoverage,
   getInventoryDailyTrend,
   getInventoryItemSummaries,
   getInventoryMonthlyTrend,
   getInventoryWastage,
-  getLowStockItems,
   getRecentInventoryMovements,
   getSlowMovers,
   type EquipmentStatusItem,
-  type InventoryCategoryBreakdownRow,
   type InventoryCoverageRow,
   type InventoryDailyTrend,
   type InventoryItemSummary,
   type InventoryMonthlyTrend,
   type InventoryMovement,
   type InventoryWastageSummary,
-  type LowStockItem,
   type SlowMoverItem,
 } from '../../../lib/db/repository'
 import { useAuth } from '../../auth/use-auth'
@@ -150,7 +154,6 @@ export function InventorySummaryPage() {
   const [itemSummaries, setItemSummaries] = useState<InventoryItemSummary[]>([])
   const [dailyTrend, setDailyTrend] = useState<InventoryDailyTrend[]>([])
   const [monthlyTrend, setMonthlyTrend] = useState<InventoryMonthlyTrend[]>([])
-  const [lowStockItems, setLowStockItems] = useState<LowStockItem[]>([])
   const [actionCounts, setActionCounts] = useState({
     equipmentDown: 0,
     lowStock: 0,
@@ -159,7 +162,6 @@ export function InventorySummaryPage() {
   })
   const [coverage, setCoverage] = useState<InventoryCoverageRow[]>([])
   const [wastage, setWastage] = useState<InventoryWastageSummary | null>(null)
-  const [categoryBreakdown, setCategoryBreakdown] = useState<InventoryCategoryBreakdownRow[]>([])
   const [equipmentSummary, setEquipmentSummary] = useState<Awaited<ReturnType<typeof getEquipmentStatusSummary>> | null>(
     null,
   )
@@ -169,6 +171,10 @@ export function InventorySummaryPage() {
   const [tableCategory, setTableCategory] = useState('')
   const [tableSearch, setTableSearch] = useState('')
   const [quickMov, setQuickMov] = useState<{ item: InventoryCoverageRow; type: 'IN' | 'OUT' } | null>(null)
+  const [reorderSort, setReorderSort] = useState<{ column: 'name' | 'stock'; direction: 'asc' | 'desc' }>({
+    column: 'stock',
+    direction: 'asc',
+  })
 
   const loadSummary = useCallback(async () => {
     setLoading(true)
@@ -177,11 +183,9 @@ export function InventorySummaryPage() {
         summaries,
         daily,
         monthly,
-        lowStock,
         counts,
         cov,
         wastageData,
-        catBreak,
         equip,
         slow,
         recent,
@@ -189,11 +193,9 @@ export function InventorySummaryPage() {
         getInventoryItemSummaries(summaryMonth),
         getInventoryDailyTrend(summaryMonth),
         getInventoryMonthlyTrend(6),
-        getLowStockItems(),
         getInventoryActionCounts(30),
         getInventoryCoverage(30),
         getInventoryWastage(summaryMonth),
-        getInventoryCategoryBreakdown(summaryMonth),
         getEquipmentStatusSummary(),
         getSlowMovers(60),
         getRecentInventoryMovements(10),
@@ -201,11 +203,9 @@ export function InventorySummaryPage() {
       setItemSummaries(summaries)
       setDailyTrend(daily)
       setMonthlyTrend(monthly)
-      setLowStockItems(lowStock)
       setActionCounts(counts)
       setCoverage(cov)
       setWastage(wastageData)
-      setCategoryBreakdown(catBreak)
       setEquipmentSummary(equip)
       setSlowMovers(slow)
       setRecentMovements(recent)
@@ -262,13 +262,23 @@ export function InventorySummaryPage() {
       const belowMin = c.currentStock <= c.lowStockThreshold
       return urgentDays || belowMin
     })
-    return [...rows].sort((a, b) => {
-      const da = a.daysOfSupply ?? Infinity
-      const db = b.daysOfSupply ?? Infinity
-      if (da !== db) return da - db
-      return a.name.localeCompare(b.name)
+    const sorted = [...rows].sort((a, b) => {
+      if (reorderSort.column === 'name') {
+        return a.name.localeCompare(b.name)
+      }
+      return a.currentStock - b.currentStock
     })
-  }, [coverage])
+    return reorderSort.direction === 'asc' ? sorted : sorted.reverse()
+  }, [coverage, reorderSort])
+
+  const toggleReorderSort = useCallback((column: 'name' | 'stock') => {
+    setReorderSort((prev) => {
+      if (prev.column === column) {
+        return { column, direction: prev.direction === 'asc' ? 'desc' : 'asc' }
+      }
+      return { column, direction: column === 'name' ? 'asc' : 'asc' }
+    })
+  }, [])
 
   const deadStockValue = useMemo(() => slowMovers.reduce((s, m) => s + m.stockValue, 0), [slowMovers])
 
@@ -312,27 +322,6 @@ export function InventorySummaryPage() {
     [monthlyTrend],
   )
 
-  const categoryStockChartData = useMemo(
-    () =>
-      [...categoryBreakdown]
-        .map((r) => ({
-          name: categoryLabel(r.category),
-          value: r.stockValue,
-        }))
-        .filter((r) => r.value > 0 || categoryBreakdown.length <= 6),
-    [categoryBreakdown],
-  )
-
-  const categoryMovementChartData = useMemo(
-    () =>
-      categoryBreakdown.map((r) => ({
-        name: categoryLabel(r.category),
-        'Stock In': r.totalIn,
-        'Stock Out': r.totalOut,
-      })),
-    [categoryBreakdown],
-  )
-
   const filteredTableRows = useMemo(() => {
     let rows = itemSummaries
     if (tableCategory) rows = rows.filter((r) => r.category === tableCategory)
@@ -343,7 +332,7 @@ export function InventorySummaryPage() {
     return rows
   }, [itemSummaries, tableCategory, tableSearch])
 
-  function exportTableCsv() {
+  async function exportTableCsv() {
     const headers = [
       'Item',
       'Category',
@@ -379,13 +368,10 @@ export function InventorySummaryPage() {
         ].join(','),
       )
     }
-    const blob = new Blob([lines.join('\n')], { type: 'text/csv;charset=utf-8' })
-    const url = URL.createObjectURL(blob)
-    const a = document.createElement('a')
-    a.href = url
-    a.download = `inventory-summary-${summaryMonth}.csv`
-    a.click()
-    URL.revokeObjectURL(url)
+    const filename = `inventory-summary-${summaryMonth}.csv`
+    const bytes = new TextEncoder().encode(lines.join('\n'))
+    await saveBytesAsDownload(filename, bytes, 'text/csv;charset=utf-8')
+    toastBrowserExportSuccess()
   }
 
   const equipmentDownBreakdown = useMemo(() => {
@@ -448,39 +434,70 @@ export function InventorySummaryPage() {
       </div>
 
       {!loading && (
-        <div className="flex flex-wrap items-center gap-x-4 gap-y-2 rounded-xl border border-[var(--border)] bg-[var(--panel)] px-4 py-3 text-sm">
-          <span className="font-medium text-[var(--foreground)]">Status:</span>
-          <button
-            className="text-red-600 hover:underline dark:text-red-400"
-            onClick={() => scrollToId('section-attention')}
-            type="button"
-          >
-            {actionCounts.outOfStock} out of stock
-          </button>
-          <span className="text-[var(--muted)]">·</span>
-          <button
-            className="text-amber-700 hover:underline dark:text-amber-400"
-            onClick={() => scrollToId('section-attention')}
-            type="button"
-          >
-            {actionCounts.lowStock} low
-          </button>
-          <span className="text-[var(--muted)]">·</span>
-          <button
-            className="text-orange-700 hover:underline dark:text-orange-400"
-            onClick={() => scrollToId('section-equipment')}
-            type="button"
-          >
-            {actionCounts.equipmentDown} equipment down
-          </button>
-          <span className="text-[var(--muted)]">·</span>
-          <button
-            className="text-[var(--accent)] hover:underline"
-            onClick={() => scrollToId('section-reorder')}
-            type="button"
-          >
-            {actionCounts.needsReorder} need reorder
-          </button>
+        <div className="space-y-3">
+          <h3 className="text-sm font-semibold text-[var(--foreground)]">Status</h3>
+          <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
+            <button
+              className="group flex items-start gap-3 rounded-xl border border-red-300/40 bg-red-50 p-4 text-left transition hover:border-red-400 hover:shadow-sm dark:border-red-500/30 dark:bg-red-500/10"
+              onClick={() => scrollToId('section-attention')}
+              type="button"
+            >
+              <span className="flex h-10 w-10 flex-none items-center justify-center rounded-lg bg-red-500/15 text-red-600 dark:text-red-400">
+                <PackageX className="h-5 w-5" />
+              </span>
+              <div className="min-w-0">
+                <p className="text-2xl font-semibold tabular-nums text-red-700 dark:text-red-300">
+                  {actionCounts.outOfStock}
+                </p>
+                <p className="text-xs font-medium text-red-700/80 dark:text-red-300/80">Out of stock</p>
+              </div>
+            </button>
+            <button
+              className="group flex items-start gap-3 rounded-xl border border-amber-300/40 bg-amber-50 p-4 text-left transition hover:border-amber-400 hover:shadow-sm dark:border-amber-500/30 dark:bg-amber-500/10"
+              onClick={() => scrollToId('section-attention')}
+              type="button"
+            >
+              <span className="flex h-10 w-10 flex-none items-center justify-center rounded-lg bg-amber-500/15 text-amber-600 dark:text-amber-400">
+                <AlertTriangle className="h-5 w-5" />
+              </span>
+              <div className="min-w-0">
+                <p className="text-2xl font-semibold tabular-nums text-amber-700 dark:text-amber-300">
+                  {actionCounts.lowStock}
+                </p>
+                <p className="text-xs font-medium text-amber-700/80 dark:text-amber-300/80">Low stock</p>
+              </div>
+            </button>
+            <button
+              className="group flex items-start gap-3 rounded-xl border border-orange-300/40 bg-orange-50 p-4 text-left transition hover:border-orange-400 hover:shadow-sm dark:border-orange-500/30 dark:bg-orange-500/10"
+              onClick={() => scrollToId('section-equipment')}
+              type="button"
+            >
+              <span className="flex h-10 w-10 flex-none items-center justify-center rounded-lg bg-orange-500/15 text-orange-600 dark:text-orange-400">
+                <Wrench className="h-5 w-5" />
+              </span>
+              <div className="min-w-0">
+                <p className="text-2xl font-semibold tabular-nums text-orange-700 dark:text-orange-300">
+                  {actionCounts.equipmentDown}
+                </p>
+                <p className="text-xs font-medium text-orange-700/80 dark:text-orange-300/80">Equipment down</p>
+              </div>
+            </button>
+            <button
+              className="group flex items-start gap-3 rounded-xl border border-[var(--accent)]/30 bg-[var(--accent)]/5 p-4 text-left transition hover:border-[var(--accent)]/60 hover:shadow-sm"
+              onClick={() => scrollToId('section-reorder')}
+              type="button"
+            >
+              <span className="flex h-10 w-10 flex-none items-center justify-center rounded-lg bg-[var(--accent)]/15 text-[var(--accent)]">
+                <ShoppingCart className="h-5 w-5" />
+              </span>
+              <div className="min-w-0">
+                <p className="text-2xl font-semibold tabular-nums text-[var(--accent)]">
+                  {actionCounts.needsReorder}
+                </p>
+                <p className="text-xs font-medium text-[var(--accent)]/80">Need reorder</p>
+              </div>
+            </button>
+          </div>
         </div>
       )}
 
@@ -493,57 +510,70 @@ export function InventorySummaryPage() {
               subtitle="Items that need immediate attention"
               title="Attention"
             />
-            {(outOfStockItems.length > 0 || lowStockNonZero.length > 0) && (
-              <div className="grid gap-4 lg:grid-cols-2">
-                {outOfStockItems.length > 0 && (
-                  <div className="rounded-xl border border-red-300/40 bg-red-50 p-4 dark:border-red-500/30 dark:bg-red-500/10">
-                    <h3 className="text-sm font-semibold text-red-800 dark:text-red-400 mb-2">Out of stock</h3>
-                    <ul className="space-y-1 text-xs text-red-900 dark:text-red-300">
-                      {outOfStockItems.map((item) => (
-                        <li key={item.id} className="truncate font-medium">
-                          {item.name} ({formatQty(item.currentStock, item.unitLabel)})
+            {(() => {
+              const attentionItems = [
+                ...outOfStockItems.map((item) => ({ ...item, severity: 'out' as const })),
+                ...lowStockNonZero.map((item) => ({ ...item, severity: 'low' as const })),
+              ]
+              if (attentionItems.length === 0) {
+                return (
+                  <div className="rounded-xl border border-[var(--border)] bg-[var(--panel)] p-4">
+                    <p className="text-sm text-[var(--muted)]">No stock alerts for active catalog items.</p>
+                  </div>
+                )
+              }
+              return (
+                <div className="overflow-hidden rounded-xl border border-[var(--border)] bg-[var(--panel)]">
+                  <ul className="divide-y divide-[var(--border)]">
+                    {attentionItems.map((item) => {
+                      const isOut = item.severity === 'out'
+                      return (
+                        <li
+                          key={`${item.severity}-${item.id}`}
+                          className="flex items-center justify-between gap-3 px-4 py-3"
+                        >
+                          <div className="flex min-w-0 items-center gap-3">
+                            <span
+                              className={[
+                                'flex h-8 w-8 flex-none items-center justify-center rounded-lg',
+                                isOut
+                                  ? 'bg-red-500/15 text-red-600 dark:text-red-400'
+                                  : 'bg-amber-500/15 text-amber-600 dark:text-amber-400',
+                              ].join(' ')}
+                            >
+                              {isOut ? <PackageX className="h-4 w-4" /> : <AlertTriangle className="h-4 w-4" />}
+                            </span>
+                            <div className="min-w-0">
+                              <p className="truncate text-sm font-medium text-[var(--foreground)]">{item.name}</p>
+                              <p className="text-xs text-[var(--muted)]">
+                                {categoryLabel(item.category)}
+                              </p>
+                            </div>
+                          </div>
+                          <div className="flex flex-none items-center gap-3">
+                            <span className="text-xs tabular-nums text-[var(--muted)] whitespace-nowrap">
+                              {formatQty(item.currentStock, item.unitLabel)}
+                              <span className="text-[var(--muted)]/70"> / min </span>
+                              {formatQty(item.lowStockThreshold, item.unitLabel)}
+                            </span>
+                            <span
+                              className={[
+                                'inline-flex rounded-full px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide',
+                                isOut
+                                  ? 'bg-red-500/15 text-red-600 dark:text-red-400'
+                                  : 'bg-amber-500/15 text-amber-700 dark:text-amber-400',
+                              ].join(' ')}
+                            >
+                              {isOut ? 'Out of stock' : 'Low'}
+                            </span>
+                          </div>
                         </li>
-                      ))}
-                    </ul>
-                  </div>
-                )}
-                {lowStockNonZero.length > 0 && (
-                  <div className="rounded-xl border border-amber-300/50 bg-amber-50 p-4 dark:border-amber-500/30 dark:bg-amber-500/10">
-                    <h3 className="text-sm font-semibold text-amber-800 dark:text-amber-400 mb-2">Low stock</h3>
-                    <div className="grid grid-cols-1 gap-2 sm:grid-cols-2 max-h-48 overflow-y-auto">
-                      {lowStockNonZero.map((item) => (
-                        <div key={item.id} className="rounded-md bg-white/80 dark:bg-black/20 px-3 py-2 text-xs">
-                          <p className="font-medium text-amber-900 dark:text-amber-300 truncate">{item.name}</p>
-                          <p className="text-amber-700 dark:text-amber-400 mt-0.5">
-                            {formatQty(item.currentStock, item.unitLabel)} / min{' '}
-                            {formatQty(item.lowStockThreshold, item.unitLabel)}
-                          </p>
-                        </div>
-                      ))}
-                    </div>
-                  </div>
-                )}
-              </div>
-            )}
-            {lowStockItems.length > 0 && lowStockNonZero.length === 0 && outOfStockItems.length === 0 && (
-              <div className="rounded-xl border border-amber-300/50 bg-amber-50 p-4 dark:border-amber-500/30 dark:bg-amber-500/10">
-                <h3 className="text-sm font-semibold text-amber-800 dark:text-amber-400 mb-2">Low Stock Alerts</h3>
-                <div className="grid grid-cols-2 gap-2 sm:grid-cols-3 lg:grid-cols-4">
-                  {lowStockItems.map((item) => (
-                    <div key={item.id} className="rounded-md bg-white/80 dark:bg-black/20 px-3 py-2 text-xs">
-                      <p className="font-medium text-amber-900 dark:text-amber-300 truncate">{item.name}</p>
-                      <p className="text-amber-700 dark:text-amber-400 mt-0.5">
-                        {formatQty(item.currentStock, item.unitLabel)} / min{' '}
-                        {formatQty(item.lowStockThreshold, item.unitLabel)}
-                      </p>
-                    </div>
-                  ))}
+                      )
+                    })}
+                  </ul>
                 </div>
-              </div>
-            )}
-            {outOfStockItems.length === 0 && lowStockNonZero.length === 0 && lowStockItems.length === 0 && (
-              <p className="text-sm text-[var(--muted)]">No stock alerts for active catalog items.</p>
-            )}
+              )
+            })()}
           </div>
 
           <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
@@ -607,8 +637,42 @@ export function InventorySummaryPage() {
                 <table className="w-full text-sm">
                   <thead>
                     <tr className="border-b border-[var(--border)] text-xs font-semibold uppercase tracking-wide text-[var(--muted)]">
-                      <th className="py-2 pr-3 text-left">Item</th>
-                      <th className="py-2 px-2 text-right">Stock</th>
+                      <th className="py-2 pr-3 text-left">
+                        <button
+                          className="inline-flex items-center gap-1 text-xs font-semibold uppercase tracking-wide text-[var(--muted)] hover:text-[var(--foreground)]"
+                          onClick={() => toggleReorderSort('name')}
+                          type="button"
+                        >
+                          Item
+                          {reorderSort.column === 'name' ? (
+                            reorderSort.direction === 'asc' ? (
+                              <ArrowUp className="h-3 w-3" />
+                            ) : (
+                              <ArrowDown className="h-3 w-3" />
+                            )
+                          ) : (
+                            <ArrowUpDown className="h-3 w-3 opacity-50" />
+                          )}
+                        </button>
+                      </th>
+                      <th className="py-2 px-2 text-right">
+                        <button
+                          className="inline-flex items-center gap-1 text-xs font-semibold uppercase tracking-wide text-[var(--muted)] hover:text-[var(--foreground)]"
+                          onClick={() => toggleReorderSort('stock')}
+                          type="button"
+                        >
+                          Stock
+                          {reorderSort.column === 'stock' ? (
+                            reorderSort.direction === 'asc' ? (
+                              <ArrowUp className="h-3 w-3" />
+                            ) : (
+                              <ArrowDown className="h-3 w-3" />
+                            )
+                          ) : (
+                            <ArrowUpDown className="h-3 w-3 opacity-50" />
+                          )}
+                        </button>
+                      </th>
                       <th className="py-2 px-2 text-right">Avg / day</th>
                       <th className="py-2 px-2 text-right">Runway</th>
                       <th className="py-2 px-2 text-right">Suggested qty</th>
@@ -662,41 +726,6 @@ export function InventorySummaryPage() {
               </div>
             </div>
           )}
-
-          <div className="grid gap-6 lg:grid-cols-2">
-            {categoryStockChartData.length > 0 && (
-              <div className="rounded-xl border border-[var(--border)] bg-[var(--panel)] p-4">
-                <h3 className="mb-4 text-sm font-semibold text-[var(--foreground)]">Stock value by category</h3>
-                <ResponsiveContainer width="100%" height={260}>
-                  <BarChart data={categoryStockChartData} layout="vertical" margin={{ left: 8, right: 16 }}>
-                    <CartesianGrid strokeDasharray="3 3" stroke="var(--border)" />
-                    <XAxis type="number" tick={{ fontSize: 11 }} tickFormatter={(v: number) => formatCurrency(v)} />
-                    <YAxis dataKey="name" type="category" tick={{ fontSize: 11 }} width={120} />
-                    <Tooltip formatter={(value) => formatCurrency(Number(value) || 0)} />
-                    <Bar dataKey="value" fill="#6366f1" name="Stock value" radius={[0, 3, 3, 0]} />
-                  </BarChart>
-                </ResponsiveContainer>
-              </div>
-            )}
-            {categoryMovementChartData.some((d) => d['Stock In'] > 0 || d['Stock Out'] > 0) && (
-              <div className="rounded-xl border border-[var(--border)] bg-[var(--panel)] p-4">
-                <h3 className="mb-4 text-sm font-semibold text-[var(--foreground)]">
-                  Movement by category — {formatMonthLabel(summaryMonth)}
-                </h3>
-                <ResponsiveContainer width="100%" height={260}>
-                  <BarChart data={categoryMovementChartData} layout="vertical" margin={{ left: 8, right: 16 }}>
-                    <CartesianGrid strokeDasharray="3 3" stroke="var(--border)" />
-                    <XAxis type="number" tick={{ fontSize: 11 }} />
-                    <YAxis dataKey="name" type="category" tick={{ fontSize: 11 }} width={120} />
-                    <Tooltip />
-                    <Legend iconSize={10} wrapperStyle={{ fontSize: 12 }} />
-                    <Bar dataKey="Stock In" fill="#10b981" stackId="a" radius={[0, 0, 0, 0]} />
-                    <Bar dataKey="Stock Out" fill="#ef4444" stackId="a" radius={[0, 3, 3, 0]} />
-                  </BarChart>
-                </ResponsiveContainer>
-              </div>
-            )}
-          </div>
 
           <div className="space-y-4">
             <SectionHeading title="Movement activity" />
@@ -793,16 +822,30 @@ export function InventorySummaryPage() {
           </div>
 
           <div className="grid gap-4 lg:grid-cols-3">
-            <div className="rounded-xl border border-[var(--border)] bg-[var(--panel)] p-4">
-              <h3 className="text-sm font-semibold text-[var(--foreground)] mb-3">Top consumed (qty)</h3>
+            <div className="rounded-xl border border-[var(--border)] bg-[var(--panel)] p-6">
+              <div className="mb-4 flex items-center gap-3">
+                <span className="flex h-10 w-10 items-center justify-center rounded-lg bg-orange-500/10 text-orange-500">
+                  <Flame className="h-5 w-5" />
+                </span>
+                <div>
+                  <h3 className="text-sm font-semibold text-[var(--foreground)]">Top consumed</h3>
+                  <p className="text-xs text-[var(--muted)]">Highest outbound quantity</p>
+                </div>
+              </div>
               {topConsumed.length === 0 ? (
-                <p className="text-xs text-[var(--muted)]">No outbound usage this period.</p>
+                <p className="py-4 text-center text-xs text-[var(--muted)]">No outbound usage this period.</p>
               ) : (
-                <ol className="space-y-2 text-sm list-decimal list-inside">
-                  {topConsumed.map((s) => (
-                    <li key={s.id} className="text-[var(--foreground)]">
-                      <span className="font-medium">{s.name}</span>
-                      <span className="text-[var(--muted)] tabular-nums ml-1">
+                <ol className="space-y-3">
+                  {topConsumed.map((s, idx) => (
+                    <li key={s.id} className="flex items-center gap-3">
+                      <span className="flex h-7 w-7 flex-none items-center justify-center rounded-full bg-orange-500/10 text-xs font-semibold text-orange-600 dark:text-orange-400">
+                        {idx + 1}
+                      </span>
+                      <div className="min-w-0 flex-1">
+                        <p className="truncate text-sm font-medium text-[var(--foreground)]">{s.name}</p>
+                        <p className="text-xs text-[var(--muted)]">{categoryLabel(s.category)}</p>
+                      </div>
+                      <span className="flex-none text-right text-sm font-semibold tabular-nums text-orange-600 dark:text-orange-400">
                         {formatQty(s.totalOut, s.unitLabel)}
                       </span>
                     </li>
@@ -810,63 +853,123 @@ export function InventorySummaryPage() {
                 </ol>
               )}
             </div>
-            <div className="rounded-xl border border-[var(--border)] bg-[var(--panel)] p-4">
-              <h3 className="text-sm font-semibold text-[var(--foreground)] mb-3">Slow movers (60d)</h3>
-              <p className="text-xs text-[var(--muted)] mb-2">No OUT movements in 60 days, stock on hand.</p>
+
+            <div className="rounded-xl border border-[var(--border)] bg-[var(--panel)] p-6">
+              <div className="mb-4 flex items-center gap-3">
+                <span className="flex h-10 w-10 items-center justify-center rounded-lg bg-blue-500/10 text-blue-500">
+                  <Clock className="h-5 w-5" />
+                </span>
+                <div>
+                  <h3 className="text-sm font-semibold text-[var(--foreground)]">Slow movers</h3>
+                  <p className="text-xs text-[var(--muted)]">No OUT in 60 days, stock on hand</p>
+                </div>
+              </div>
               {slowMovers.length === 0 ? (
-                <p className="text-xs text-[var(--muted)]">None detected.</p>
+                <p className="py-4 text-center text-xs text-[var(--muted)]">None detected.</p>
               ) : (
-                <ul className="space-y-1.5 text-xs max-h-40 overflow-y-auto">
+                <ul className="space-y-3 max-h-56 overflow-y-auto pr-1">
                   {slowMovers.slice(0, 8).map((m) => (
-                    <li key={m.id} className="truncate">
-                      <span className="font-medium">{m.name}</span>
-                      <span className="text-[var(--muted)] ml-1">{formatCurrency(m.stockValue)}</span>
+                    <li key={m.id} className="flex items-center gap-3">
+                      <span className="flex h-7 w-7 flex-none items-center justify-center rounded-full bg-blue-500/10 text-blue-500">
+                        <Package className="h-3.5 w-3.5" />
+                      </span>
+                      <div className="min-w-0 flex-1">
+                        <p className="truncate text-sm font-medium text-[var(--foreground)]">{m.name}</p>
+                        <p className="text-xs text-[var(--muted)]">On hand value</p>
+                      </div>
+                      <span className="flex-none text-right text-sm font-semibold tabular-nums text-blue-600 dark:text-blue-400">
+                        {formatCurrency(m.stockValue)}
+                      </span>
                     </li>
                   ))}
                 </ul>
               )}
             </div>
-            <div className="rounded-xl border border-[var(--border)] bg-[var(--panel)] p-4">
-              <h3 className="text-sm font-semibold text-[var(--foreground)] mb-3">Dead stock value</h3>
-              <p className="text-2xl font-semibold tabular-nums text-red-500">{formatCurrency(deadStockValue)}</p>
-              <p className="text-xs text-[var(--muted)] mt-1">Sum of on-hand value for slow movers ({slowMovers.length} items)</p>
+
+            <div className="rounded-xl border border-[var(--border)] bg-[var(--panel)] p-6">
+              <div className="mb-4 flex items-center gap-3">
+                <span className="flex h-10 w-10 items-center justify-center rounded-lg bg-red-500/10 text-red-500">
+                  <Skull className="h-5 w-5" />
+                </span>
+                <div>
+                  <h3 className="text-sm font-semibold text-[var(--foreground)]">Dead stock value</h3>
+                  <p className="text-xs text-[var(--muted)]">Tied-up capital in slow movers</p>
+                </div>
+              </div>
+              <div className="mt-6 flex flex-col items-center justify-center gap-2 text-center">
+                <p className="text-4xl font-semibold tabular-nums tracking-tight text-red-500">
+                  {formatCurrency(deadStockValue)}
+                </p>
+                <p className="text-xs text-[var(--muted)]">
+                  Across <span className="font-semibold text-[var(--foreground)]">{slowMovers.length}</span>{' '}
+                  {slowMovers.length === 1 ? 'item' : 'items'}
+                </p>
+              </div>
             </div>
           </div>
 
           <div className="rounded-xl border border-[var(--border)] bg-[var(--panel)] p-4">
-            <SectionHeading
-              action={
-                <Link
-                  className="text-xs font-medium text-[var(--accent)] hover:underline"
-                  to="/inventory-movements"
-                >
-                  View full log
-                </Link>
-              }
-              title="Recent activity"
-            />
+            <SectionHeading title="Recent activity" />
             {recentMovements.length === 0 ? (
               <p className="text-sm text-[var(--muted)]">No movements yet.</p>
             ) : (
-              <ul className="divide-y divide-[var(--border)] text-sm">
-                {recentMovements.map((mov) => (
-                  <li className="flex flex-wrap items-center gap-2 py-2" key={mov.id}>
-                    <span
-                      className={[
-                        'rounded px-1.5 py-0.5 text-[10px] font-semibold uppercase',
-                        mov.movementType === 'IN' ? 'bg-emerald-500/15 text-emerald-600' : 'bg-red-500/15 text-red-500',
-                      ].join(' ')}
-                    >
-                      {mov.movementType}
-                    </span>
-                    <span className="font-medium">{mov.itemName}</span>
-                    <span className="text-[var(--muted)] tabular-nums">
-                      {mov.movementDate} · {formatQty(mov.quantity, mov.unitLabel)}
-                    </span>
-                    {mov.notes && <span className="text-xs text-[var(--muted)] truncate max-w-xs">— {mov.notes}</span>}
-                  </li>
-                ))}
-              </ul>
+              <div className="overflow-x-auto">
+                <table className="w-full text-sm">
+                  <thead>
+                    <tr className="border-b border-[var(--border)] text-xs font-semibold uppercase tracking-wide text-[var(--muted)]">
+                      <th className="py-2 pr-3 text-left">Date</th>
+                      <th className="py-2 px-2 text-left">Type</th>
+                      <th className="py-2 px-2 text-left">Item</th>
+                      <th className="py-2 px-2 text-right">Quantity</th>
+                      <th className="py-2 pl-2 text-left">Notes</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-[var(--border)]">
+                    {recentMovements.map((mov) => (
+                      <tr key={mov.id}>
+                        <td className="py-2 pr-3 tabular-nums whitespace-nowrap text-[var(--muted)]">
+                          {mov.movementDate}
+                        </td>
+                        <td className="py-2 px-2">
+                          <span
+                            className={[
+                              'inline-flex items-center gap-1 rounded px-1.5 py-0.5 text-[10px] font-semibold uppercase',
+                              mov.movementType === 'IN'
+                                ? 'bg-emerald-500/15 text-emerald-600'
+                                : 'bg-red-500/15 text-red-500',
+                            ].join(' ')}
+                          >
+                            {mov.movementType === 'IN' ? (
+                              <ArrowDownToLine className="h-3 w-3" />
+                            ) : (
+                              <ArrowUpFromLine className="h-3 w-3" />
+                            )}
+                            {mov.movementType}
+                          </span>
+                        </td>
+                        <td className="py-2 px-2 font-medium text-[var(--foreground)]">{mov.itemName}</td>
+                        <td
+                          className={[
+                            'py-2 px-2 text-right tabular-nums whitespace-nowrap',
+                            mov.movementType === 'IN' ? 'text-emerald-600' : 'text-red-500',
+                          ].join(' ')}
+                        >
+                          {formatQty(mov.quantity, mov.unitLabel)}
+                        </td>
+                        <td className="py-2 pl-2 text-xs text-[var(--muted)]">
+                          {mov.notes ? (
+                            <span className="block max-w-xs truncate" title={mov.notes}>
+                              {mov.notes}
+                            </span>
+                          ) : (
+                            <span className="text-[var(--muted)]/60">—</span>
+                          )}
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
             )}
           </div>
 
@@ -876,7 +979,9 @@ export function InventorySummaryPage() {
                 <div className="flex flex-wrap items-center gap-2">
                   <button
                     className="inline-flex items-center gap-1 rounded-md border border-[var(--border)] bg-[var(--background)] px-2.5 py-1 text-xs font-medium hover:bg-[var(--panel)]"
-                    onClick={exportTableCsv}
+                    onClick={() => {
+                      void exportTableCsv()
+                    }}
                     type="button"
                   >
                     <Download className="h-3.5 w-3.5" />

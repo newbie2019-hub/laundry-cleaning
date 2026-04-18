@@ -1,18 +1,22 @@
 import type { FormEvent, ReactNode } from 'react'
 import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useNavigate } from 'react-router-dom'
 import { format } from 'date-fns'
 import {
   AlertTriangle,
+  ArrowDown,
   ArrowDownToLine,
+  ArrowUp,
+  ArrowUpDown,
   ArrowUpFromLine,
   Banknote,
   Box,
-  Filter,
   Hammer,
   Package,
   Pencil,
   Plus,
   Search,
+  SlidersHorizontal,
   Wrench,
   X,
 } from 'lucide-react'
@@ -78,6 +82,49 @@ const UNIT_TYPE_OPTIONS = [
 
 type StockStatus = 'all' | 'low' | 'out' | 'in'
 
+type SortKey = 'name' | 'category' | 'currentStock' | 'costPerUnit' | 'supplier' | 'lastRestocked'
+type SortDir = 'asc' | 'desc'
+
+type ColumnKey = 'category' | 'stock' | 'cost' | 'supplier' | 'lastRestocked'
+
+const COLUMN_DEFS: { key: ColumnKey; label: string }[] = [
+  { key: 'category', label: 'Category' },
+  { key: 'stock', label: 'Stock Level' },
+  { key: 'cost', label: 'Cost / Unit' },
+  { key: 'supplier', label: 'Supplier' },
+  { key: 'lastRestocked', label: 'Last Restocked' },
+]
+
+type ColumnVisibility = Record<ColumnKey, boolean>
+
+const DEFAULT_COLUMNS: ColumnVisibility = {
+  category: true,
+  stock: true,
+  cost: true,
+  supplier: true,
+  lastRestocked: true,
+}
+
+const COLUMNS_STORAGE_KEY = 'business-ledger.inventory.columns'
+
+function loadColumnPrefs(): ColumnVisibility {
+  try {
+    const stored = localStorage.getItem(COLUMNS_STORAGE_KEY)
+    if (!stored) return { ...DEFAULT_COLUMNS }
+    return { ...DEFAULT_COLUMNS, ...(JSON.parse(stored) as Partial<ColumnVisibility>) }
+  } catch {
+    return { ...DEFAULT_COLUMNS }
+  }
+}
+
+function saveColumnPrefs(prefs: ColumnVisibility): void {
+  try {
+    localStorage.setItem(COLUMNS_STORAGE_KEY, JSON.stringify(prefs))
+  } catch {
+    /* ignore storage errors */
+  }
+}
+
 function ModalField({ label, required, children }: { children: ReactNode; label: string; required?: boolean }) {
   return (
     <div className="flex flex-col gap-1.5">
@@ -130,6 +177,7 @@ function statusBadge(status: string) {
 export function InventoryPage() {
   const { hasPermission, user } = useAuth()
   const canManage = hasPermission('manage_inventory')
+  const navigate = useNavigate()
 
   const [items, setItems] = useState<InventoryItem[]>([])
   const [loading, setLoading] = useState(false)
@@ -137,6 +185,12 @@ export function InventoryPage() {
   const [categoryFilter, setCategoryFilter] = useState('')
   const [stockFilter, setStockFilter] = useState<StockStatus>('all')
   const [showInactive, setShowInactive] = useState(false)
+
+  const [sortKey, setSortKey] = useState<SortKey>('name')
+  const [sortDir, setSortDir] = useState<SortDir>('asc')
+
+  const [columns, setColumns] = useState<ColumnVisibility>(() => loadColumnPrefs())
+  const [isFilterOpen, setIsFilterOpen] = useState(false)
 
   // Item modal
   const [isModalOpen, setIsModalOpen] = useState(false)
@@ -181,14 +235,53 @@ export function InventoryPage() {
 
   const displayed = useMemo(() => {
     const q = search.trim().toLowerCase()
-    if (!q) return items
-    return items.filter(
-      (item) =>
-        item.name.toLowerCase().includes(q) ||
-        item.description.toLowerCase().includes(q) ||
-        item.supplier.toLowerCase().includes(q),
-    )
-  }, [items, search])
+    const filtered = q
+      ? items.filter(
+          (item) =>
+            item.name.toLowerCase().includes(q) ||
+            item.description.toLowerCase().includes(q) ||
+            item.supplier.toLowerCase().includes(q),
+        )
+      : items
+
+    const getSortValue = (item: InventoryItem): string | number => {
+      switch (sortKey) {
+        case 'name':
+          return item.name.toLowerCase()
+        case 'category':
+          return (CATEGORY_LABELS[item.category] ?? item.category).toLowerCase()
+        case 'currentStock':
+          return item.currentStock
+        case 'costPerUnit':
+          return item.costPerUnit
+        case 'supplier':
+          return (item.supplier || '').toLowerCase()
+        case 'lastRestocked': {
+          const raw = item.category === 'equipment' ? item.lastMaintenanceDate : item.lastRestockedDate
+          return raw || ''
+        }
+        default:
+          return ''
+      }
+    }
+
+    const sorted = [...filtered].sort((a, b) => {
+      const av = getSortValue(a)
+      const bv = getSortValue(b)
+      if (typeof av === 'number' && typeof bv === 'number') {
+        return sortDir === 'asc' ? av - bv : bv - av
+      }
+      const as = String(av)
+      const bs = String(bv)
+      if (as === bs) return 0
+      if (as === '') return 1
+      if (bs === '') return -1
+      const cmp = as.localeCompare(bs)
+      return sortDir === 'asc' ? cmp : -cmp
+    })
+
+    return sorted
+  }, [items, search, sortKey, sortDir])
 
   const totalItems = items.length
   const lowStockCount = useMemo(() => items.filter((i) => i.isLowStock).length, [items])
@@ -307,7 +400,30 @@ export function InventoryPage() {
     setQuickMov({ item, type })
   }
 
-  const hasActiveFilters = categoryFilter || stockFilter !== 'all' || showInactive
+  function toggleSort(key: SortKey) {
+    if (sortKey === key) {
+      setSortDir((d) => (d === 'asc' ? 'desc' : 'asc'))
+    } else {
+      setSortKey(key)
+      setSortDir('asc')
+    }
+  }
+
+  function updateColumn(key: ColumnKey, visible: boolean) {
+    setColumns((prev) => {
+      const next = { ...prev, [key]: visible }
+      saveColumnPrefs(next)
+      return next
+    })
+  }
+
+  function goToMovements(item: InventoryItem) {
+    navigate(`/inventory-movements?itemId=${item.id}`)
+  }
+
+  const activeFilterCount =
+    (categoryFilter ? 1 : 0) + (stockFilter !== 'all' ? 1 : 0) + (showInactive ? 1 : 0)
+  const hasActiveFilters = activeFilterCount > 0
 
   return (
     <section className="space-y-5">
@@ -318,23 +434,6 @@ export function InventoryPage() {
           Track supplies and equipment for daily operations.
         </p>
       </div>
-
-      {/* Low stock alert */}
-      {lowStockCount > 0 && (
-        <div className="flex items-center gap-3 rounded-lg border border-amber-300/50 bg-amber-50 px-4 py-3 dark:border-amber-500/30 dark:bg-amber-500/10">
-          <AlertTriangle className="h-4 w-4 shrink-0 text-amber-600" />
-          <p className="text-sm text-amber-800 dark:text-amber-400">
-            <strong>{lowStockCount}</strong> item{lowStockCount !== 1 ? 's' : ''} running low on stock.
-          </p>
-          <button
-            className="ml-auto text-xs font-medium text-amber-700 hover:underline dark:text-amber-400"
-            onClick={() => setStockFilter('low')}
-            type="button"
-          >
-            View
-          </button>
-        </div>
-      )}
 
       {/* Stats */}
       <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">
@@ -392,7 +491,19 @@ export function InventoryPage() {
 
       {/* Toolbar */}
       <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-        <div className="flex flex-wrap items-center gap-2">
+        {canManage ? (
+          <button
+            className="flex items-center gap-2 rounded-md bg-[var(--accent)] px-3.5 py-2 text-sm font-medium text-white shadow-sm hover:opacity-90 transition"
+            onClick={openAdd}
+            type="button"
+          >
+            <Plus className="h-4 w-4" />
+            Add Item
+          </button>
+        ) : (
+          <div />
+        )}
+        <div className="flex flex-wrap items-center gap-2 sm:justify-end">
           <div className="relative">
             <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-[var(--muted)]" />
             <input
@@ -403,50 +514,20 @@ export function InventoryPage() {
               value={search}
             />
           </div>
-          <select
-            className="h-9 rounded-md border border-[var(--border)] bg-[var(--panel)] px-3 text-sm text-[var(--foreground)] focus:border-[var(--accent)] focus:outline-none"
-            onChange={(e) => setCategoryFilter(e.target.value)}
-            value={categoryFilter}
-          >
-            <option value="">All Categories</option>
-            {ITEM_CATEGORIES.map((c) => (
-              <option key={c.value} value={c.value}>{c.label}</option>
-            ))}
-          </select>
-          <select
-            className="h-9 rounded-md border border-[var(--border)] bg-[var(--panel)] px-3 text-sm text-[var(--foreground)] focus:border-[var(--accent)] focus:outline-none"
-            onChange={(e) => setStockFilter(e.target.value as StockStatus)}
-            value={stockFilter}
-          >
-            <option value="all">All Stock</option>
-            <option value="in">In Stock</option>
-            <option value="low">Low Stock</option>
-            <option value="out">Out of Stock</option>
-          </select>
-          <label className="flex items-center gap-2 cursor-pointer select-none text-sm text-[var(--muted)]">
-            <input checked={showInactive} className="rounded" onChange={(e) => setShowInactive(e.target.checked)} type="checkbox" />
-            Inactive
-          </label>
-          {hasActiveFilters && (
-            <button
-              className="flex items-center gap-1 text-xs text-[var(--accent)] hover:underline"
-              onClick={() => { setCategoryFilter(''); setStockFilter('all'); setShowInactive(false) }}
-              type="button"
-            >
-              <Filter className="h-3 w-3" /> Clear filters
-            </button>
-          )}
-        </div>
-        {canManage && (
           <button
-            className="flex items-center gap-2 rounded-md bg-[var(--accent)] px-3.5 py-2 text-sm font-medium text-white shadow-sm hover:opacity-90 transition"
-            onClick={openAdd}
+            className="relative flex h-9 items-center gap-2 rounded-md border border-[var(--border)] bg-[var(--panel)] px-3 text-sm font-medium text-[var(--foreground)] hover:bg-[var(--background)] transition"
+            onClick={() => setIsFilterOpen(true)}
             type="button"
           >
-            <Plus className="h-4 w-4" />
-            Add Item
+            <SlidersHorizontal className="h-4 w-4" />
+            Filters
+            {activeFilterCount > 0 && (
+              <span className="flex h-5 min-w-[1.25rem] items-center justify-center rounded-full bg-[var(--accent)] px-1.5 text-[10px] font-semibold text-white">
+                {activeFilterCount}
+              </span>
+            )}
           </button>
-        )}
+        </div>
       </div>
 
       {/* Items table */}
@@ -464,122 +545,182 @@ export function InventoryPage() {
             )}
           </div>
         ) : (
-          <table className="w-full text-sm">
-            <thead>
-              <tr className="border-b border-[var(--border)] bg-[var(--panel)] text-xs font-semibold uppercase tracking-wide text-[var(--muted)]">
-                <th className="px-4 py-2.5 text-left font-semibold">Item</th>
-                <th className="px-4 py-2.5 text-left font-semibold">Category</th>
-                <th className="px-4 py-2.5 text-right font-semibold">Stock Level</th>
-                <th className="px-4 py-2.5 text-right font-semibold">Cost / Unit</th>
-                <th className="hidden px-4 py-2.5 text-left font-semibold md:table-cell">Supplier</th>
-                <th className="hidden px-4 py-2.5 text-left font-semibold lg:table-cell">Last Restocked</th>
-                <th className="px-4 py-2.5 font-semibold w-0" />
-              </tr>
-            </thead>
-            <tbody className="divide-y divide-[var(--border)]">
-              {displayed.map((item) => (
-                <tr
-                  key={item.id}
-                  className={!item.isActive ? 'opacity-50' : ''}
-                >
-                  <td className="px-4 py-3">
-                    <div className="flex items-center gap-2">
-                      <span className="font-medium">{item.name}</span>
-                      {item.category === 'equipment' && item.status && statusBadge(item.status)}
-                    </div>
-                    {item.description && (
-                      <p className="mt-0.5 text-xs text-[var(--muted)] truncate max-w-xs">{item.description}</p>
+          (() => {
+            const visibleDataCols =
+              1 /* item */ +
+              (columns.category ? 1 : 0) +
+              (columns.stock ? 1 : 0) +
+              (columns.cost ? 1 : 0) +
+              (columns.supplier ? 1 : 0) +
+              (columns.lastRestocked ? 1 : 0)
+            const colSpan = visibleDataCols + 1 /* actions */
+
+            const renderSortHeader = (
+              key: SortKey,
+              label: string,
+              align: 'left' | 'right',
+              extraClass = '',
+            ) => {
+              const active = sortKey === key
+              const alignClass = align === 'right' ? 'justify-end text-right' : 'justify-start text-left'
+              return (
+                <th className={['px-4 py-2.5 font-semibold', extraClass].join(' ')}>
+                  <button
+                    className={[
+                      'inline-flex w-full items-center gap-1 font-semibold uppercase tracking-wide select-none hover:text-[var(--foreground)] transition',
+                      alignClass,
+                      active ? 'text-[var(--foreground)]' : '',
+                    ].join(' ')}
+                    onClick={() => toggleSort(key)}
+                    type="button"
+                  >
+                    <span>{label}</span>
+                    {active ? (
+                      sortDir === 'asc' ? (
+                        <ArrowUp className="h-3 w-3" />
+                      ) : (
+                        <ArrowDown className="h-3 w-3" />
+                      )
+                    ) : (
+                      <ArrowUpDown className="h-3 w-3 opacity-50" />
                     )}
-                    {!item.isActive && (
-                      <span className="mt-0.5 inline-block text-[10px] text-[var(--muted)]">Inactive</span>
-                    )}
-                  </td>
-                  <td className="px-4 py-3">{categoryBadge(item.category)}</td>
-                  <td className="px-4 py-3 text-right">
-                    <div className={['tabular-nums font-medium whitespace-nowrap', item.isLowStock ? 'text-red-500' : ''].join(' ')}>
-                      {formatQty(item.currentStock)} <span className="font-normal text-[var(--muted)]">{item.unitLabel}</span>
-                    </div>
-                    <div className="text-[10px] text-[var(--muted)]">
-                      min: {formatQty(item.lowStockThreshold)}
-                    </div>
-                    {item.isLowStock && (
-                      <span className="inline-flex items-center rounded bg-red-500/15 px-1.5 py-0.5 text-[10px] font-semibold text-red-500 mt-0.5">
-                        LOW
-                      </span>
-                    )}
-                  </td>
-                  <td className="px-4 py-3 text-right tabular-nums whitespace-nowrap">
-                    {formatCurrency(item.costPerUnit)}
-                    <span className="text-xs text-[var(--muted)]">/{item.unitLabel}</span>
-                  </td>
-                  <td className="hidden px-4 py-3 text-[var(--muted)] md:table-cell">
-                    {item.supplier || '—'}
-                  </td>
-                  <td className="hidden px-4 py-3 text-[var(--muted)] tabular-nums lg:table-cell">
-                    {item.category === 'equipment'
-                      ? item.lastMaintenanceDate || '—'
-                      : item.lastRestockedDate || '—'}
-                  </td>
-                  <td className="px-4 py-3 whitespace-nowrap">
-                    <div className="flex items-center gap-1 justify-end">
-                      {canManage && (
-                        <>
-                          {item.category === 'equipment' ? (
-                            <button
-                              aria-label="Service"
-                              className="rounded p-1.5 text-purple-500 transition hover:bg-purple-500/10"
-                              onClick={() => setServiceItem(item)}
-                              title="Service / maintenance"
-                              type="button"
-                            >
-                              <Wrench className="h-4 w-4" />
-                            </button>
-                          ) : (
+                  </button>
+                </th>
+              )
+            }
+
+            return (
+              <table className="w-full text-sm">
+                <thead>
+                  <tr className="border-b border-[var(--border)] bg-[var(--panel)] text-xs font-semibold uppercase tracking-wide text-[var(--muted)]">
+                    {renderSortHeader('name', 'Item', 'left')}
+                    {columns.category && renderSortHeader('category', 'Category', 'left')}
+                    {columns.stock && renderSortHeader('currentStock', 'Stock Level', 'right')}
+                    {columns.cost && renderSortHeader('costPerUnit', 'Cost / Unit', 'right')}
+                    {columns.supplier && renderSortHeader('supplier', 'Supplier', 'left')}
+                    {columns.lastRestocked && renderSortHeader('lastRestocked', 'Last Restocked', 'left')}
+                    <th className="px-4 py-2.5 font-semibold w-0" />
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-[var(--border)]">
+                  {displayed.map((item) => (
+                    <tr
+                      className={[
+                        'cursor-pointer transition hover:bg-[var(--panel)]',
+                        !item.isActive ? 'opacity-50' : '',
+                      ].join(' ')}
+                      key={item.id}
+                      onClick={() => goToMovements(item)}
+                      title="View stock movements"
+                    >
+                      <td className="px-4 py-3">
+                        <div className="flex items-center gap-2">
+                          <span className="font-medium">{item.name}</span>
+                          {item.category === 'equipment' && item.status && statusBadge(item.status)}
+                        </div>
+                        {item.description && (
+                          <p className="mt-0.5 text-xs text-[var(--muted)] truncate max-w-xs">{item.description}</p>
+                        )}
+                        {!item.isActive && (
+                          <span className="mt-0.5 inline-block text-[10px] text-[var(--muted)]">Inactive</span>
+                        )}
+                      </td>
+                      {columns.category && <td className="px-4 py-3">{categoryBadge(item.category)}</td>}
+                      {columns.stock && (
+                        <td className="px-4 py-3 text-right">
+                          <div className={['tabular-nums font-medium whitespace-nowrap', item.isLowStock ? 'text-red-500' : ''].join(' ')}>
+                            {formatQty(item.currentStock)} <span className="font-normal text-[var(--muted)]">{item.unitLabel}</span>
+                          </div>
+                          <div className="text-[10px] text-[var(--muted)]">
+                            min: {formatQty(item.lowStockThreshold)}
+                          </div>
+                          {item.isLowStock && (
+                            <span className="inline-flex items-center rounded bg-red-500/15 px-1.5 py-0.5 text-[10px] font-semibold text-red-500 mt-0.5">
+                              LOW
+                            </span>
+                          )}
+                        </td>
+                      )}
+                      {columns.cost && (
+                        <td className="px-4 py-3 text-right tabular-nums whitespace-nowrap">
+                          {formatCurrency(item.costPerUnit)}
+                          <span className="text-xs text-[var(--muted)]">/{item.unitLabel}</span>
+                        </td>
+                      )}
+                      {columns.supplier && (
+                        <td className="px-4 py-3 text-[var(--muted)]">
+                          {item.supplier || '—'}
+                        </td>
+                      )}
+                      {columns.lastRestocked && (
+                        <td className="px-4 py-3 text-[var(--muted)] tabular-nums">
+                          {item.category === 'equipment'
+                            ? item.lastMaintenanceDate || '—'
+                            : item.lastRestockedDate || '—'}
+                        </td>
+                      )}
+                      <td className="px-4 py-3 whitespace-nowrap" onClick={(e) => e.stopPropagation()}>
+                        <div className="flex items-center gap-1 justify-end">
+                          {canManage && (
                             <>
+                              {item.category === 'equipment' ? (
+                                <button
+                                  aria-label="Service"
+                                  className="rounded p-1.5 text-purple-500 transition hover:bg-purple-500/10"
+                                  onClick={() => setServiceItem(item)}
+                                  title="Service / maintenance"
+                                  type="button"
+                                >
+                                  <Wrench className="h-4 w-4" />
+                                </button>
+                              ) : (
+                                <>
+                                  <button
+                                    aria-label="Stock In"
+                                    className="rounded p-1.5 text-emerald-500 transition hover:bg-emerald-500/10"
+                                    onClick={() => openQuickMov(item, 'IN')}
+                                    title="Restock"
+                                    type="button"
+                                  >
+                                    <ArrowDownToLine className="h-4 w-4" />
+                                  </button>
+                                  <button
+                                    aria-label="Stock Out"
+                                    className="rounded p-1.5 text-red-400 transition hover:bg-red-500/10"
+                                    onClick={() => openQuickMov(item, 'OUT')}
+                                    title="Use / Remove"
+                                    type="button"
+                                  >
+                                    <ArrowUpFromLine className="h-4 w-4" />
+                                  </button>
+                                </>
+                              )}
                               <button
-                                aria-label="Stock In"
-                                className="rounded p-1.5 text-emerald-500 transition hover:bg-emerald-500/10"
-                                onClick={() => openQuickMov(item, 'IN')}
-                                title="Restock"
+                                aria-label="Edit"
+                                className="rounded p-1.5 text-[var(--muted)] transition hover:bg-[var(--background)] hover:text-[var(--foreground)]"
+                                onClick={() => openEdit(item)}
                                 type="button"
                               >
-                                <ArrowDownToLine className="h-4 w-4" />
-                              </button>
-                              <button
-                                aria-label="Stock Out"
-                                className="rounded p-1.5 text-red-400 transition hover:bg-red-500/10"
-                                onClick={() => openQuickMov(item, 'OUT')}
-                                title="Use / Remove"
-                                type="button"
-                              >
-                                <ArrowUpFromLine className="h-4 w-4" />
+                                <Pencil className="h-4 w-4" />
                               </button>
                             </>
                           )}
-                          <button
-                            aria-label="Edit"
-                            className="rounded p-1.5 text-[var(--muted)] transition hover:bg-[var(--background)] hover:text-[var(--foreground)]"
-                            onClick={() => openEdit(item)}
-                            type="button"
-                          >
-                            <Pencil className="h-4 w-4" />
-                          </button>
-                        </>
-                      )}
-                    </div>
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-            <tfoot>
-              <tr>
-                <td className="border-t border-[var(--border)] bg-[var(--panel)] px-4 py-2 text-xs text-[var(--muted)]" colSpan={7}>
-                  {displayed.length} item{displayed.length !== 1 ? 's' : ''}
-                  {displayed.length !== items.length && ` (${items.length} total)`}
-                </td>
-              </tr>
-            </tfoot>
-          </table>
+                        </div>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+                <tfoot>
+                  <tr>
+                    <td className="border-t border-[var(--border)] bg-[var(--panel)] px-4 py-2 text-xs text-[var(--muted)]" colSpan={colSpan}>
+                      {displayed.length} item{displayed.length !== 1 ? 's' : ''}
+                      {displayed.length !== items.length && ` (${items.length} total)`}
+                    </td>
+                  </tr>
+                </tfoot>
+              </table>
+            )
+          })()
         )}
       </div>
 
@@ -708,6 +849,116 @@ export function InventoryPage() {
         open={serviceItem !== null}
         userId={user?.id ?? null}
       />
+
+      {/* ── FILTER DIALOG ── */}
+      {isFilterOpen && (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4"
+          onClick={() => setIsFilterOpen(false)}
+        >
+          <div
+            className="w-full max-w-md max-h-[90vh] overflow-y-auto rounded-xl bg-white shadow-xl"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="flex items-center justify-between border-b border-gray-200 px-5 py-4">
+              <h2 className="text-base font-semibold text-gray-900">Filters & Columns</h2>
+              <button
+                className="rounded p-1 text-gray-400 hover:bg-gray-100 hover:text-gray-600"
+                onClick={() => setIsFilterOpen(false)}
+                type="button"
+              >
+                <X className="h-4 w-4" />
+              </button>
+            </div>
+
+            <div className="space-y-5 p-5">
+              <div className="space-y-1.5">
+                <label className="text-sm font-medium text-gray-700">Category</label>
+                <select
+                  className={selectClass}
+                  onChange={(e) => setCategoryFilter(e.target.value)}
+                  value={categoryFilter}
+                >
+                  <option value="">All Categories</option>
+                  {ITEM_CATEGORIES.map((c) => (
+                    <option key={c.value} value={c.value}>{c.label}</option>
+                  ))}
+                </select>
+              </div>
+
+              <div className="space-y-1.5">
+                <label className="text-sm font-medium text-gray-700">Stock Status</label>
+                <select
+                  className={selectClass}
+                  onChange={(e) => setStockFilter(e.target.value as StockStatus)}
+                  value={stockFilter}
+                >
+                  <option value="all">All Stock</option>
+                  <option value="in">In Stock</option>
+                  <option value="low">Low Stock</option>
+                  <option value="out">Out of Stock</option>
+                </select>
+              </div>
+
+              <div className="space-y-1.5">
+                <label className="text-sm font-medium text-gray-700">Active</label>
+                <label className="flex items-center gap-2 cursor-pointer select-none text-sm text-gray-700">
+                  <input
+                    checked={showInactive}
+                    className="rounded"
+                    onChange={(e) => setShowInactive(e.target.checked)}
+                    type="checkbox"
+                  />
+                  Include inactive items
+                </label>
+              </div>
+
+              <div className="border-t border-gray-200 pt-4">
+                <p className="text-sm font-medium text-gray-700">Visible Columns</p>
+                <p className="mt-0.5 text-xs text-gray-500">Preferences are saved on this device.</p>
+                <div className="mt-3 grid grid-cols-2 gap-2">
+                  {COLUMN_DEFS.map((col) => (
+                    <label
+                      className="flex items-center gap-2 rounded-md border border-gray-200 bg-gray-50 px-3 py-2 text-sm text-gray-700 cursor-pointer select-none hover:bg-gray-100"
+                      key={col.key}
+                    >
+                      <input
+                        checked={columns[col.key]}
+                        className="rounded"
+                        onChange={(e) => updateColumn(col.key, e.target.checked)}
+                        type="checkbox"
+                      />
+                      {col.label}
+                    </label>
+                  ))}
+                </div>
+              </div>
+            </div>
+
+            <div className="flex items-center justify-between gap-2 border-t border-gray-200 px-5 py-3">
+              <button
+                className="text-sm font-medium text-gray-600 hover:text-gray-800 disabled:opacity-40"
+                disabled={!hasActiveFilters}
+                onClick={() => {
+                  setCategoryFilter('')
+                  setStockFilter('all')
+                  setShowInactive(false)
+                }}
+                type="button"
+              >
+                Clear filters
+              </button>
+              <button
+                className="rounded-md bg-blue-600 px-4 py-2 text-sm font-medium text-white hover:bg-blue-700"
+                onClick={() => setIsFilterOpen(false)}
+                type="button"
+              >
+                Done
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </section>
   )
 }

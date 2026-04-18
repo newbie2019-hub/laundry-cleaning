@@ -1,20 +1,35 @@
-import type { ChangeEvent, FormEvent } from 'react'
-import { useRef, useState } from 'react'
-import { format } from 'date-fns'
-import { Check, Database, ImagePlus, Monitor, Moon, Save, Sun, User, X } from 'lucide-react'
-import { downloadDir } from '@tauri-apps/api/path'
-import { useTheme } from 'next-themes'
-import { useAuth } from '../../auth/use-auth'
-import { loadAppSettings, saveAppSettings, type AppSettings } from '../../../lib/app-settings'
-import { updateUserProfile, vacuumInto } from '../../../lib/db/repository'
+import type { ChangeEvent, FormEvent } from "react"
+import { useRef, useState } from "react"
+import { format } from "date-fns"
+import {
+  Check,
+  Database,
+  ImagePlus,
+  Monitor,
+  Moon,
+  Save,
+  Sun,
+  User,
+  X,
+} from "lucide-react"
+import { downloadDir } from "@tauri-apps/api/path"
+import { useTheme } from "next-themes"
+import { toast } from "sonner"
+import { useAuth } from "../../auth/use-auth"
+import {
+  loadAppSettings,
+  saveAppSettings,
+  type AppSettings,
+} from "../../../lib/app-settings"
+import { updateUserProfile, vacuumInto } from "../../../lib/db/repository"
 
 const inputClass =
-  'h-10 w-full rounded-lg border border-[var(--border)] bg-[var(--background)] px-3 text-sm focus:outline-none focus:ring-2 focus:ring-[var(--accent)]/30'
+  "h-10 w-full rounded-lg border border-[var(--border)] bg-[var(--background)] px-3 text-sm focus:outline-none focus:ring-2 focus:ring-[var(--accent)]/30"
 
 const themeOptions = [
-  { value: 'light', label: 'Light', icon: Sun },
-  { value: 'dark', label: 'Dark', icon: Moon },
-  { value: 'system', label: 'System', icon: Monitor },
+  { value: "light", label: "Light", icon: Sun },
+  { value: "dark", label: "Dark", icon: Moon },
+  { value: "system", label: "System", icon: Monitor },
 ] as const
 
 export function SettingsPage() {
@@ -28,12 +43,17 @@ export function SettingsPage() {
   const [isExporting, setIsExporting] = useState(false)
   const [exportMessage, setExportMessage] = useState<string | null>(null)
 
-  const [profileDisplayName, setProfileDisplayName] = useState(user?.displayName ?? '')
-  const [profileUsername, setProfileUsername] = useState(user?.username ?? '')
-  const [profileNewPassword, setProfileNewPassword] = useState('')
-  const [profileConfirmPassword, setProfileConfirmPassword] = useState('')
+  const [profileDisplayName, setProfileDisplayName] = useState(
+    user?.displayName ?? "",
+  )
+  const [profileUsername, setProfileUsername] = useState(user?.username ?? "")
+  const [profileNewPassword, setProfileNewPassword] = useState("")
+  const [profileConfirmPassword, setProfileConfirmPassword] = useState("")
   const [profileSaving, setProfileSaving] = useState(false)
-  const [profileMessage, setProfileMessage] = useState<{ text: string; ok: boolean } | null>(null)
+  const [profileMessage, setProfileMessage] = useState<{
+    text: string
+    ok: boolean
+  } | null>(null)
 
   function handleSaveAppSettings(event: FormEvent<HTMLFormElement>) {
     event.preventDefault()
@@ -55,7 +75,7 @@ export function SettingsPage() {
 
   function handleRemoveLogo() {
     setAppSettings((prev) => ({ ...prev, logoDataUrl: null }))
-    if (logoInputRef.current) logoInputRef.current.value = ''
+    if (logoInputRef.current) logoInputRef.current.value = ""
   }
 
   async function handleExportDatabase() {
@@ -63,15 +83,18 @@ export function SettingsPage() {
     setExportMessage(null)
     try {
       const downloads = await downloadDir()
-      const filename = `business-ledger-backup-${format(new Date(), 'yyyy-MM-dd')}.db`
-      const sep = downloads.endsWith('/') || downloads.endsWith('\\') ? '' : '/'
+      const filename = `business-ledger-backup-${format(new Date(), "yyyy-MM-dd")}.db`
+      const sep = downloads.endsWith("/") || downloads.endsWith("\\") ? "" : "/"
       const targetPath = `${downloads}${sep}${filename}`
       await vacuumInto(targetPath)
       setExportMessage(`Saved to: ${targetPath}`)
+      toast.success("Backup saved", {
+        description: `Your database file was written to:\n${targetPath}`,
+      })
     } catch (err: unknown) {
-      setExportMessage(
-        `Backup failed: ${err instanceof Error ? err.message : 'Unknown error'}`,
-      )
+      const msg = err instanceof Error ? err.message : "Unknown error"
+      setExportMessage(`Backup failed: ${msg}`)
+      toast.error("Backup failed", { description: msg })
     } finally {
       setIsExporting(false)
     }
@@ -82,17 +105,23 @@ export function SettingsPage() {
     if (!user) return
 
     if (!profileDisplayName.trim() || !profileUsername.trim()) {
-      setProfileMessage({ text: 'Display name and username are required.', ok: false })
+      setProfileMessage({
+        text: "Display name and username are required.",
+        ok: false,
+      })
       return
     }
 
     if (profileNewPassword && profileNewPassword !== profileConfirmPassword) {
-      setProfileMessage({ text: 'Passwords do not match.', ok: false })
+      setProfileMessage({ text: "Passwords do not match.", ok: false })
       return
     }
 
     if (profileNewPassword && profileNewPassword.length < 6) {
-      setProfileMessage({ text: 'Password must be at least 6 characters.', ok: false })
+      setProfileMessage({
+        text: "Password must be at least 6 characters.",
+        ok: false,
+      })
       return
     }
 
@@ -106,13 +135,13 @@ export function SettingsPage() {
         username: profileUsername.trim(),
       })
       await refreshSession()
-      setProfileNewPassword('')
-      setProfileConfirmPassword('')
-      setProfileMessage({ text: 'Profile updated.', ok: true })
+      setProfileNewPassword("")
+      setProfileConfirmPassword("")
+      setProfileMessage({ text: "Profile updated.", ok: true })
       setTimeout(() => setProfileMessage(null), 3000)
     } catch (err: unknown) {
       setProfileMessage({
-        text: err instanceof Error ? err.message : 'Unable to update profile.',
+        text: err instanceof Error ? err.message : "Unable to update profile.",
         ok: false,
       })
     } finally {
@@ -135,8 +164,8 @@ export function SettingsPage() {
           <div>
             <h2 className="text-sm font-semibold">Appearance</h2>
             <p className="mt-1 text-xs leading-relaxed text-[var(--muted)]">
-              Choose how the app looks. Select a light or dark theme, or follow your system
-              preference.
+              Choose how the app looks. Select a light or dark theme, or follow
+              your system preference.
             </p>
           </div>
           <div className="md:justify-self-end md:max-w-[480px] md:w-full">
@@ -151,11 +180,11 @@ export function SettingsPage() {
                   <button
                     key={opt.value}
                     className={[
-                      'inline-flex items-center gap-2 rounded-lg border px-4 py-2.5 text-sm font-medium transition',
+                      "inline-flex items-center gap-2 rounded-lg border px-4 py-2.5 text-sm font-medium transition",
                       active
-                        ? 'border-[var(--accent)] bg-[var(--accent-soft)] text-[var(--accent-strong)]'
-                        : 'border-[var(--border)] bg-[var(--background)] text-[var(--foreground)] hover:border-[var(--accent)]/50',
-                    ].join(' ')}
+                        ? "border-[var(--accent)] bg-[var(--accent-soft)] text-[var(--accent-strong)]"
+                        : "border-[var(--border)] bg-[var(--background)] text-[var(--foreground)] hover:border-[var(--accent)]/50",
+                    ].join(" ")}
                     onClick={() => setTheme(opt.value)}
                     type="button"
                   >
@@ -177,10 +206,14 @@ export function SettingsPage() {
                 <h2 className="text-sm font-semibold">Account</h2>
               </div>
               <p className="mt-1 text-xs leading-relaxed text-[var(--muted)]">
-                Update your display name, username, and password. Changes take effect immediately.
+                Update your display name, username, and password. Changes take
+                effect immediately.
               </p>
             </div>
-            <form className="w-full max-w-[480px] space-y-4 md:justify-self-end" onSubmit={handleSaveProfile}>
+            <form
+              className="w-full max-w-[480px] space-y-4 md:justify-self-end"
+              onSubmit={handleSaveProfile}
+            >
               <label className="block space-y-1.5">
                 <span className="text-xs font-medium text-[var(--muted)] uppercase tracking-wider">
                   Display name
@@ -231,7 +264,9 @@ export function SettingsPage() {
 
               <div className="flex items-center justify-end gap-3">
                 {profileMessage && (
-                  <span className={`inline-flex items-center gap-1 text-xs font-medium ${profileMessage.ok ? 'text-emerald-500' : 'text-red-500'}`}>
+                  <span
+                    className={`inline-flex items-center gap-1 text-xs font-medium ${profileMessage.ok ? "text-emerald-500" : "text-red-500"}`}
+                  >
                     {profileMessage.ok && <Check className="h-3 w-3" />}
                     {profileMessage.text}
                   </span>
@@ -242,7 +277,7 @@ export function SettingsPage() {
                   type="submit"
                 >
                   <Save className="h-3.5 w-3.5" />
-                  {profileSaving ? 'Saving…' : 'Update profile'}
+                  {profileSaving ? "Saving…" : "Update profile"}
                 </button>
               </div>
             </form>
@@ -254,12 +289,18 @@ export function SettingsPage() {
           <div>
             <h2 className="text-sm font-semibold">App information</h2>
             <p className="mt-1 text-xs leading-relaxed text-[var(--muted)]">
-              Branding shown throughout the app including the sidebar, login screen, and exports.
+              Branding shown throughout the app including the sidebar, login
+              screen, and exports.
             </p>
           </div>
-          <form className="w-full max-w-[480px] space-y-5 md:justify-self-end" onSubmit={handleSaveAppSettings}>
+          <form
+            className="w-full max-w-[480px] space-y-5 md:justify-self-end"
+            onSubmit={handleSaveAppSettings}
+          >
             <div className="space-y-2">
-              <span className="text-xs font-medium text-[var(--muted)] uppercase tracking-wider">Logo</span>
+              <span className="text-xs font-medium text-[var(--muted)] uppercase tracking-wider">
+                Logo
+              </span>
               <div className="flex items-center gap-4">
                 <button
                   className="group relative flex h-14 w-14 shrink-0 cursor-pointer items-center justify-center rounded-xl border border-[var(--border)] bg-[var(--background)] overflow-hidden transition hover:border-[var(--accent)]/50"
@@ -300,20 +341,31 @@ export function SettingsPage() {
             </div>
 
             <label className="block space-y-1.5">
-              <span className="text-xs font-medium text-[var(--muted)] uppercase tracking-wider">App name</span>
+              <span className="text-xs font-medium text-[var(--muted)] uppercase tracking-wider">
+                App name
+              </span>
               <input
                 className={inputClass}
-                onChange={(e) => setAppSettings((prev) => ({ ...prev, name: e.target.value }))}
+                onChange={(e) =>
+                  setAppSettings((prev) => ({ ...prev, name: e.target.value }))
+                }
                 placeholder="Business Ledger"
                 value={appSettings.name}
               />
             </label>
 
             <label className="block space-y-1.5">
-              <span className="text-xs font-medium text-[var(--muted)] uppercase tracking-wider">Description</span>
+              <span className="text-xs font-medium text-[var(--muted)] uppercase tracking-wider">
+                Description
+              </span>
               <textarea
                 className="w-full rounded-lg border border-[var(--border)] bg-[var(--background)] px-3 py-2.5 text-sm resize-none focus:outline-none focus:ring-2 focus:ring-[var(--accent)]/30"
-                onChange={(e) => setAppSettings((prev) => ({ ...prev, description: e.target.value }))}
+                onChange={(e) =>
+                  setAppSettings((prev) => ({
+                    ...prev,
+                    description: e.target.value,
+                  }))
+                }
                 placeholder="A short description of what this app tracks…"
                 rows={3}
                 value={appSettings.description}
@@ -326,7 +378,7 @@ export function SettingsPage() {
                 type="submit"
               >
                 <Save className="h-3.5 w-3.5" />
-                {appSaved ? 'Saved!' : 'Save changes'}
+                {appSaved ? "Saved!" : "Save changes"}
               </button>
             </div>
           </form>
@@ -337,24 +389,28 @@ export function SettingsPage() {
           <div>
             <h2 className="text-sm font-semibold">Database backup</h2>
             <p className="mt-1 text-xs leading-relaxed text-[var(--muted)]">
-              Export all app data for safekeeping. The backup includes every record in the database
-              and can be used to fully restore the app.
+              Export all app data for safekeeping. The backup includes every
+              record in the database and can be used to fully restore the app.
             </p>
           </div>
           <div className="w-full max-w-[480px] space-y-4 md:justify-self-end">
             {exportMessage && (
-              <p className={`text-xs ${exportMessage.includes('failed') ? 'text-red-500' : 'text-emerald-500'}`}>
+              <p
+                className={`text-xs ${exportMessage.includes("failed") ? "text-red-500" : "text-emerald-500"}`}
+              >
                 {exportMessage}
               </p>
             )}
             <button
               className="inline-flex items-center gap-2 rounded-lg border border-[var(--border)] bg-[var(--background)] px-4 py-2.5 text-sm font-medium text-[var(--foreground)] transition hover:border-[var(--accent)]/50 hover:text-[var(--accent)] disabled:opacity-50"
               disabled={isExporting}
-              onClick={() => { void handleExportDatabase() }}
+              onClick={() => {
+                void handleExportDatabase()
+              }}
               type="button"
             >
               <Database className="h-4 w-4" />
-              {isExporting ? 'Exporting…' : 'Download backup'}
+              {isExporting ? "Exporting…" : "Download backup"}
             </button>
           </div>
         </div>

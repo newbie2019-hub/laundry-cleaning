@@ -24,6 +24,8 @@ export type LedgerTransaction = {
   categoryId: number
   categoryLabel: string
   createdByName: string | null
+  customerId: number | null
+  customerName: string | null
   description: string
   entryDate: string
   id: number
@@ -36,6 +38,7 @@ export type LedgerTransaction = {
 
 export type TransactionFilters = {
   categoryId?: number | null
+  customerId?: number | null
   dateFrom?: string
   dateTo?: string
   entryDate?: string
@@ -46,10 +49,27 @@ export type TransactionFilters = {
 export type TransactionDraft = {
   amount: number
   categoryId: number
+  customerId: number | null
   description: string
   entryDate: string
   staffCount: number | null
   transactionTypeId: number
+}
+
+export type Customer = {
+  company: string
+  email: string
+  id: number
+  isArchived: boolean
+  name: string
+  phone: string
+}
+
+export type CustomerDraft = {
+  company: string
+  email: string
+  name: string
+  phone: string
 }
 
 export type UserListItem = {
@@ -420,6 +440,11 @@ export async function listTransactions(filters: TransactionFilters = {}) {
     conditions.push(`transactions.category_id = $${params.length}`)
   }
 
+  if (filters.customerId) {
+    params.push(filters.customerId)
+    conditions.push(`transactions.customer_id = $${params.length}`)
+  }
+
   const whereClause = conditions.length > 0 ? `WHERE ${conditions.join(' AND ')}` : ''
 
   return database.select<LedgerTransaction[]>(
@@ -432,6 +457,8 @@ export async function listTransactions(filters: TransactionFilters = {}) {
         transactions.staff_count AS staffCount,
         transactions.category_id AS categoryId,
         categories.label AS categoryLabel,
+        transactions.customer_id AS customerId,
+        customer.name AS customerName,
         transaction_types.id AS transactionTypeId,
         transaction_types.code AS transactionTypeCode,
         transaction_types.label AS transactionTypeLabel,
@@ -440,6 +467,7 @@ export async function listTransactions(filters: TransactionFilters = {}) {
       FROM transactions
       JOIN categories ON categories.id = transactions.category_id
       JOIN transaction_types ON transaction_types.id = transactions.transaction_type_id
+      LEFT JOIN customers AS customer ON customer.id = transactions.customer_id
       LEFT JOIN users AS created_by_user ON created_by_user.id = transactions.created_by
       LEFT JOIN users AS updated_by_user ON updated_by_user.id = transactions.updated_by
       ${whereClause}
@@ -463,9 +491,10 @@ export async function saveTransaction(input: TransactionDraft, userId: number, t
           description = $4,
           amount = $5,
           staff_count = $6,
-          updated_by = $7,
+          customer_id = $7,
+          updated_by = $8,
           updated_at = CURRENT_TIMESTAMP
-        WHERE id = $8
+        WHERE id = $9
       `,
       [
         input.entryDate,
@@ -474,6 +503,7 @@ export async function saveTransaction(input: TransactionDraft, userId: number, t
         input.description,
         input.amount,
         input.staffCount,
+        input.customerId,
         userId,
         transactionId,
       ],
@@ -490,10 +520,11 @@ export async function saveTransaction(input: TransactionDraft, userId: number, t
         description,
         amount,
         staff_count,
+        customer_id,
         created_by,
         updated_by
       )
-      VALUES ($1, $2, $3, $4, $5, $6, $7, $7)
+      VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $8)
     `,
     [
       input.entryDate,
@@ -502,6 +533,7 @@ export async function saveTransaction(input: TransactionDraft, userId: number, t
       input.description,
       input.amount,
       input.staffCount,
+      input.customerId,
       userId,
     ],
   )
@@ -510,6 +542,111 @@ export async function saveTransaction(input: TransactionDraft, userId: number, t
 export async function deleteTransaction(transactionId: number) {
   const database = await getDatabase()
   await database.execute('DELETE FROM transactions WHERE id = $1', [transactionId])
+}
+
+type CustomerRow = {
+  company: string
+  email: string
+  id: number
+  isArchived: number
+  name: string
+  phone: string
+}
+
+export async function listCustomers(filters?: { includeArchived?: boolean; search?: string }): Promise<Customer[]> {
+  const database = await getDatabase()
+  const conditions: string[] = []
+  const params: unknown[] = []
+
+  if (!filters?.includeArchived) {
+    conditions.push('is_archived = 0')
+  }
+
+  const search = filters?.search?.trim()
+  if (search) {
+    const pattern = `%${search}%`
+    params.push(pattern, pattern, pattern, pattern)
+    const n = params.length
+    conditions.push(
+      `(name LIKE $${n - 3} OR company LIKE $${n - 2} OR email LIKE $${n - 1} OR phone LIKE $${n})`,
+    )
+  }
+
+  const whereClause = conditions.length > 0 ? `WHERE ${conditions.join(' AND ')}` : ''
+
+  const rows = await database.select<CustomerRow[]>(
+    `
+      SELECT
+        id,
+        name,
+        company,
+        email,
+        phone,
+        is_archived AS isArchived
+      FROM customers
+      ${whereClause}
+      ORDER BY name COLLATE NOCASE ASC
+    `,
+    params,
+  )
+
+  return rows.map((row) => ({
+    company: row.company,
+    email: row.email,
+    id: row.id,
+    isArchived: Boolean(row.isArchived),
+    name: row.name,
+    phone: row.phone,
+  }))
+}
+
+export async function saveCustomer(input: CustomerDraft, userId: number, customerId?: number): Promise<void> {
+  const database = await getDatabase()
+  const name = input.name.trim()
+  const company = input.company.trim()
+  const email = input.email.trim()
+  const phone = input.phone.trim()
+
+  if (customerId) {
+    await database.execute(
+      `
+        UPDATE customers
+        SET
+          name = $1,
+          company = $2,
+          email = $3,
+          phone = $4,
+          updated_by = $5,
+          updated_at = CURRENT_TIMESTAMP
+        WHERE id = $6
+      `,
+      [name, company, email, phone, userId, customerId],
+    )
+    return
+  }
+
+  await database.execute(
+    `
+      INSERT INTO customers (name, company, email, phone, created_by, updated_by)
+      VALUES ($1, $2, $3, $4, $5, $5)
+    `,
+    [name, company, email, phone, userId],
+  )
+}
+
+export async function archiveCustomer(id: number, userId: number): Promise<void> {
+  const database = await getDatabase()
+  await database.execute(
+    `
+      UPDATE customers
+      SET
+        is_archived = 1,
+        updated_by = $1,
+        updated_at = CURRENT_TIMESTAMP
+      WHERE id = $2
+    `,
+    [userId, id],
+  )
 }
 
 export async function listUsers() {
@@ -1587,8 +1724,10 @@ function rowToIncidentReport(row: IncidentReportRow): IncidentReport {
 }
 
 export async function listIncidentReports(filters?: {
+  customerName?: string
   dateFrom?: string
   dateTo?: string
+  handledBy?: string
   incidentType?: string
   month?: string
   search?: string
@@ -1616,6 +1755,16 @@ export async function listIncidentReports(filters?: {
   if (filters?.incidentType) {
     conditions.push(`ir.incident_type = $${params.length + 1}`)
     params.push(filters.incidentType)
+  }
+
+  if (filters?.customerName) {
+    conditions.push(`ir.customer_name = $${params.length + 1}`)
+    params.push(filters.customerName)
+  }
+
+  if (filters?.handledBy) {
+    conditions.push(`ir.handled_by = $${params.length + 1}`)
+    params.push(filters.handledBy)
   }
 
   if (filters?.search) {
@@ -1734,6 +1883,48 @@ export async function saveIncidentReport(
 export async function deleteIncidentReport(id: number): Promise<void> {
   const database = await getDatabase()
   await database.execute('DELETE FROM incident_reports WHERE id = $1', [id])
+}
+
+export async function listAvailableIncidentMonthKeys(): Promise<string[]> {
+  const database = await getDatabase()
+  const rows = await database.select<Array<{ monthKey: string }>>(
+    `
+      SELECT DISTINCT substr(incident_date, 1, 7) AS monthKey
+      FROM incident_reports
+      WHERE incident_date IS NOT NULL AND incident_date <> ''
+      ORDER BY monthKey DESC
+    `,
+  )
+
+  return rows.map((row) => row.monthKey)
+}
+
+export async function listDistinctIncidentCustomerNames(): Promise<string[]> {
+  const database = await getDatabase()
+  const rows = await database.select<Array<{ name: string }>>(
+    `
+      SELECT DISTINCT TRIM(customer_name) AS name
+      FROM incident_reports
+      WHERE customer_name IS NOT NULL AND TRIM(customer_name) <> ''
+      ORDER BY name COLLATE NOCASE ASC
+    `,
+  )
+
+  return rows.map((row) => row.name).filter(Boolean)
+}
+
+export async function listDistinctIncidentHandledBy(): Promise<string[]> {
+  const database = await getDatabase()
+  const rows = await database.select<Array<{ name: string }>>(
+    `
+      SELECT DISTINCT TRIM(handled_by) AS name
+      FROM incident_reports
+      WHERE handled_by IS NOT NULL AND TRIM(handled_by) <> ''
+      ORDER BY name COLLATE NOCASE ASC
+    `,
+  )
+
+  return rows.map((row) => row.name).filter(Boolean)
 }
 
 // ─── Inventory ────────────────────────────────────────────────────────────────
@@ -1946,6 +2137,8 @@ export async function saveInventoryItem(draft: InventoryItemDraft, id?: number):
 }
 
 export async function listInventoryMovements(filters?: {
+  dateFrom?: string
+  dateTo?: string
   itemId?: number | null
   limit?: number
   monthKey?: string
@@ -1958,6 +2151,16 @@ export async function listInventoryMovements(filters?: {
   if (filters?.monthKey) {
     params.push(filters.monthKey)
     conditions.push(`substr(m.movement_date, 1, 7) = $${params.length}`)
+  }
+
+  if (filters?.dateFrom) {
+    params.push(filters.dateFrom)
+    conditions.push(`m.movement_date >= $${params.length}`)
+  }
+
+  if (filters?.dateTo) {
+    params.push(filters.dateTo)
+    conditions.push(`m.movement_date <= $${params.length}`)
   }
 
   if (filters?.itemId) {
@@ -2935,6 +3138,8 @@ export async function getRecentTransactions(limit = 5): Promise<LedgerTransactio
         transactions.staff_count AS staffCount,
         transactions.category_id AS categoryId,
         categories.label AS categoryLabel,
+        transactions.customer_id AS customerId,
+        customer.name AS customerName,
         transaction_types.id AS transactionTypeId,
         transaction_types.code AS transactionTypeCode,
         transaction_types.label AS transactionTypeLabel,
@@ -2943,6 +3148,7 @@ export async function getRecentTransactions(limit = 5): Promise<LedgerTransactio
       FROM transactions
       JOIN categories ON categories.id = transactions.category_id
       JOIN transaction_types ON transaction_types.id = transactions.transaction_type_id
+      LEFT JOIN customers AS customer ON customer.id = transactions.customer_id
       LEFT JOIN users AS created_by_user ON created_by_user.id = transactions.created_by
       LEFT JOIN users AS updated_by_user ON updated_by_user.id = transactions.updated_by
       ORDER BY transactions.entry_date DESC, transactions.id DESC

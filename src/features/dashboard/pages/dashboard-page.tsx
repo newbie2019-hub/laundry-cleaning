@@ -1,5 +1,5 @@
 import type { CSSProperties } from 'react'
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import { format } from 'date-fns'
 import {
   Area,
@@ -18,9 +18,6 @@ import {
   ArrowRight,
   Banknote,
   Box,
-  Calendar,
-  ChevronLeft,
-  ChevronRight,
   CreditCard,
   FileText,
   Receipt,
@@ -29,6 +26,7 @@ import {
   Wrench,
 } from 'lucide-react'
 import { useNavigate } from 'react-router-dom'
+import { MonthPicker } from '../../../components/month-picker'
 import { formatCurrency, formatMonthLabel } from '../../../lib/format'
 import {
   getDashboardData,
@@ -82,109 +80,6 @@ const gridStroke = 'rgba(148,163,184,0.12)'
 
 function currencyFormatter(value: import('recharts/types/component/DefaultTooltipContent').ValueType | undefined, name: import('recharts/types/component/DefaultTooltipContent').NameType | undefined) {
   return [formatCurrency(Number(value) || 0), String(name ?? '')]
-}
-
-const MONTH_LABELS = [
-  'Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun',
-  'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec',
-]
-
-function MonthPicker({
-  value,
-  onChange,
-}: {
-  value: string
-  onChange: (monthKey: string) => void
-}) {
-  const [open, setOpen] = useState(false)
-  const [pickerYear, setPickerYear] = useState(() => Number(value.slice(0, 4)))
-  const ref = useRef<HTMLDivElement>(null)
-
-  const currentYear = new Date().getFullYear()
-  const currentMonth = new Date().getMonth()
-  const selectedYear = Number(value.slice(0, 4))
-  const selectedMonthIndex = Number(value.slice(5, 7)) - 1
-
-  useEffect(() => {
-    function onClickOutside(event: MouseEvent) {
-      if (ref.current && !ref.current.contains(event.target as Node)) {
-        setOpen(false)
-      }
-    }
-    document.addEventListener('mousedown', onClickOutside)
-    return () => document.removeEventListener('mousedown', onClickOutside)
-  }, [])
-
-  function handleOpen() {
-    setPickerYear(selectedYear)
-    setOpen((prev) => !prev)
-  }
-
-  function selectMonth(monthIndex: number) {
-    const key = `${pickerYear}-${String(monthIndex + 1).padStart(2, '0')}`
-    onChange(key)
-    setOpen(false)
-  }
-
-  return (
-    <div className="relative" ref={ref}>
-      <button
-        className="flex h-10 items-center gap-2 rounded-md border border-[var(--border)] bg-[var(--panel)] px-3 text-sm outline-none transition hover:border-[var(--accent)] focus:border-[var(--accent)]"
-        onClick={handleOpen}
-        type="button"
-      >
-        <Calendar className="h-3.5 w-3.5 text-[var(--muted)]" />
-        <span>{formatMonthLabel(value)}</span>
-      </button>
-
-      {open && (
-        <div className="absolute right-0 top-full z-50 mt-2 w-64 rounded-lg border border-[var(--border)] bg-[var(--panel)] p-3 shadow-xl">
-          <div className="mb-3 flex items-center justify-between">
-            <button
-              className="flex h-7 w-7 items-center justify-center rounded-md text-[var(--muted)] transition hover:bg-[var(--background)] hover:text-[var(--foreground)]"
-              onClick={() => setPickerYear((y) => y - 1)}
-              type="button"
-            >
-              <ChevronLeft className="h-4 w-4" />
-            </button>
-            <span className="text-sm font-semibold tabular-nums">{pickerYear}</span>
-            <button
-              className="flex h-7 w-7 items-center justify-center rounded-md text-[var(--muted)] transition hover:bg-[var(--background)] hover:text-[var(--foreground)] disabled:opacity-30 disabled:pointer-events-none"
-              disabled={pickerYear >= currentYear}
-              onClick={() => setPickerYear((y) => y + 1)}
-              type="button"
-            >
-              <ChevronRight className="h-4 w-4" />
-            </button>
-          </div>
-
-          <div className="grid grid-cols-3 gap-1.5">
-            {MONTH_LABELS.map((label, index) => {
-              const isFuture = pickerYear === currentYear && index > currentMonth
-              const isSelected = pickerYear === selectedYear && index === selectedMonthIndex
-              return (
-                <button
-                  key={label}
-                  className={`rounded-md py-2 text-xs font-medium transition ${
-                    isSelected
-                      ? 'bg-[var(--accent)] text-white'
-                      : isFuture
-                        ? 'text-[var(--muted)]/40 pointer-events-none opacity-30'
-                        : 'text-[var(--foreground)] hover:bg-[var(--background)]'
-                  }`}
-                  disabled={isFuture}
-                  onClick={() => selectMonth(index)}
-                  type="button"
-                >
-                  {label}
-                </button>
-              )
-            })}
-          </div>
-        </div>
-      )}
-    </div>
-  )
 }
 
 export function DashboardPage() {

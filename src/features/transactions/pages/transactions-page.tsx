@@ -1,17 +1,37 @@
 import type { FormEvent, ReactNode } from 'react'
 import { useCallback, useEffect, useMemo, useState } from 'react'
-import { format, subDays } from 'date-fns'
-import { Banknote, Building2, CreditCard, Download, Pencil, Plus, Search, SlidersHorizontal, Trash2, TrendingDown, TrendingUp, WalletCards, X } from 'lucide-react'
+import { endOfMonth, format, subDays } from 'date-fns'
+import {
+  ArrowDown,
+  ArrowUp,
+  ArrowUpDown,
+  Banknote,
+  Building2,
+  CreditCard,
+  Download,
+  Pencil,
+  Plus,
+  Search,
+  SlidersHorizontal,
+  Trash2,
+  TrendingDown,
+  TrendingUp,
+  WalletCards,
+  X,
+} from 'lucide-react'
 import { exportFilteredTransactions } from '../../exports/export-service'
+import { MonthPicker } from '../../../components/month-picker'
 import { formatCurrency } from '../../../lib/format'
 import {
   deleteTransaction,
   listAvailableMonthKeys,
   listCategories,
+  listCustomers,
   listTransactionTypes,
   listTransactions,
   saveTransaction,
   type Category,
+  type Customer,
   type LedgerTransaction,
   type TransactionType,
 } from '../../../lib/db/repository'
@@ -26,6 +46,7 @@ type DaySummary = {
 
 type LoadState = {
   categories: Category[]
+  customers: Customer[]
   months: string[]
   previousDaySummary: DaySummary | null
   transactions: LedgerTransaction[]
@@ -34,6 +55,7 @@ type LoadState = {
 
 const emptyState: LoadState = {
   categories: [],
+  customers: [],
   months: [],
   previousDaySummary: null,
   transactions: [],
@@ -56,6 +78,86 @@ function typeBadgeClass(code: string) {
     'inline-flex items-center justify-center rounded-md px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide whitespace-nowrap',
     TYPE_COLORS[code] ?? 'bg-[var(--accent-soft)] text-[var(--accent-strong)]',
   ].join(' ')
+}
+
+function formatTransactionDisplayDate(entryDate: string) {
+  return format(new Date(`${entryDate}T00:00:00`), 'MMM d, yyyy')
+}
+
+type TableSortKey = 'amount' | 'category' | 'customer' | 'date' | 'staff' | 'type'
+
+function compareTransactionsForSort(
+  a: LedgerTransaction,
+  b: LedgerTransaction,
+  key: TableSortKey,
+  dir: 'asc' | 'desc',
+): number {
+  const sign = dir === 'asc' ? 1 : -1
+  let cmp = 0
+  switch (key) {
+    case 'date':
+      cmp = a.entryDate.localeCompare(b.entryDate)
+      break
+    case 'type':
+      cmp = a.transactionTypeCode.localeCompare(b.transactionTypeCode)
+      break
+    case 'category':
+      cmp = a.categoryLabel.localeCompare(b.categoryLabel, undefined, { sensitivity: 'base' })
+      break
+    case 'customer':
+      cmp = (a.customerName ?? '').localeCompare(b.customerName ?? '', undefined, {
+        sensitivity: 'base',
+      })
+      break
+    case 'staff': {
+      const av = a.staffCount ?? -1
+      const bv = b.staffCount ?? -1
+      cmp = av - bv
+      break
+    }
+    case 'amount':
+      cmp = a.amount - b.amount
+      break
+    default:
+      break
+  }
+  if (cmp !== 0) return sign * cmp
+  return b.id - a.id
+}
+
+function SortableColumnHeader({
+  activeKey,
+  align = 'left',
+  dir,
+  label,
+  onSort,
+  sortKey,
+}: {
+  activeKey: TableSortKey
+  align?: 'center' | 'left' | 'right'
+  dir: 'asc' | 'desc'
+  label: string
+  onSort: (key: TableSortKey) => void
+  sortKey: TableSortKey
+}) {
+  const isActive = activeKey === sortKey
+  const justify =
+    align === 'center' ? 'justify-center' : align === 'right' ? 'justify-end text-right' : 'justify-start text-left'
+  const Icon = isActive ? (dir === 'asc' ? ArrowUp : ArrowDown) : ArrowUpDown
+  return (
+    <button
+      aria-label={`Sort by ${label}${isActive ? `, ${dir === 'asc' ? 'ascending' : 'descending'}` : ''}`}
+      className={`group flex w-full min-w-0 items-center gap-0.5 rounded px-0.5 py-0.5 -mx-0.5 transition hover:bg-[var(--background)] hover:text-[var(--foreground)] ${justify}`}
+      onClick={() => onSort(sortKey)}
+      type="button"
+    >
+      <span className="truncate">{label}</span>
+      <Icon
+        aria-hidden
+        className={`h-3 w-3 shrink-0 ${isActive ? 'text-[var(--accent-strong)]' : 'text-[var(--muted)] opacity-50 group-hover:opacity-80'}`}
+      />
+    </button>
+  )
 }
 
 
@@ -86,21 +188,29 @@ const modalInputClass =
 const modalSelectClass =
   'h-10 w-full rounded-md border border-gray-300 bg-gray-50 px-3 text-sm text-gray-900 outline-none focus:border-blue-500 focus:ring-1 focus:ring-blue-500/30 transition'
 
+type FilterPeriodMode = 'dateRange' | 'month'
+
 export function TransactionsPage() {
   const { hasPermission, user } = useAuth()
-  const [selectedMonth, setSelectedMonth] = useState(format(new Date(), 'yyyy-MM'))
   const today = format(new Date(), 'yyyy-MM-dd')
+  const currentMonthKey = format(new Date(), 'yyyy-MM')
+  const [filterPeriodMode, setFilterPeriodMode] = useState<FilterPeriodMode>('dateRange')
+  const [filterMonthKey, setFilterMonthKey] = useState(currentMonthKey)
   const [filterDateFrom, setFilterDateFrom] = useState(today)
   const [filterDateTo, setFilterDateTo] = useState(today)
   const [filterTypeId, setFilterTypeId] = useState('')
   const [filterCategoryId, setFilterCategoryId] = useState('')
+  const [filterCustomerId, setFilterCustomerId] = useState('')
   const [searchQuery, setSearchQuery] = useState('')
   const [isModalOpen, setIsModalOpen] = useState(false)
   const [isFilterOpen, setIsFilterOpen] = useState(false)
+  const [draftPeriodMode, setDraftPeriodMode] = useState<FilterPeriodMode>('dateRange')
+  const [draftMonthKey, setDraftMonthKey] = useState(currentMonthKey)
   const [draftDateFrom, setDraftDateFrom] = useState('')
   const [draftDateTo, setDraftDateTo] = useState('')
   const [draftTypeId, setDraftTypeId] = useState('')
   const [draftCategoryId, setDraftCategoryId] = useState('')
+  const [draftCustomerId, setDraftCustomerId] = useState('')
   const [formTransactionId, setFormTransactionId] = useState<number | null>(null)
   const [formEntryDate, setFormEntryDate] = useState(format(new Date(), 'yyyy-MM-dd'))
   const [formTypeId, setFormTypeId] = useState('')
@@ -108,9 +218,12 @@ export function TransactionsPage() {
   const [description, setDescription] = useState('')
   const [amount, setAmount] = useState('')
   const [staffCount, setStaffCount] = useState('')
+  const [formCustomerId, setFormCustomerId] = useState('')
   const [state, setState] = useState<LoadState>(emptyState)
   const [error, setError] = useState<string | null>(null)
   const [isSubmitting, setIsSubmitting] = useState(false)
+  const [tableSortKey, setTableSortKey] = useState<TableSortKey>('date')
+  const [tableSortDir, setTableSortDir] = useState<'asc' | 'desc'>('desc')
 
   const canCreate = hasPermission('manage_transactions')
   const canEdit = hasPermission('edit_transaction')
@@ -128,9 +241,20 @@ export function TransactionsPage() {
 
   const selectedFormType = state.transactionTypes.find((type) => String(type.id) === formTypeId)
   const isSaleType = selectedFormType?.code === 'SALE'
+  const isExpenseType = selectedFormType?.code === 'EXPENSE'
+  const showStaffCountField = isSaleType || isExpenseType
+  const showCustomerField = isSaleType
 
-  const hasDateRange = Boolean(filterDateFrom || filterDateTo)
-  const activeFilterCount = [hasDateRange, Boolean(filterTypeId), Boolean(filterCategoryId)].filter(Boolean).length
+  const periodCountsTowardBadge =
+    filterPeriodMode === 'month'
+      ? filterMonthKey !== currentMonthKey
+      : filterDateFrom !== today || filterDateTo !== today || filterDateFrom !== filterDateTo
+  const activeFilterCount = [
+    periodCountsTowardBadge,
+    Boolean(filterTypeId),
+    Boolean(filterCategoryId),
+    Boolean(filterCustomerId),
+  ].filter(Boolean).length
 
   const draftFilterCategories = useMemo(
     () =>
@@ -138,6 +262,11 @@ export function TransactionsPage() {
         ? state.categories.filter((c) => String(c.transactionTypeId) === draftTypeId)
         : state.categories,
     [draftTypeId, state.categories],
+  )
+
+  const activeCustomersForForm = useMemo(
+    () => state.customers.filter((c) => !c.isArchived),
+    [state.customers],
   )
 
   const summary = useMemo(() => {
@@ -160,78 +289,110 @@ export function TransactionsPage() {
   }, [state.transactions])
 
   const displayedTransactions = useMemo(() => {
-    if (!searchQuery.trim()) return state.transactions
-    const q = searchQuery.toLowerCase()
-    return state.transactions.filter(
-      (t) =>
-        t.description.toLowerCase().includes(q) ||
-        t.categoryLabel.toLowerCase().includes(q) ||
-        t.transactionTypeCode.toLowerCase().includes(q) ||
-        t.entryDate.includes(q),
-    )
-  }, [state.transactions, searchQuery])
+    const q = searchQuery.trim().toLowerCase()
+    const filtered = !q
+      ? state.transactions
+      : state.transactions.filter(
+          (t) =>
+            t.description.toLowerCase().includes(q) ||
+            t.categoryLabel.toLowerCase().includes(q) ||
+            t.transactionTypeCode.toLowerCase().includes(q) ||
+            t.entryDate.includes(q) ||
+            (t.customerName?.toLowerCase().includes(q) ?? false),
+        )
+    return [...filtered].sort((a, b) => compareTransactionsForSort(a, b, tableSortKey, tableSortDir))
+  }, [state.transactions, searchQuery, tableSortDir, tableSortKey])
 
-  const loadTransactions = useCallback(
-    async (monthOverride = selectedMonth) => {
-      const months = await listAvailableMonthKeys()
-      const monthToUse =
-        months.length > 0 && !months.includes(monthOverride) ? months[0] : monthOverride
-      const useDateRange = Boolean(filterDateFrom || filterDateTo)
+  function handleColumnSort(key: TableSortKey) {
+    if (key === tableSortKey) {
+      setTableSortDir((d) => (d === 'asc' ? 'desc' : 'asc'))
+    } else {
+      setTableSortKey(key)
+      setTableSortDir(key === 'date' || key === 'amount' ? 'desc' : 'asc')
+    }
+  }
 
-      const isSingleDay =
-        useDateRange && filterDateFrom && filterDateTo && filterDateFrom === filterDateTo
+  const loadTransactions = useCallback(async () => {
+    const months = await listAvailableMonthKeys()
+    const useDateRange = filterPeriodMode === 'dateRange'
+    const useMonth = filterPeriodMode === 'month'
 
-      const [transactionTypes, categories, transactions, previousDayTransactions] = await Promise.all([
-        listTransactionTypes(),
-        listCategories(),
-        listTransactions({
-          categoryId: filterCategoryId ? Number(filterCategoryId) : null,
-          dateFrom: useDateRange ? (filterDateFrom || undefined) : undefined,
-          dateTo: useDateRange ? (filterDateTo || undefined) : undefined,
-          monthKey: useDateRange ? undefined : monthToUse,
-          transactionTypeId: filterTypeId ? Number(filterTypeId) : null,
-        }),
-        isSingleDay
-          ? listTransactions({
-              categoryId: filterCategoryId ? Number(filterCategoryId) : null,
-              entryDate: format(subDays(new Date(filterDateFrom + 'T00:00:00'), 1), 'yyyy-MM-dd'),
-              transactionTypeId: filterTypeId ? Number(filterTypeId) : null,
-            })
-          : Promise.resolve(null),
-      ])
+    let effectiveMonthKey = filterMonthKey
+    if (useMonth && months.length > 0 && !months.includes(effectiveMonthKey)) {
+      effectiveMonthKey = months[0]!
+    }
 
-      let previousDaySummary: DaySummary | null = null
-      if (previousDayTransactions && previousDayTransactions.length > 0) {
-        let totalSales = 0
-        let totalExpenses = 0
-        let totalOperating = 0
-        for (const t of previousDayTransactions) {
-          if (t.transactionTypeCode === 'SALE') totalSales += t.amount
-          else if (t.transactionTypeCode === 'EXPENSE') totalExpenses += t.amount
-          else if (t.transactionTypeCode === 'OPERATING EXPENSE') totalOperating += t.amount
-        }
-        previousDaySummary = {
-          netIncome: totalSales - totalExpenses - totalOperating,
-          totalExpenses,
-          totalOperating,
-          totalSales,
-        }
+    const seedMonthForList =
+      filterDateFrom && filterDateFrom.length >= 7 ? filterDateFrom.slice(0, 7) : currentMonthKey
+    const monthKeyForStateMerge = useMonth ? effectiveMonthKey : seedMonthForList
+    const monthToUse =
+      months.length > 0 && !months.includes(monthKeyForStateMerge) ? months[0]! : monthKeyForStateMerge
+
+    const isSingleDay =
+      useDateRange && filterDateFrom && filterDateTo && filterDateFrom === filterDateTo
+
+    const [transactionTypes, categories, customers, transactions, previousDayTransactions] = await Promise.all([
+      listTransactionTypes(),
+      listCategories(),
+      listCustomers({ includeArchived: true }),
+      listTransactions({
+        categoryId: filterCategoryId ? Number(filterCategoryId) : null,
+        customerId: filterCustomerId ? Number(filterCustomerId) : null,
+        dateFrom: useDateRange ? (filterDateFrom || undefined) : undefined,
+        dateTo: useDateRange ? (filterDateTo || undefined) : undefined,
+        monthKey: useMonth ? effectiveMonthKey : undefined,
+        transactionTypeId: filterTypeId ? Number(filterTypeId) : null,
+      }),
+      isSingleDay
+        ? listTransactions({
+            categoryId: filterCategoryId ? Number(filterCategoryId) : null,
+            customerId: filterCustomerId ? Number(filterCustomerId) : null,
+            entryDate: format(subDays(new Date(filterDateFrom + 'T00:00:00'), 1), 'yyyy-MM-dd'),
+            transactionTypeId: filterTypeId ? Number(filterTypeId) : null,
+          })
+        : Promise.resolve(null),
+    ])
+
+    let previousDaySummary: DaySummary | null = null
+    if (previousDayTransactions && previousDayTransactions.length > 0) {
+      let totalSales = 0
+      let totalExpenses = 0
+      let totalOperating = 0
+      for (const t of previousDayTransactions) {
+        if (t.transactionTypeCode === 'SALE') totalSales += t.amount
+        else if (t.transactionTypeCode === 'EXPENSE') totalExpenses += t.amount
+        else if (t.transactionTypeCode === 'OPERATING EXPENSE') totalOperating += t.amount
       }
-
-      if (monthToUse !== selectedMonth && !useDateRange) {
-        setSelectedMonth(monthToUse)
+      previousDaySummary = {
+        netIncome: totalSales - totalExpenses - totalOperating,
+        totalExpenses,
+        totalOperating,
+        totalSales,
       }
+    }
 
-      setState({
-        categories,
-        months: Array.from(new Set([monthToUse, ...months])).sort().reverse(),
-        previousDaySummary,
-        transactions,
-        transactionTypes,
-      })
-    },
-    [filterCategoryId, filterDateFrom, filterDateTo, filterTypeId, selectedMonth],
-  )
+    if (useMonth && effectiveMonthKey !== filterMonthKey) {
+      setFilterMonthKey(effectiveMonthKey)
+    }
+
+    setState({
+      categories,
+      customers,
+      months: Array.from(new Set([monthToUse, ...months])).sort().reverse(),
+      previousDaySummary,
+      transactions,
+      transactionTypes,
+    })
+  }, [
+    currentMonthKey,
+    filterCategoryId,
+    filterCustomerId,
+    filterDateFrom,
+    filterDateTo,
+    filterMonthKey,
+    filterPeriodMode,
+    filterTypeId,
+  ])
 
   useEffect(() => {
     let isMounted = true
@@ -256,6 +417,12 @@ export function TransactionsPage() {
     }
   }, [filteredCategories, formCategoryId, formTypeId])
 
+  useEffect(() => {
+    if (!showCustomerField) {
+      setFormCustomerId('')
+    }
+  }, [showCustomerField])
+
   function resetForm() {
     setFormTransactionId(null)
     setFormEntryDate(format(new Date(), 'yyyy-MM-dd'))
@@ -264,6 +431,7 @@ export function TransactionsPage() {
     setDescription('')
     setAmount('')
     setStaffCount('')
+    setFormCustomerId('')
     setError(null)
   }
 
@@ -292,9 +460,17 @@ export function TransactionsPage() {
       return
     }
 
-    if (isSaleType && !staffCount) {
-      setError('Staff count is required for SALE entries.')
-      return
+    let resolvedStaffCount: number | null = null
+    if (showStaffCountField) {
+      const trimmed = staffCount.trim()
+      if (trimmed !== '') {
+        const n = Number(trimmed)
+        if (!Number.isFinite(n) || n < 1 || !Number.isInteger(n)) {
+          setError('Number of staff must be a whole number of at least 1, or leave blank.')
+          return
+        }
+        resolvedStaffCount = n
+      }
     }
 
     setIsSubmitting(true)
@@ -305,9 +481,10 @@ export function TransactionsPage() {
         {
           amount: Number(amount),
           categoryId: Number(formCategoryId),
+          customerId: showCustomerField && formCustomerId ? Number(formCustomerId) : null,
           description: description.trim(),
           entryDate: formEntryDate,
-          staffCount: isSaleType ? Number(staffCount) : null,
+          staffCount: showStaffCountField ? resolvedStaffCount : null,
           transactionTypeId: Number(formTypeId),
         },
         user.id,
@@ -338,38 +515,59 @@ export function TransactionsPage() {
     setDescription(transaction.description)
     setAmount(String(transaction.amount))
     setStaffCount(transaction.staffCount ? String(transaction.staffCount) : '')
+    setFormCustomerId(
+      transaction.customerId != null ? String(transaction.customerId) : '',
+    )
     setIsModalOpen(true)
   }
 
   function openFilter() {
+    setDraftPeriodMode(filterPeriodMode)
+    setDraftMonthKey(filterMonthKey)
     setDraftDateFrom(filterDateFrom)
     setDraftDateTo(filterDateTo)
     setDraftTypeId(filterTypeId)
     setDraftCategoryId(filterCategoryId)
+    setDraftCustomerId(filterCustomerId)
     setIsFilterOpen(true)
   }
 
   function applyFilter() {
-    setFilterDateFrom(draftDateFrom)
-    setFilterDateTo(draftDateTo)
+    setFilterPeriodMode(draftPeriodMode)
+    if (draftPeriodMode === 'dateRange') {
+      const from = draftDateFrom || today
+      let to = draftDateTo || from
+      if (to < from) to = from
+      setFilterDateFrom(from)
+      setFilterDateTo(to)
+    } else {
+      setFilterMonthKey(draftMonthKey.length >= 7 ? draftMonthKey : currentMonthKey)
+    }
     setFilterTypeId(draftTypeId)
     setFilterCategoryId(draftCategoryId)
+    setFilterCustomerId(draftCustomerId)
     setIsFilterOpen(false)
   }
 
   function clearDraftFilters() {
+    setDraftPeriodMode('dateRange')
+    setDraftMonthKey(currentMonthKey)
     setDraftDateFrom(today)
     setDraftDateTo(today)
     setDraftTypeId('')
     setDraftCategoryId('')
+    setDraftCustomerId('')
   }
 
   async function handleExportTransactions() {
     if (!canExport) return
-    const rangeSuffix = filterDateFrom && filterDateTo
-      ? `${filterDateFrom}-to-${filterDateTo}`
-      : filterDateFrom || filterDateTo || selectedMonth || 'all'
-    exportFilteredTransactions(state.transactions, `transactions-${rangeSuffix}.xlsx`)
+    const rangeSuffix =
+      filterPeriodMode === 'month'
+        ? filterMonthKey
+        : filterDateFrom && filterDateTo
+          ? `${filterDateFrom}-to-${filterDateTo}`
+          : filterDateFrom || filterDateTo || 'all'
+    await exportFilteredTransactions(state.transactions, `transactions-${rangeSuffix}.xlsx`)
   }
 
   return (
@@ -523,12 +721,55 @@ export function TransactionsPage() {
 
       {/* Transaction list */}
       <div className="rounded-lg border border-[var(--border)] bg-[var(--panel)] overflow-hidden">
-        {/* Column headers */}
-        <div className="grid grid-cols-[1fr_120px_auto_72px] items-center gap-4 border-b border-[var(--border)] bg-[var(--background)]/40 px-4 py-2 text-[10px] font-semibold uppercase tracking-wider text-[var(--muted)]">
-          <span>Details</span>
-          <span className="text-center">Type</span>
-          <span className="text-right">Amount</span>
-          <span />
+        {/* Desktop column headers */}
+        <div className="hidden sm:grid sm:grid-cols-[110px_120px_140px_minmax(0,120px)_minmax(0,1fr)_96px_128px_80px] sm:items-center sm:gap-3 sm:border-b sm:border-[var(--border)] sm:bg-[var(--background)]/40 sm:px-4 sm:py-2 sm:text-[10px] sm:font-semibold sm:uppercase sm:tracking-wider sm:text-[var(--muted)]">
+          <SortableColumnHeader
+            activeKey={tableSortKey}
+            dir={tableSortDir}
+            label="Date"
+            onSort={handleColumnSort}
+            sortKey="date"
+          />
+          <SortableColumnHeader
+            activeKey={tableSortKey}
+            align="center"
+            dir={tableSortDir}
+            label="Type"
+            onSort={handleColumnSort}
+            sortKey="type"
+          />
+          <SortableColumnHeader
+            activeKey={tableSortKey}
+            dir={tableSortDir}
+            label="Category"
+            onSort={handleColumnSort}
+            sortKey="category"
+          />
+          <SortableColumnHeader
+            activeKey={tableSortKey}
+            dir={tableSortDir}
+            label="Customer"
+            onSort={handleColumnSort}
+            sortKey="customer"
+          />
+          <span className="truncate">Description</span>
+          <SortableColumnHeader
+            activeKey={tableSortKey}
+            align="right"
+            dir={tableSortDir}
+            label="Staff"
+            onSort={handleColumnSort}
+            sortKey="staff"
+          />
+          <SortableColumnHeader
+            activeKey={tableSortKey}
+            align="right"
+            dir={tableSortDir}
+            label="Amount"
+            onSort={handleColumnSort}
+            sortKey="amount"
+          />
+          <span className="sr-only">Actions</span>
         </div>
 
         {displayedTransactions.length === 0 ? (
@@ -538,66 +779,112 @@ export function TransactionsPage() {
           </div>
         ) : (
           <div className="divide-y divide-[var(--border)]">
-            {displayedTransactions.map((transaction) => (
-              <div
-                key={transaction.id}
-                className="grid grid-cols-[1fr_120px_auto_72px] items-center gap-4 px-4 py-3 transition hover:bg-[var(--background)]/50"
-              >
-                {/* Details */}
-                <div className="min-w-0">
-                  <p className="truncate text-sm font-medium leading-tight">
-                    {transaction.description || transaction.categoryLabel}
-                  </p>
-                  <div className="mt-0.5 flex flex-wrap items-center gap-x-2 gap-y-0 text-xs text-[var(--muted)]">
-                    <span>{transaction.entryDate}</span>
-                    <span>·</span>
-                    <span>{transaction.categoryLabel}</span>
-                    {transaction.staffCount ? (
-                      <>
-                        <span>·</span>
-                        <span>{transaction.staffCount} staff</span>
-                      </>
-                    ) : null}
+            {displayedTransactions.map((transaction) => {
+              const displayDescription = transaction.description.trim()
+                ? transaction.description
+                : transaction.categoryLabel
+              return (
+                <div key={transaction.id}>
+                  {/* Mobile: stacked card */}
+                  <div className="flex flex-col gap-2 px-4 py-3 transition hover:bg-[var(--background)]/50 sm:hidden">
+                    <div className="flex items-start justify-between gap-2">
+                      <div className="min-w-0 flex-1">
+                        <p className="truncate text-sm font-medium leading-tight">{displayDescription}</p>
+                        <p className="mt-0.5 truncate text-xs text-[var(--muted)]">{transaction.categoryLabel}</p>
+                        {transaction.customerName ? (
+                          <p className="mt-0.5 truncate text-xs text-[var(--muted)]">
+                            Customer: {transaction.customerName}
+                          </p>
+                        ) : null}
+                      </div>
+                      <span className="shrink-0 text-xs tabular-nums text-[var(--muted)]">
+                        {formatTransactionDisplayDate(transaction.entryDate)}
+                      </span>
+                    </div>
+                    <div className="flex flex-wrap items-center justify-between gap-2">
+                      <div className="flex flex-wrap items-center gap-2">
+                        <span className={typeBadgeClass(transaction.transactionTypeCode)}>
+                          {transaction.transactionTypeCode}
+                        </span>
+                        <span className="text-xs text-[var(--muted)] tabular-nums">
+                          Staff: {transaction.staffCount ?? '—'}
+                        </span>
+                      </div>
+                      <div className="flex items-center gap-2">
+                        <p className="text-sm font-semibold tabular-nums">{formatCurrency(transaction.amount)}</p>
+                        <div className="flex shrink-0 items-center justify-end gap-0.5">
+                          <button
+                            aria-label="Edit"
+                            className="rounded p-1.5 text-[var(--muted)] transition hover:bg-[var(--accent-soft)] hover:text-[var(--accent-strong)] disabled:opacity-30"
+                            disabled={!canEdit}
+                            onClick={() => handleEdit(transaction)}
+                            type="button"
+                          >
+                            <Pencil className="h-3.5 w-3.5" />
+                          </button>
+                          <button
+                            aria-label="Delete"
+                            className="rounded p-1.5 text-[var(--muted)] transition hover:bg-red-500/10 hover:text-red-500 disabled:opacity-30"
+                            disabled={!canDelete}
+                            onClick={() => {
+                              void handleDelete(transaction.id)
+                            }}
+                            type="button"
+                          >
+                            <Trash2 className="h-3.5 w-3.5" />
+                          </button>
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+
+                  {/* Desktop: table row */}
+                  <div className="hidden sm:grid sm:grid-cols-[110px_120px_140px_minmax(0,120px)_minmax(0,1fr)_96px_128px_80px] sm:items-center sm:gap-3 sm:px-4 sm:py-3 sm:transition sm:hover:bg-[var(--background)]/50">
+                    <span className="text-xs tabular-nums text-[var(--foreground)]">
+                      {formatTransactionDisplayDate(transaction.entryDate)}
+                    </span>
+                    <div className="flex justify-center">
+                      <span className={typeBadgeClass(transaction.transactionTypeCode)}>
+                        {transaction.transactionTypeCode}
+                      </span>
+                    </div>
+                    <span className="truncate text-sm text-[var(--foreground)]">{transaction.categoryLabel}</span>
+                    <span className="truncate text-sm text-[var(--muted)]" title={transaction.customerName ?? undefined}>
+                      {transaction.customerName ?? '—'}
+                    </span>
+                    <span className="truncate text-sm text-[var(--muted)]">{displayDescription}</span>
+                    <span className="whitespace-nowrap text-right text-sm tabular-nums text-[var(--muted)]">
+                      {transaction.staffCount ?? '—'}
+                    </span>
+                    <p className="whitespace-nowrap text-right text-sm font-semibold tabular-nums">
+                      {formatCurrency(transaction.amount)}
+                    </p>
+                    <div className="flex shrink-0 items-center justify-end gap-0.5">
+                      <button
+                        aria-label="Edit"
+                        className="rounded p-1.5 text-[var(--muted)] transition hover:bg-[var(--accent-soft)] hover:text-[var(--accent-strong)] disabled:opacity-30"
+                        disabled={!canEdit}
+                        onClick={() => handleEdit(transaction)}
+                        type="button"
+                      >
+                        <Pencil className="h-3.5 w-3.5" />
+                      </button>
+                      <button
+                        aria-label="Delete"
+                        className="rounded p-1.5 text-[var(--muted)] transition hover:bg-red-500/10 hover:text-red-500 disabled:opacity-30"
+                        disabled={!canDelete}
+                        onClick={() => {
+                          void handleDelete(transaction.id)
+                        }}
+                        type="button"
+                      >
+                        <Trash2 className="h-3.5 w-3.5" />
+                      </button>
+                    </div>
                   </div>
                 </div>
-
-                {/* Badge — centered column */}
-                <div className="flex justify-center">
-                  <span className={typeBadgeClass(transaction.transactionTypeCode)}>
-                    {transaction.transactionTypeCode}
-                  </span>
-                </div>
-
-                {/* Amount */}
-                <p className="shrink-0 text-sm font-semibold tabular-nums">
-                  {formatCurrency(transaction.amount)}
-                </p>
-
-                {/* Actions */}
-                <div className="flex shrink-0 items-center justify-end gap-0.5">
-                  <button
-                    aria-label="Edit"
-                    className="rounded p-1.5 text-[var(--muted)] transition hover:bg-[var(--accent-soft)] hover:text-[var(--accent-strong)] disabled:opacity-30"
-                    disabled={!canEdit}
-                    onClick={() => handleEdit(transaction)}
-                    type="button"
-                  >
-                    <Pencil className="h-3.5 w-3.5" />
-                  </button>
-                  <button
-                    aria-label="Delete"
-                    className="rounded p-1.5 text-[var(--muted)] transition hover:bg-red-500/10 hover:text-red-500 disabled:opacity-30"
-                    disabled={!canDelete}
-                    onClick={() => {
-                      void handleDelete(transaction.id)
-                    }}
-                    type="button"
-                  >
-                    <Trash2 className="h-3.5 w-3.5" />
-                  </button>
-                </div>
-              </div>
-            ))}
+              )
+            })}
           </div>
         )}
 
@@ -631,26 +918,70 @@ export function TransactionsPage() {
             </div>
 
             <div className="space-y-4 p-5">
-              <div className="grid grid-cols-2 gap-3">
-                <ModalField label="From">
-                  <input
-                    className={modalInputClass}
-                    max={draftDateTo || undefined}
-                    onChange={(e) => setDraftDateFrom(e.target.value)}
-                    type="date"
-                    value={draftDateFrom}
-                  />
+              <ModalField label="Period">
+                <div className="flex rounded-lg border border-gray-200 bg-gray-50 p-0.5">
+                  <button
+                    className={`flex-1 rounded-md px-3 py-2 text-xs font-medium transition ${
+                      draftPeriodMode === 'dateRange'
+                        ? 'bg-blue-600 text-white shadow-sm'
+                        : 'text-gray-600 hover:text-gray-900'
+                    }`}
+                    onClick={() => {
+                      setDraftPeriodMode('dateRange')
+                      const from = `${draftMonthKey}-01`
+                      const to = format(endOfMonth(new Date(`${draftMonthKey}-01T12:00:00`)), 'yyyy-MM-dd')
+                      setDraftDateFrom(from)
+                      setDraftDateTo(to)
+                    }}
+                    type="button"
+                  >
+                    Date range
+                  </button>
+                  <button
+                    className={`flex-1 rounded-md px-3 py-2 text-xs font-medium transition ${
+                      draftPeriodMode === 'month'
+                        ? 'bg-blue-600 text-white shadow-sm'
+                        : 'text-gray-600 hover:text-gray-900'
+                    }`}
+                    onClick={() => {
+                      setDraftPeriodMode('month')
+                      if (draftDateFrom && draftDateFrom.length >= 7) {
+                        setDraftMonthKey(draftDateFrom.slice(0, 7))
+                      }
+                    }}
+                    type="button"
+                  >
+                    Month
+                  </button>
+                </div>
+              </ModalField>
+
+              {draftPeriodMode === 'dateRange' ? (
+                <div className="grid grid-cols-2 gap-3">
+                  <ModalField label="From">
+                    <input
+                      className={modalInputClass}
+                      max={draftDateTo || undefined}
+                      onChange={(e) => setDraftDateFrom(e.target.value)}
+                      type="date"
+                      value={draftDateFrom}
+                    />
+                  </ModalField>
+                  <ModalField label="To">
+                    <input
+                      className={modalInputClass}
+                      min={draftDateFrom || undefined}
+                      onChange={(e) => setDraftDateTo(e.target.value)}
+                      type="date"
+                      value={draftDateTo}
+                    />
+                  </ModalField>
+                </div>
+              ) : (
+                <ModalField label="Calendar month">
+                  <MonthPicker onChange={setDraftMonthKey} value={draftMonthKey} />
                 </ModalField>
-                <ModalField label="To">
-                  <input
-                    className={modalInputClass}
-                    min={draftDateFrom || undefined}
-                    onChange={(e) => setDraftDateTo(e.target.value)}
-                    type="date"
-                    value={draftDateTo}
-                  />
-                </ModalField>
-              </div>
+              )}
 
               <ModalField label="Transaction type">
                 <select
@@ -679,6 +1010,25 @@ export function TransactionsPage() {
                       {category.transactionTypeCode}: {category.label}
                     </option>
                   ))}
+                </select>
+              </ModalField>
+
+              <ModalField label="Customer">
+                <select
+                  className={modalSelectClass}
+                  onChange={(e) => setDraftCustomerId(e.target.value)}
+                  value={draftCustomerId}
+                >
+                  <option value="">All customers</option>
+                  {state.customers.map((c) => {
+                    const base = c.company ? `${c.name} (${c.company})` : c.name
+                    const label = c.isArchived ? `${base} (archived)` : base
+                    return (
+                      <option key={c.id} value={c.id}>
+                        {label}
+                      </option>
+                    )
+                  })}
                 </select>
               </ModalField>
             </div>
@@ -784,6 +1134,34 @@ export function TransactionsPage() {
                   </select>
                 </ModalField>
 
+                {showCustomerField ? (
+                  <ModalField label="Customer">
+                    <select
+                      className={modalSelectClass}
+                      onChange={(event) => setFormCustomerId(event.target.value)}
+                      value={formCustomerId}
+                    >
+                      <option value="">No customer</option>
+                      {formCustomerId &&
+                      !activeCustomersForForm.some((c) => String(c.id) === formCustomerId)
+                        ? state.customers
+                            .filter((c) => String(c.id) === formCustomerId)
+                            .map((c) => (
+                              <option key={c.id} value={c.id}>
+                                {c.company ? `${c.name} (${c.company})` : c.name}
+                                {c.isArchived ? ' (archived)' : ''}
+                              </option>
+                            ))
+                        : null}
+                      {activeCustomersForForm.map((c) => (
+                        <option key={c.id} value={c.id}>
+                          {c.company ? `${c.name} (${c.company})` : c.name}
+                        </option>
+                      ))}
+                    </select>
+                  </ModalField>
+                ) : null}
+
                 <ModalField label="Amount" required>
                   <input
                     className={modalInputClass}
@@ -806,13 +1184,13 @@ export function TransactionsPage() {
                   />
                 </ModalField>
 
-                {isSaleType ? (
-                  <ModalField label="Number of staff" required>
+                {showStaffCountField ? (
+                  <ModalField label="Number of staff">
                     <input
                       className={modalInputClass}
                       min="1"
                       onChange={(event) => setStaffCount(event.target.value)}
-                      placeholder="0"
+                      placeholder="Optional"
                       type="number"
                       value={staffCount}
                     />

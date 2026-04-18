@@ -10,6 +10,7 @@ import {
   Download,
   Info,
   Layers,
+  PieChart as PieChartIcon,
   Receipt,
   Repeat,
   SlidersHorizontal,
@@ -43,8 +44,10 @@ import {
   formatMonthLabel,
 } from '../../../lib/format'
 import {
+  getDashboardData,
   getTransactionsSummary,
   listTransactions,
+  type DashboardData,
   type TransactionsSummary,
 } from '../../../lib/db/repository'
 import { useAuth } from '../../auth/use-auth'
@@ -65,6 +68,7 @@ type LoadState =
   | {
       current: TransactionsSummary
       compare: TransactionsSummary | null
+      monthly: DashboardData | null
       status: 'ready'
     }
   | { message: string; status: 'error' }
@@ -322,6 +326,9 @@ export function TransactionsSummaryPage() {
     return autoComparisonRange(currentRange, preset)
   }, [compareEnabled, compareMode, manualCompareRange, currentRange, preset])
 
+  const shouldLoadMonthlyShares = preset === 'month' && !compareEnabled
+  const monthKey = anchorDate.slice(0, 7)
+
   const load = useCallback(async () => {
     if (!isValidRange(currentRange)) {
       setState({ message: 'Invalid date range.', status: 'error' })
@@ -329,18 +336,19 @@ export function TransactionsSummaryPage() {
     }
     setState({ status: 'loading' })
     try {
-      const [current, compare] = await Promise.all([
+      const [current, compare, monthly] = await Promise.all([
         getTransactionsSummary(currentRange.from, currentRange.to),
         compareRange ? getTransactionsSummary(compareRange.from, compareRange.to) : Promise.resolve(null),
+        shouldLoadMonthlyShares ? getDashboardData(monthKey) : Promise.resolve(null),
       ])
-      setState({ compare, current, status: 'ready' })
+      setState({ compare, current, monthly, status: 'ready' })
     } catch (error: unknown) {
       setState({
         message: error instanceof Error ? error.message : 'Unable to load summary.',
         status: 'error',
       })
     }
-  }, [currentRange, compareRange])
+  }, [currentRange, compareRange, shouldLoadMonthlyShares, monthKey])
 
   useEffect(() => {
     void load()
@@ -524,7 +532,7 @@ export function TransactionsSummaryPage() {
         dateTo: currentRange.to,
       })
       const filename = `transactions-summary-${currentRange.from}-to-${currentRange.to}.xlsx`
-      exportFilteredTransactions(transactions, filename)
+      await exportFilteredTransactions(transactions, filename)
     } finally {
       setExporting(false)
     }
@@ -657,6 +665,75 @@ export function TransactionsSummaryPage() {
           value={kpis?.salesPerStaffShift ?? 0}
         />
       </div>
+
+      {state.status === 'ready' &&
+        shouldLoadMonthlyShares &&
+        state.monthly &&
+        state.monthly.incomeShares.length > 0 && (
+          <div className="rounded-xl border border-[var(--border)] bg-[var(--panel)] p-4">
+            <SectionHeading
+              action={
+                <span className="inline-flex items-center gap-1 text-xs text-[var(--muted)]">
+                  <PieChartIcon className="h-3.5 w-3.5" />
+                  Base: {formatCurrency(state.monthly.kpis.incomeShareAllocationBase)}
+                </span>
+              }
+              info="Monthly income share allocation based on net sales (total sales minus operating expenses, excluding rent). Each stakeholder's slice is computed from their configured percentage for this month."
+              subtitle={`Allocations for ${formatMonthLabel(state.monthly.monthKey)}`}
+              title="Income shares"
+            />
+            <div className="overflow-x-auto">
+              <table className="w-full text-sm">
+                <thead>
+                  <tr className="border-b border-[var(--border)] text-xs font-semibold uppercase tracking-wide text-[var(--muted)]">
+                    <th className="py-2 pr-3 text-left font-semibold">Share</th>
+                    <th className="py-2 px-2 text-right font-semibold">Percentage</th>
+                    <th className="py-2 pl-2 text-right font-semibold">Allocated</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-[var(--border)]">
+                  {state.monthly.incomeShares.map((share) => (
+                    <tr
+                      className="transition hover:bg-[var(--background)]"
+                      key={share.ruleName}
+                    >
+                      <td className="py-2 pr-3 font-medium">{share.ruleName}</td>
+                      <td className="py-2 px-2 text-right tabular-nums text-[var(--muted)]">
+                        {share.percentage.toFixed(2)}%
+                      </td>
+                      <td className="py-2 pl-2 text-right tabular-nums font-semibold text-indigo-500">
+                        {formatCurrency(share.allocatedAmount)}
+                      </td>
+                    </tr>
+                  ))}
+                  {(() => {
+                    const totalPct = state.monthly.incomeShares.reduce(
+                      (sum, s) => sum + s.percentage,
+                      0,
+                    )
+                    const totalAmt = state.monthly.incomeShares.reduce(
+                      (sum, s) => sum + s.allocatedAmount,
+                      0,
+                    )
+                    return (
+                      <tr className="bg-[var(--background)]/40">
+                        <td className="py-2 pr-3 text-xs font-semibold uppercase tracking-wide text-[var(--muted)]">
+                          Total
+                        </td>
+                        <td className="py-2 px-2 text-right tabular-nums font-semibold">
+                          {totalPct.toFixed(2)}%
+                        </td>
+                        <td className="py-2 pl-2 text-right tabular-nums font-semibold">
+                          {formatCurrency(totalAmt)}
+                        </td>
+                      </tr>
+                    )
+                  })()}
+                </tbody>
+              </table>
+            </div>
+          </div>
+        )}
 
       {state.status === 'loading' ? (
         <div className="flex items-center justify-center py-16 text-sm text-[var(--muted)]">

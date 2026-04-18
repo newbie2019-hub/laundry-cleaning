@@ -353,6 +353,39 @@ pub fn builder() -> Builder {
       "#,
       kind: MigrationKind::Up,
     },
+    Migration {
+      version: 9,
+      description: "create_customers",
+      sql: r#"
+        CREATE TABLE IF NOT EXISTS customers (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          name TEXT NOT NULL,
+          company TEXT NOT NULL DEFAULT '',
+          email TEXT NOT NULL DEFAULT '',
+          phone TEXT NOT NULL DEFAULT '',
+          is_archived INTEGER NOT NULL DEFAULT 0,
+          created_by INTEGER,
+          updated_by INTEGER,
+          created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+          updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+          FOREIGN KEY (created_by) REFERENCES users (id),
+          FOREIGN KEY (updated_by) REFERENCES users (id)
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_customers_name ON customers(name COLLATE NOCASE);
+      "#,
+      kind: MigrationKind::Up,
+    },
+    Migration {
+      version: 10,
+      description: "add_customer_to_transactions",
+      sql: r#"
+        ALTER TABLE transactions ADD COLUMN customer_id INTEGER REFERENCES customers(id) ON DELETE SET NULL;
+
+        CREATE INDEX IF NOT EXISTS idx_transactions_customer ON transactions(customer_id);
+      "#,
+      kind: MigrationKind::Up,
+    },
   ];
 
   Builder::default().add_migrations(DB_URL, migrations)
