@@ -1,5 +1,5 @@
 import type { FormEvent, ReactNode } from 'react'
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { endOfMonth, format, subDays } from 'date-fns'
 import {
   ArrowDown,
@@ -20,12 +20,14 @@ import {
   WalletCards,
   X,
 } from 'lucide-react'
-import { Link } from 'react-router-dom'
+import { Link, useSearchParams } from 'react-router-dom'
 import { exportFilteredTransactions } from '../../exports/export-service'
 import { MonthPicker } from '../../../components/month-picker'
 import { formatCurrency } from '../../../lib/format'
 import {
   deleteTransaction,
+  getCustomerLoyaltyStatus,
+  getLoyaltySettings,
   listAvailableMonthKeys,
   listCategories,
   listCustomers,
@@ -34,7 +36,9 @@ import {
   saveTransaction,
   type Category,
   type Customer,
+  type CustomerLoyaltyStatus,
   type LedgerTransaction,
+  type LoyaltySettings,
   type TransactionType,
 } from '../../../lib/db/repository'
 import { useAuth } from '../../auth/use-auth'
@@ -49,6 +53,7 @@ type DaySummary = {
 type LoadState = {
   categories: Category[]
   customers: Customer[]
+  loyaltySettings: LoyaltySettings
   months: string[]
   previousDaySummary: DaySummary | null
   transactions: LedgerTransaction[]
@@ -58,10 +63,32 @@ type LoadState = {
 const emptyState: LoadState = {
   categories: [],
   customers: [],
+  loyaltySettings: { freeAfterLoads: 9, kgPerLoad: 8 },
   months: [],
   previousDaySummary: null,
   transactions: [],
   transactionTypes: [],
+}
+
+const TX_TABLE_GRID =
+  'sm:grid sm:grid-cols-[110px_120px_140px_72px_minmax(0,120px)_minmax(0,1fr)_96px_128px_80px] sm:items-center sm:gap-3'
+
+function formatLoadsCell(transaction: LedgerTransaction) {
+  if (transaction.isLoyaltyReward) {
+    return (
+      <span className="inline-flex rounded-md bg-violet-500/15 px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-violet-600">
+        Free
+      </span>
+    )
+  }
+  if (transaction.loads == null) return '—'
+  const kgPart = transaction.kg != null ? ` (${transaction.kg} kg)` : ''
+  return (
+    <span className="tabular-nums text-xs">
+      {transaction.loads}
+      {kgPart ? <span className="text-[var(--muted)]">{kgPart}</span> : null}
+    </span>
+  )
 }
 
 function kpiDelta(current: number, previous: number | undefined) {
@@ -86,7 +113,7 @@ function formatTransactionDisplayDate(entryDate: string) {
   return format(new Date(`${entryDate}T00:00:00`), 'MMM d, yyyy')
 }
 
-type TableSortKey = 'amount' | 'category' | 'customer' | 'date' | 'staff' | 'type'
+type TableSortKey = 'amount' | 'category' | 'customer' | 'date' | 'loads' | 'staff' | 'type'
 
 function compareTransactionsForSort(
   a: LedgerTransaction,
@@ -120,6 +147,12 @@ function compareTransactionsForSort(
     case 'amount':
       cmp = a.amount - b.amount
       break
+    case 'loads': {
+      const av = a.loads ?? -1
+      const bv = b.loads ?? -1
+      cmp = av - bv
+      break
+    }
     default:
       break
   }
@@ -194,6 +227,8 @@ type FilterPeriodMode = 'dateRange' | 'month'
 
 export function TransactionsPage() {
   const { hasPermission, user } = useAuth()
+  const [searchParams, setSearchParams] = useSearchParams()
+  const customerPrefillConsumed = useRef<string | null>(null)
   const today = format(new Date(), 'yyyy-MM-dd')
   const currentMonthKey = format(new Date(), 'yyyy-MM')
   const [filterPeriodMode, setFilterPeriodMode] = useState<FilterPeriodMode>('dateRange')
@@ -221,6 +256,10 @@ export function TransactionsPage() {
   const [amount, setAmount] = useState('')
   const [staffCount, setStaffCount] = useState('')
   const [formCustomerId, setFormCustomerId] = useState('')
+  const [formKg, setFormKg] = useState('')
+  const [formLoads, setFormLoads] = useState('')
+  const [formRedeemReward, setFormRedeemReward] = useState(false)
+  const [loyaltyStatus, setLoyaltyStatus] = useState<CustomerLoyaltyStatus | null>(null)
   const [state, setState] = useState<LoadState>(emptyState)
   const [error, setError] = useState<string | null>(null)
   const [isSubmitting, setIsSubmitting] = useState(false)
@@ -246,6 +285,56 @@ export function TransactionsPage() {
   const isExpenseType = selectedFormType?.code === 'EXPENSE'
   const showStaffCountField = isSaleType || isExpenseType
   const showCustomerField = isSaleType
+
+  const selectedFormCategory = useMemo(
+    () => state.categories.find((c) => String(c.id) === formCategoryId),
+    [formCategoryId, state.categories],
+  )
+  const showLoadFields = Boolean(isSaleType && selectedFormCategory?.isLoadable)
+
+  useEffect(() => {
+    if (!showCustomerField || !formCustomerId) {
+      setLoyaltyStatus(null)
+      return
+    }
+    let cancelled = false
+    void getCustomerLoyaltyStatus(Number(formCustomerId)).then((s) => {
+      if (!cancelled) setLoyaltyStatus(s)
+    })
+    return () => {
+      cancelled = true
+    }
+  }, [formCustomerId, showCustomerField])
+
+  useEffect(() => {
+    const cid = searchParams.get('customerId')
+    if (!cid || !/^\d+$/.test(cid)) return
+    if (customerPrefillConsumed.current === cid) return
+    customerPrefillConsumed.current = cid
+    setSearchParams({}, { replace: true })
+    setFormCustomerId(cid)
+    setFilterCustomerId(cid)
+    setIsModalOpen(true)
+  }, [searchParams, setSearchParams])
+
+  useEffect(() => {
+    if (!showLoadFields) {
+      setFormRedeemReward(false)
+      setFormKg('')
+      setFormLoads('')
+    }
+  }, [showLoadFields])
+
+  function handleKgChange(value: string) {
+    setFormKg(value)
+    if (!showLoadFields || formRedeemReward) return
+    const k = Number(value)
+    if (Number.isFinite(k) && k > 0) {
+      const kgPer = state.loyaltySettings.kgPerLoad
+      const next = Math.round((k / kgPer) * 100) / 100
+      setFormLoads(String(next))
+    }
+  }
 
   const periodCountsTowardBadge =
     filterPeriodMode === 'month'
@@ -310,7 +399,7 @@ export function TransactionsPage() {
       setTableSortDir((d) => (d === 'asc' ? 'desc' : 'asc'))
     } else {
       setTableSortKey(key)
-      setTableSortDir(key === 'date' || key === 'amount' ? 'desc' : 'asc')
+      setTableSortDir(key === 'date' || key === 'amount' || key === 'loads' ? 'desc' : 'asc')
     }
   }
 
@@ -333,10 +422,12 @@ export function TransactionsPage() {
     const isSingleDay =
       useDateRange && filterDateFrom && filterDateTo && filterDateFrom === filterDateTo
 
-    const [transactionTypes, categories, customers, transactions, previousDayTransactions] = await Promise.all([
+    const [transactionTypes, categories, customers, loyaltySettings, transactions, previousDayTransactions] =
+      await Promise.all([
       listTransactionTypes(),
       listCategories(),
       listCustomers({ includeArchived: true }),
+      getLoyaltySettings(),
       listTransactions({
         categoryId: filterCategoryId ? Number(filterCategoryId) : null,
         customerId: filterCustomerId ? Number(filterCustomerId) : null,
@@ -380,6 +471,7 @@ export function TransactionsPage() {
     setState({
       categories,
       customers,
+      loyaltySettings,
       months: Array.from(new Set([monthToUse, ...months])).sort().reverse(),
       previousDaySummary,
       transactions,
@@ -434,6 +526,10 @@ export function TransactionsPage() {
     setAmount('')
     setStaffCount('')
     setFormCustomerId('')
+    setFormKg('')
+    setFormLoads('')
+    setFormRedeemReward(false)
+    setLoyaltyStatus(null)
     setError(null)
   }
 
@@ -457,8 +553,34 @@ export function TransactionsPage() {
       return
     }
 
-    if (!formTypeId || !formCategoryId || !formEntryDate || !amount) {
+    const redeem = showLoadFields && formRedeemReward
+
+    if (!formTypeId || !formCategoryId || !formEntryDate) {
+      setError('Date, type, and category are required.')
+      return
+    }
+
+    if (!redeem && (amount === '' || amount.trim() === '')) {
       setError('Date, type, category, and amount are required.')
+      return
+    }
+
+    if (showLoadFields && redeem && !formCustomerId) {
+      setError('Customer is required to redeem a loyalty reward.')
+      return
+    }
+
+    if (showLoadFields && !redeem) {
+      const loadsNum = Number(formLoads.trim())
+      if (!Number.isFinite(loadsNum) || loadsNum <= 0) {
+        setError('Enter a positive number of loads (or enter kg to calculate loads).')
+        return
+      }
+    }
+
+    const amountNum = redeem ? 0 : Number(amount)
+    if (!redeem && (!Number.isFinite(amountNum) || amountNum < 0)) {
+      setError('Amount must be a valid non-negative number.')
       return
     }
 
@@ -478,14 +600,37 @@ export function TransactionsPage() {
     setIsSubmitting(true)
     setError(null)
 
+    let resolvedKg: number | null = null
+    if (showLoadFields) {
+      const kgTrim = formKg.trim()
+      if (kgTrim !== '') {
+        const kgNum = Number(kgTrim)
+        resolvedKg = Number.isFinite(kgNum) && kgNum >= 0 ? kgNum : null
+      }
+    }
+
+    let resolvedLoads: number | null = null
+    if (showLoadFields) {
+      if (redeem) {
+        const n = Number(formLoads.trim())
+        resolvedLoads = Number.isFinite(n) && n > 0 ? n : 1
+      } else {
+        const n = Number(formLoads.trim())
+        resolvedLoads = Number.isFinite(n) && n > 0 ? n : null
+      }
+    }
+
     try {
       await saveTransaction(
         {
-          amount: Number(amount),
+          amount: amountNum,
           categoryId: Number(formCategoryId),
           customerId: showCustomerField && formCustomerId ? Number(formCustomerId) : null,
           description: description.trim(),
           entryDate: formEntryDate,
+          isLoyaltyReward: redeem,
+          kg: showLoadFields ? resolvedKg : null,
+          loads: showLoadFields ? resolvedLoads : null,
           staffCount: showStaffCountField ? resolvedStaffCount : null,
           transactionTypeId: Number(formTypeId),
         },
@@ -520,6 +665,9 @@ export function TransactionsPage() {
     setFormCustomerId(
       transaction.customerId != null ? String(transaction.customerId) : '',
     )
+    setFormKg(transaction.kg != null ? String(transaction.kg) : '')
+    setFormLoads(transaction.loads != null ? String(transaction.loads) : '')
+    setFormRedeemReward(transaction.isLoyaltyReward)
     setIsModalOpen(true)
   }
 
@@ -724,7 +872,9 @@ export function TransactionsPage() {
       {/* Transaction list */}
       <div className="rounded-lg border border-[var(--border)] bg-[var(--panel)] overflow-hidden">
         {/* Desktop column headers */}
-        <div className="hidden sm:grid sm:grid-cols-[110px_120px_140px_minmax(0,120px)_minmax(0,1fr)_96px_128px_80px] sm:items-center sm:gap-3 sm:border-b sm:border-[var(--border)] sm:bg-[var(--background)]/40 sm:px-4 sm:py-2 sm:text-[10px] sm:font-semibold sm:uppercase sm:tracking-wider sm:text-[var(--muted)]">
+        <div
+          className={`hidden ${TX_TABLE_GRID} sm:border-b sm:border-[var(--border)] sm:bg-[var(--background)]/40 sm:px-4 sm:py-2 sm:text-[10px] sm:font-semibold sm:uppercase sm:tracking-wider sm:text-[var(--muted)]`}
+        >
           <SortableColumnHeader
             activeKey={tableSortKey}
             dir={tableSortDir}
@@ -746,6 +896,14 @@ export function TransactionsPage() {
             label="Category"
             onSort={handleColumnSort}
             sortKey="category"
+          />
+          <SortableColumnHeader
+            activeKey={tableSortKey}
+            align="right"
+            dir={tableSortDir}
+            label="Loads"
+            onSort={handleColumnSort}
+            sortKey="loads"
           />
           <SortableColumnHeader
             activeKey={tableSortKey}
@@ -809,6 +967,9 @@ export function TransactionsPage() {
                           {transaction.transactionTypeCode}
                         </span>
                         <span className="text-xs text-[var(--muted)] tabular-nums">
+                          Loads: {formatLoadsCell(transaction)}
+                        </span>
+                        <span className="text-xs text-[var(--muted)] tabular-nums">
                           Staff: {transaction.staffCount ?? '—'}
                         </span>
                       </div>
@@ -848,7 +1009,7 @@ export function TransactionsPage() {
                   </div>
 
                   {/* Desktop: table row */}
-                  <div className="hidden sm:grid sm:grid-cols-[110px_120px_140px_minmax(0,120px)_minmax(0,1fr)_96px_128px_80px] sm:items-center sm:gap-3 sm:px-4 sm:py-3 sm:transition sm:hover:bg-[var(--background)]/50">
+                  <div className={`hidden ${TX_TABLE_GRID} sm:px-4 sm:py-3 sm:transition sm:hover:bg-[var(--background)]/50`}>
                     <span className="text-xs tabular-nums text-[var(--foreground)]">
                       {formatTransactionDisplayDate(transaction.entryDate)}
                     </span>
@@ -858,6 +1019,7 @@ export function TransactionsPage() {
                       </span>
                     </div>
                     <span className="truncate text-sm text-[var(--foreground)]">{transaction.categoryLabel}</span>
+                    <span className="text-right text-xs">{formatLoadsCell(transaction)}</span>
                     <span className="truncate text-sm text-[var(--muted)]" title={transaction.customerName ?? undefined}>
                       {transaction.customerName ?? '—'}
                     </span>
@@ -1092,7 +1254,7 @@ export function TransactionsPage() {
           />
 
           {/* Modal panel — always white */}
-          <div className="relative z-10 w-full max-w-sm rounded-xl bg-white shadow-2xl">
+          <div className="relative z-10 w-full max-w-md rounded-xl bg-white shadow-2xl">
             {/* Header */}
             <div className="flex items-center justify-between border-b border-gray-200 px-5 py-4">
               <h2 className="text-base font-semibold text-gray-900">
@@ -1178,9 +1340,73 @@ export function TransactionsPage() {
                   </ModalField>
                 ) : null}
 
+                {showLoadFields ? (
+                  <div className="grid grid-cols-2 gap-3">
+                    <ModalField label="Kilograms (optional)">
+                      <input
+                        className={modalInputClass}
+                        min="0"
+                        onChange={(event) => handleKgChange(event.target.value)}
+                        placeholder="e.g. 8"
+                        step="0.01"
+                        type="number"
+                        value={formKg}
+                      />
+                    </ModalField>
+                    <ModalField label="Loads" required={!formRedeemReward}>
+                      <input
+                        className={modalInputClass}
+                        min="0"
+                        onChange={(event) => setFormLoads(event.target.value)}
+                        placeholder="e.g. 1"
+                        step="0.01"
+                        type="number"
+                        value={formLoads}
+                      />
+                    </ModalField>
+                  </div>
+                ) : null}
+
+                {loyaltyStatus && formCustomerId && showCustomerField ? (
+                  <p className="text-xs text-gray-600">
+                    {loyaltyStatus.isEligibleForReward ? (
+                      <span className="font-medium text-violet-600">
+                        Free load available — check &quot;Redeem loyalty reward&quot; below.
+                      </span>
+                    ) : (
+                      <>
+                        {loyaltyStatus.paidLoadsSinceLastReward.toFixed(2)} /{' '}
+                        {loyaltyStatus.freeAfterLoads} paid loads toward next reward.
+                      </>
+                    )}
+                  </p>
+                ) : null}
+
+                {showLoadFields &&
+                formCustomerId &&
+                (loyaltyStatus?.isEligibleForReward || formRedeemReward) ? (
+                  <label className="flex cursor-pointer items-start gap-2 text-sm text-gray-800">
+                    <input
+                      checked={formRedeemReward}
+                      className="mt-1 rounded border-gray-300"
+                      onChange={(event) => {
+                        const checked = event.target.checked
+                        setFormRedeemReward(checked)
+                        if (checked) {
+                          setAmount('0')
+                          setFormLoads((prev) => (prev.trim() === '' ? '1' : prev))
+                        }
+                      }}
+                      type="checkbox"
+                    />
+                    <span>Redeem loyalty reward (free load — amount will be 0)</span>
+                  </label>
+                ) : null}
+
                 <ModalField label="Amount" required>
                   <input
                     className={modalInputClass}
+                    disabled={showLoadFields && formRedeemReward}
                     min="0"
                     onChange={(event) => setAmount(event.target.value)}
                     placeholder="0.00"

@@ -509,6 +509,31 @@ pub fn builder() -> Builder {
       "#,
       kind: MigrationKind::Up,
     },
+    Migration {
+      version: 13,
+      description: "loyalty_loads_and_category_flags",
+      sql: r#"
+        ALTER TABLE categories ADD COLUMN is_loadable INTEGER NOT NULL DEFAULT 0;
+
+        ALTER TABLE transactions ADD COLUMN kg REAL;
+        ALTER TABLE transactions ADD COLUMN loads REAL;
+        ALTER TABLE transactions ADD COLUMN is_loyalty_reward INTEGER NOT NULL DEFAULT 0;
+
+        CREATE TABLE IF NOT EXISTS loyalty_settings (
+          id INTEGER PRIMARY KEY CHECK (id = 1),
+          kg_per_load REAL NOT NULL DEFAULT 8,
+          free_after_loads INTEGER NOT NULL DEFAULT 9
+        );
+
+        INSERT OR IGNORE INTO loyalty_settings (id, kg_per_load, free_after_loads)
+        VALUES (1, 8, 9);
+
+        UPDATE categories
+        SET is_loadable = 1
+        WHERE transaction_type_id = (SELECT id FROM transaction_types WHERE code = 'SALE');
+      "#,
+      kind: MigrationKind::Up,
+    },
   ];
 
   Builder::default().add_migrations(DB_URL, migrations)

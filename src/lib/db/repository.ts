@@ -21,6 +21,7 @@ export type TransactionType = {
 export type Category = {
   id: number
   isArchived: boolean
+  isLoadable: boolean
   isSeeded: boolean
   label: string
   transactionTypeCode: string
@@ -37,6 +38,9 @@ export type LedgerTransaction = {
   description: string
   entryDate: string
   id: number
+  isLoyaltyReward: boolean
+  kg: number | null
+  loads: number | null
   staffCount: number | null
   transactionTypeCode: string
   transactionTypeId: number
@@ -60,8 +64,25 @@ export type TransactionDraft = {
   customerId: number | null
   description: string
   entryDate: string
+  isLoyaltyReward: boolean
+  kg: number | null
+  loads: number | null
   staffCount: number | null
   transactionTypeId: number
+}
+
+export type LoyaltySettings = {
+  freeAfterLoads: number
+  kgPerLoad: number
+}
+
+export type CustomerLoyaltyStatus = {
+  freeAfterLoads: number
+  isEligibleForReward: boolean
+  lastRewardDate: string | null
+  paidLoadsSinceLastReward: number
+  totalPaidLoads: number
+  totalRewardsRedeemed: number
 }
 
 export type Customer = {
@@ -396,7 +417,17 @@ export async function listTransactionTypes() {
 
 export async function listCategories(includeArchived = false) {
   const database = await getDatabase()
-  return database.select<Category[]>(
+  const rows = await database.select<
+    Array<{
+      id: number
+      isArchived: number
+      isLoadable: number
+      isSeeded: number
+      label: string
+      transactionTypeCode: string
+      transactionTypeId: number
+    }>
+  >(
     `
       SELECT
         categories.id AS id,
@@ -404,6 +435,7 @@ export async function listCategories(includeArchived = false) {
         categories.transaction_type_id AS transactionTypeId,
         categories.is_seeded AS isSeeded,
         categories.is_archived AS isArchived,
+        categories.is_loadable AS isLoadable,
         transaction_types.code AS transactionTypeCode
       FROM categories
       JOIN transaction_types ON transaction_types.id = categories.transaction_type_id
@@ -411,6 +443,35 @@ export async function listCategories(includeArchived = false) {
       ORDER BY transaction_types.id, categories.label
     `,
   )
+  return rows.map((row) => ({
+    id: row.id,
+    isArchived: Boolean(row.isArchived),
+    isLoadable: Boolean(row.isLoadable),
+    isSeeded: Boolean(row.isSeeded),
+    label: row.label,
+    transactionTypeCode: row.transactionTypeCode,
+    transactionTypeId: row.transactionTypeId,
+  }))
+}
+
+type LedgerTransactionSelectRow = {
+  amount: number
+  categoryId: number
+  categoryLabel: string
+  createdByName: string | null
+  customerId: number | null
+  customerName: string | null
+  description: string
+  entryDate: string
+  id: number
+  isLoyaltyReward: number | boolean
+  kg: number | null
+  loads: number | null
+  staffCount: number | null
+  transactionTypeCode: string
+  transactionTypeId: number
+  transactionTypeLabel: string
+  updatedByName: string | null
 }
 
 export async function listTransactions(filters: TransactionFilters = {}) {
@@ -455,7 +516,7 @@ export async function listTransactions(filters: TransactionFilters = {}) {
 
   const whereClause = conditions.length > 0 ? `WHERE ${conditions.join(' AND ')}` : ''
 
-  return database.select<LedgerTransaction[]>(
+  return database.select<LedgerTransactionSelectRow[]>(
     `
       SELECT
         transactions.id AS id,
@@ -463,6 +524,9 @@ export async function listTransactions(filters: TransactionFilters = {}) {
         transactions.description AS description,
         transactions.amount AS amount,
         transactions.staff_count AS staffCount,
+        transactions.kg AS kg,
+        transactions.loads AS loads,
+        transactions.is_loyalty_reward AS isLoyaltyReward,
         transactions.category_id AS categoryId,
         categories.label AS categoryLabel,
         transactions.customer_id AS customerId,
@@ -482,12 +546,34 @@ export async function listTransactions(filters: TransactionFilters = {}) {
       ORDER BY transactions.entry_date DESC, transactions.id DESC
     `,
     params,
-  )
+  ).then((rows) => rows.map(mapLedgerTransactionRow))
+}
+
+function mapLedgerTransactionRow(row: LedgerTransactionSelectRow): LedgerTransaction {
+  return {
+    amount: toNumber(row.amount),
+    categoryId: row.categoryId,
+    categoryLabel: row.categoryLabel,
+    createdByName: row.createdByName,
+    customerId: row.customerId,
+    customerName: row.customerName,
+    description: row.description,
+    entryDate: row.entryDate,
+    id: row.id,
+    isLoyaltyReward: Boolean(row.isLoyaltyReward),
+    kg: row.kg == null || Number.isNaN(Number(row.kg)) ? null : Number(row.kg),
+    loads: row.loads == null || Number.isNaN(Number(row.loads)) ? null : Number(row.loads),
+    staffCount: row.staffCount,
+    transactionTypeCode: row.transactionTypeCode,
+    transactionTypeId: row.transactionTypeId,
+    transactionTypeLabel: row.transactionTypeLabel,
+    updatedByName: row.updatedByName,
+  }
 }
 
 export async function getTransactionById(id: number): Promise<LedgerTransaction | null> {
   const database = await getDatabase()
-  const rows = await database.select<LedgerTransaction[]>(
+  const rows = await database.select<LedgerTransactionSelectRow[]>(
     `
       SELECT
         transactions.id AS id,
@@ -495,6 +581,9 @@ export async function getTransactionById(id: number): Promise<LedgerTransaction 
         transactions.description AS description,
         transactions.amount AS amount,
         transactions.staff_count AS staffCount,
+        transactions.kg AS kg,
+        transactions.loads AS loads,
+        transactions.is_loyalty_reward AS isLoyaltyReward,
         transactions.category_id AS categoryId,
         categories.label AS categoryLabel,
         transactions.customer_id AS customerId,
@@ -514,11 +603,74 @@ export async function getTransactionById(id: number): Promise<LedgerTransaction 
     `,
     [id],
   )
-  return rows[0] ?? null
+  const row = rows[0]
+  return row ? mapLedgerTransactionRow(row) : null
 }
 
 export async function saveTransaction(input: TransactionDraft, userId: number, transactionId?: number) {
   const database = await getDatabase()
+
+  const metaRows = await database.select<Array<{ code: string; isLoadable: number }>>(
+    `
+      SELECT transaction_types.code AS code, categories.is_loadable AS isLoadable
+      FROM categories
+      JOIN transaction_types ON transaction_types.id = categories.transaction_type_id
+      WHERE categories.id = $1
+    `,
+    [input.categoryId],
+  )
+  const meta = metaRows[0]
+  if (!meta) {
+    throw new Error('Category not found.')
+  }
+
+  const isSale = meta.code === 'SALE'
+  const categoryLoadable = Boolean(meta.isLoadable)
+  const isLoyaltyReward = Boolean(input.isLoyaltyReward)
+
+  if (isLoyaltyReward) {
+    if (!isSale || !categoryLoadable) {
+      throw new Error('Loyalty rewards can only be recorded on loadable sale categories.')
+    }
+    if (input.amount !== 0) {
+      throw new Error('Loyalty reward transactions must have amount 0.')
+    }
+    if (input.customerId == null) {
+      throw new Error('Customer is required to redeem a loyalty reward.')
+    }
+  }
+
+  let kg: number | null = input.kg
+  let loads: number | null = input.loads
+  let isRewardInt = isLoyaltyReward ? 1 : 0
+
+  if (!isSale || !categoryLoadable) {
+    kg = null
+    loads = null
+    isRewardInt = 0
+    if (isLoyaltyReward) {
+      throw new Error('Invalid category for loyalty reward.')
+    }
+  } else if (!isLoyaltyReward) {
+    const loadsNum = loads == null ? Number.NaN : Number(loads)
+    if (!Number.isFinite(loadsNum) || loadsNum <= 0) {
+      throw new Error(
+        'Enter a positive number of loads (or enter kg to calculate loads) for this loadable sale category.',
+      )
+    }
+    loads = loadsNum
+    if (kg != null) {
+      const kgNum = Number(kg)
+      kg = Number.isFinite(kgNum) && kgNum >= 0 ? kgNum : null
+    }
+  } else {
+    const loadsNum = loads == null || !Number.isFinite(Number(loads)) ? 1 : Number(loads)
+    loads = loadsNum > 0 ? loadsNum : 1
+    if (kg != null) {
+      const kgNum = Number(kg)
+      kg = Number.isFinite(kgNum) && kgNum >= 0 ? kgNum : null
+    }
+  }
 
   if (transactionId) {
     await database.execute(
@@ -532,9 +684,12 @@ export async function saveTransaction(input: TransactionDraft, userId: number, t
           amount = $5,
           staff_count = $6,
           customer_id = $7,
-          updated_by = $8,
+          kg = $8,
+          loads = $9,
+          is_loyalty_reward = $10,
+          updated_by = $11,
           updated_at = CURRENT_TIMESTAMP
-        WHERE id = $9
+        WHERE id = $12
       `,
       [
         input.entryDate,
@@ -544,6 +699,9 @@ export async function saveTransaction(input: TransactionDraft, userId: number, t
         input.amount,
         input.staffCount,
         input.customerId,
+        kg,
+        loads,
+        isRewardInt,
         userId,
         transactionId,
       ],
@@ -561,10 +719,13 @@ export async function saveTransaction(input: TransactionDraft, userId: number, t
         amount,
         staff_count,
         customer_id,
+        kg,
+        loads,
+        is_loyalty_reward,
         created_by,
         updated_by
       )
-      VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $8)
+      VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $11)
     `,
     [
       input.entryDate,
@@ -574,6 +735,9 @@ export async function saveTransaction(input: TransactionDraft, userId: number, t
       input.amount,
       input.staffCount,
       input.customerId,
+      kg,
+      loads,
+      isRewardInt,
       userId,
     ],
   )
@@ -638,6 +802,149 @@ export async function listCustomers(filters?: { includeArchived?: boolean; searc
     name: row.name,
     phone: row.phone,
   }))
+}
+
+export async function getLoyaltySettings(): Promise<LoyaltySettings> {
+  const database = await getDatabase()
+  const rows = await database.select<Array<{ freeAfterLoads: number; kgPerLoad: number }>>(
+    `
+      SELECT free_after_loads AS freeAfterLoads, kg_per_load AS kgPerLoad
+      FROM loyalty_settings
+      WHERE id = 1
+    `,
+  )
+  const row = rows[0]
+  if (!row) {
+    return { freeAfterLoads: 9, kgPerLoad: 8 }
+  }
+  return {
+    freeAfterLoads: Math.max(1, Math.floor(toNumber(row.freeAfterLoads))),
+    kgPerLoad: Math.max(0.1, toNumber(row.kgPerLoad)),
+  }
+}
+
+export async function saveLoyaltySettings(input: LoyaltySettings): Promise<void> {
+  const database = await getDatabase()
+  if (input.kgPerLoad < 0.1) {
+    throw new Error('Kilograms per load must be at least 0.1.')
+  }
+  if (input.freeAfterLoads < 1) {
+    throw new Error('Free load threshold must be at least 1 paid load.')
+  }
+  await database.execute(
+    `
+      UPDATE loyalty_settings
+      SET kg_per_load = $1, free_after_loads = $2
+      WHERE id = 1
+    `,
+    [input.kgPerLoad, Math.floor(input.freeAfterLoads)],
+  )
+}
+
+export async function getCustomerById(id: number): Promise<Customer | null> {
+  const database = await getDatabase()
+  const rows = await database.select<CustomerRow[]>(
+    `
+      SELECT
+        id,
+        name,
+        company,
+        email,
+        phone,
+        is_archived AS isArchived
+      FROM customers
+      WHERE id = $1
+    `,
+    [id],
+  )
+  const row = rows[0]
+  if (!row) return null
+  return {
+    company: row.company,
+    email: row.email,
+    id: row.id,
+    isArchived: Boolean(row.isArchived),
+    name: row.name,
+    phone: row.phone,
+  }
+}
+
+export async function getCustomerLoyaltyStatus(customerId: number): Promise<CustomerLoyaltyStatus> {
+  const database = await getDatabase()
+  const settings = await getLoyaltySettings()
+  const freeAfterLoads = settings.freeAfterLoads
+
+  const lastRewardRows = await database.select<Array<{ lastId: number | null }>>(
+    `
+      SELECT MAX(id) AS lastId
+      FROM transactions
+      WHERE customer_id = $1 AND is_loyalty_reward != 0
+    `,
+    [customerId],
+  )
+  const lastRewardId = lastRewardRows[0]?.lastId ?? null
+
+  const paidSinceRows = await database.select<Array<{ sumLoads: number }>>(
+    `
+      SELECT COALESCE(SUM(COALESCE(t.loads, 0)), 0) AS sumLoads
+      FROM transactions t
+      JOIN categories c ON c.id = t.category_id
+      JOIN transaction_types tt ON tt.id = t.transaction_type_id
+      WHERE t.customer_id = $1
+        AND t.is_loyalty_reward = 0
+        AND tt.code = 'SALE'
+        AND c.is_loadable != 0
+        AND ($2 IS NULL OR t.id > $2)
+    `,
+    [customerId, lastRewardId],
+  )
+  const paidLoadsSinceLastReward = toNumber(paidSinceRows[0]?.sumLoads)
+
+  const totalPaidRows = await database.select<Array<{ sumLoads: number }>>(
+    `
+      SELECT COALESCE(SUM(COALESCE(t.loads, 0)), 0) AS sumLoads
+      FROM transactions t
+      JOIN categories c ON c.id = t.category_id
+      JOIN transaction_types tt ON tt.id = t.transaction_type_id
+      WHERE t.customer_id = $1
+        AND t.is_loyalty_reward = 0
+        AND tt.code = 'SALE'
+        AND c.is_loadable != 0
+    `,
+    [customerId],
+  )
+  const totalPaidLoads = toNumber(totalPaidRows[0]?.sumLoads)
+
+  const rewardCountRows = await database.select<Array<{ n: number }>>(
+    `
+      SELECT COUNT(*) AS n
+      FROM transactions
+      WHERE customer_id = $1 AND is_loyalty_reward != 0
+    `,
+    [customerId],
+  )
+  const totalRewardsRedeemed = toNumber(rewardCountRows[0]?.n)
+
+  const lastDateRows = await database.select<Array<{ entryDate: string }>>(
+    `
+      SELECT entry_date AS entryDate
+      FROM transactions
+      WHERE customer_id = $1 AND is_loyalty_reward != 0
+      ORDER BY id DESC
+      LIMIT 1
+    `,
+    [customerId],
+  )
+  const lastRewardDate = lastDateRows[0]?.entryDate ?? null
+
+  return {
+    freeAfterLoads,
+    isEligibleForReward: paidLoadsSinceLastReward >= freeAfterLoads,
+    lastRewardDate,
+    paidLoadsSinceLastReward,
+    totalPaidLoads,
+    totalRewardsRedeemed,
+  }
 }
 
 export async function saveCustomer(input: CustomerDraft, userId: number, customerId?: number): Promise<void> {
@@ -904,10 +1211,18 @@ export async function updateRolePermission(roleId: number, permissionId: number,
 export async function saveCategory(input: {
   id?: number
   isArchived: boolean
+  isLoadable?: boolean
   label: string
   transactionTypeId: number
 }) {
   const database = await getDatabase()
+
+  const typeRows = await database.select<Array<{ code: string }>>(
+    `SELECT code FROM transaction_types WHERE id = $1`,
+    [input.transactionTypeId],
+  )
+  const isSale = typeRows[0]?.code === 'SALE'
+  const loadableFlag = isSale && input.isLoadable ? 1 : 0
 
   if (input.id) {
     await database.execute(
@@ -915,20 +1230,21 @@ export async function saveCategory(input: {
         UPDATE categories
         SET
           label = $1,
-          is_archived = $2
-        WHERE id = $3
+          is_archived = $2,
+          is_loadable = $3
+        WHERE id = $4
       `,
-      [input.label, input.isArchived ? 1 : 0, input.id],
+      [input.label, input.isArchived ? 1 : 0, loadableFlag, input.id],
     )
     return
   }
 
   await database.execute(
     `
-      INSERT INTO categories (transaction_type_id, label, is_seeded, is_archived)
-      VALUES ($1, $2, 0, $3)
+      INSERT INTO categories (transaction_type_id, label, is_seeded, is_archived, is_loadable)
+      VALUES ($1, $2, 0, $3, $4)
     `,
-    [input.transactionTypeId, input.label, input.isArchived ? 1 : 0],
+    [input.transactionTypeId, input.label, input.isArchived ? 1 : 0, loadableFlag],
   )
 }
 
@@ -3232,7 +3548,7 @@ export async function getUpcomingMaintenance(limit = 5): Promise<MaintenanceReco
 
 export async function getRecentTransactions(limit = 5): Promise<LedgerTransaction[]> {
   const database = await getDatabase()
-  return database.select<LedgerTransaction[]>(
+  const rows = await database.select<LedgerTransactionSelectRow[]>(
     `
       SELECT
         transactions.id AS id,
@@ -3240,6 +3556,9 @@ export async function getRecentTransactions(limit = 5): Promise<LedgerTransactio
         transactions.description AS description,
         transactions.amount AS amount,
         transactions.staff_count AS staffCount,
+        transactions.kg AS kg,
+        transactions.loads AS loads,
+        transactions.is_loyalty_reward AS isLoyaltyReward,
         transactions.category_id AS categoryId,
         categories.label AS categoryLabel,
         transactions.customer_id AS customerId,
@@ -3260,6 +3579,7 @@ export async function getRecentTransactions(limit = 5): Promise<LedgerTransactio
     `,
     [limit],
   )
+  return rows.map(mapLedgerTransactionRow)
 }
 
 export async function getRecentIncidents(limit = 3): Promise<IncidentReport[]> {

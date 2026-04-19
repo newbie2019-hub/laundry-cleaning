@@ -1,6 +1,7 @@
 import type { FormEvent } from 'react'
 import { useCallback, useEffect, useState } from 'react'
 import { Pencil, Plus, Search, Trash2, X } from 'lucide-react'
+import { Link } from 'react-router-dom'
 import { toast } from 'sonner'
 import {
   archiveCustomer,
@@ -173,7 +174,14 @@ export function CustomersPage() {
             <tbody className="divide-y divide-[var(--border)]">
               {customers.map((c) => (
                 <tr key={c.id} className="transition hover:bg-[var(--background)]/40">
-                  <td className="px-4 py-3 font-medium">{c.name}</td>
+                  <td className="px-4 py-3 font-medium">
+                    <Link
+                      className="text-[var(--accent-strong)] transition hover:underline"
+                      to={`/customers/${c.id}`}
+                    >
+                      {c.name}
+                    </Link>
+                  </td>
                   <td className="px-4 py-3 text-[var(--muted)]">{c.company || '—'}</td>
                   <td className="px-4 py-3 text-[var(--muted)]">{c.email || '—'}</td>
                   <td className="px-4 py-3 text-[var(--muted)]">{c.phone || '—'}</td>

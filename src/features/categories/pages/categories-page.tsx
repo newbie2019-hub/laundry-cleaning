@@ -33,6 +33,7 @@ export function CategoriesPage() {
 
   const [categoryModalTypeId, setCategoryModalTypeId] = useState<number | null>(null)
   const [categoryLabel, setCategoryLabel] = useState('')
+  const [categoryModalLoadable, setCategoryModalLoadable] = useState(true)
   const [confirmDeleteId, setConfirmDeleteId] = useState<number | null>(null)
 
   const load = useCallback(async () => {
@@ -81,12 +82,15 @@ export function CategoriesPage() {
   async function handleCreateCategory(e: FormEvent<HTMLFormElement>) {
     e.preventDefault()
     if (categoryModalTypeId == null || !categoryLabel.trim()) return
+    const modalType = state.transactionTypes.find((t) => t.id === categoryModalTypeId)
     await saveCategory({
       isArchived: false,
+      isLoadable: modalType?.code === 'SALE' ? categoryModalLoadable : false,
       label: categoryLabel.trim(),
       transactionTypeId: categoryModalTypeId,
     })
     setCategoryLabel('')
+    setCategoryModalLoadable(true)
     setCategoryModalTypeId(null)
     await load()
   }
@@ -103,6 +107,7 @@ export function CategoriesPage() {
     await saveCategory({
       id: category.id,
       isArchived: category.isArchived,
+      isLoadable: category.isLoadable,
       label: category.label,
       transactionTypeId: category.transactionTypeId,
     })
@@ -210,7 +215,7 @@ export function CategoriesPage() {
                         {categories.map((category) => (
                           <div
                             key={category.id}
-                            className="flex items-center gap-3 px-5 py-2.5"
+                            className="flex flex-wrap items-center gap-3 px-5 py-2.5"
                           >
                             <div className="flex-1 min-w-0">
                               {canManage ? (
@@ -223,6 +228,20 @@ export function CategoriesPage() {
                                 <p className="text-sm font-medium">{category.label}</p>
                               )}
                             </div>
+                            {type.code === 'SALE' && (
+                              <label className="flex shrink-0 cursor-pointer items-center gap-2 text-xs text-[var(--muted)]">
+                                <input
+                                  checked={category.isLoadable}
+                                  className="rounded border-[var(--border)]"
+                                  disabled={!canManage}
+                                  onChange={(e) =>
+                                    updateCategory(category.id, { isLoadable: e.target.checked })
+                                  }
+                                  type="checkbox"
+                                />
+                                Loadable
+                              </label>
+                            )}
                             {canManage && (
                               <button
                                 className="flex h-8 shrink-0 items-center gap-1.5 rounded-md border border-[var(--border)] px-3 text-xs font-medium transition hover:border-[var(--accent)]/50 hover:text-[var(--accent)] disabled:opacity-50"
@@ -246,6 +265,7 @@ export function CategoriesPage() {
                           onClick={() => {
                             setCategoryModalTypeId(type.id)
                             setCategoryLabel('')
+                            setCategoryModalLoadable(type.code === 'SALE')
                           }}
                           type="button"
                         >
@@ -353,6 +373,18 @@ export function CategoriesPage() {
                   value={categoryLabel}
                 />
               </div>
+
+              {categoryModalType?.code === 'SALE' ? (
+                <label className="flex cursor-pointer items-center gap-2 text-sm text-[var(--foreground)]">
+                  <input
+                    checked={categoryModalLoadable}
+                    className="rounded border-[var(--border)]"
+                    onChange={(e) => setCategoryModalLoadable(e.target.checked)}
+                    type="checkbox"
+                  />
+                  Counts toward loyalty loads
+                </label>
+              ) : null}
 
               <div className="flex justify-end gap-2 pt-2">
                 <button

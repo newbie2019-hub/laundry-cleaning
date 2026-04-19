@@ -4,6 +4,7 @@ import { format } from "date-fns"
 import {
   Check,
   Database,
+  Gift,
   ImagePlus,
   Monitor,
   Moon,
@@ -23,7 +24,9 @@ import {
   type AppSettings,
 } from "../../../lib/app-settings"
 import {
+  getLoyaltySettings,
   getPayrollSettings,
+  saveLoyaltySettings,
   savePayrollSettings,
   updateUserProfile,
   vacuumInto,
@@ -51,6 +54,7 @@ const WEEKDAY_OPTIONS = [
 export function SettingsPage() {
   const { hasPermission, user, refreshSession } = useAuth()
   const canManagePayrollSettings = hasPermission("manage_staff")
+  const canManageMasterData = hasPermission("manage_master_data")
   const { theme, setTheme } = useTheme()
 
   const [appSettings, setAppSettings] = useState<AppSettings>(loadAppSettings)
@@ -77,6 +81,11 @@ export function SettingsPage() {
   const [payrollSettingsLoading, setPayrollSettingsLoading] = useState(true)
   const [payrollSettingsSaving, setPayrollSettingsSaving] = useState(false)
 
+  const [loyaltyKgPerLoad, setLoyaltyKgPerLoad] = useState(8)
+  const [loyaltyFreeAfterLoads, setLoyaltyFreeAfterLoads] = useState(9)
+  const [loyaltySettingsLoading, setLoyaltySettingsLoading] = useState(true)
+  const [loyaltySettingsSaving, setLoyaltySettingsSaving] = useState(false)
+
   useEffect(() => {
     if (!canManagePayrollSettings) {
       setPayrollSettingsLoading(false)
@@ -102,6 +111,32 @@ export function SettingsPage() {
       cancelled = true
     }
   }, [canManagePayrollSettings])
+
+  useEffect(() => {
+    if (!canManageMasterData) {
+      setLoyaltySettingsLoading(false)
+      return
+    }
+    let cancelled = false
+    void (async () => {
+      try {
+        const s = await getLoyaltySettings()
+        if (!cancelled) {
+          setLoyaltyKgPerLoad(s.kgPerLoad)
+          setLoyaltyFreeAfterLoads(s.freeAfterLoads)
+        }
+      } catch {
+        if (!cancelled) {
+          toast.error("Unable to load loyalty settings.")
+        }
+      } finally {
+        if (!cancelled) setLoyaltySettingsLoading(false)
+      }
+    })()
+    return () => {
+      cancelled = true
+    }
+  }, [canManageMasterData])
 
   function handleSaveAppSettings(event: FormEvent<HTMLFormElement>) {
     event.preventDefault()
@@ -162,6 +197,23 @@ export function SettingsPage() {
       toast.error(err instanceof Error ? err.message : "Unable to save payroll settings.")
     } finally {
       setPayrollSettingsSaving(false)
+    }
+  }
+
+  async function handleSaveLoyaltySettings(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault()
+    if (!canManageMasterData) return
+    setLoyaltySettingsSaving(true)
+    try {
+      await saveLoyaltySettings({
+        freeAfterLoads: loyaltyFreeAfterLoads,
+        kgPerLoad: loyaltyKgPerLoad,
+      })
+      toast.success("Loyalty settings saved.")
+    } catch (err: unknown) {
+      toast.error(err instanceof Error ? err.message : "Unable to save loyalty settings.")
+    } finally {
+      setLoyaltySettingsSaving(false)
     }
   }
 
@@ -506,6 +558,69 @@ export function SettingsPage() {
                   >
                     <Save className="h-3.5 w-3.5" />
                     {payrollSettingsSaving ? "Saving…" : "Save payroll settings"}
+                  </button>
+                </div>
+              </form>
+            )}
+          </div>
+        )}
+
+        {/* Loyalty (loads) */}
+        {canManageMasterData && (
+          <div className="grid grid-cols-1 gap-x-10 gap-y-4 border-t border-[var(--border)] py-8 md:grid-cols-[280px_1fr]">
+            <div>
+              <div className="flex items-center gap-2">
+                <Gift className="h-4 w-4 text-[var(--muted)]" />
+                <h2 className="text-sm font-semibold">Loyalty</h2>
+              </div>
+              <p className="mt-1 text-xs leading-relaxed text-[var(--muted)]">
+                Kilograms per load converts optional kg on a sale into load units. Free load after N
+                paid loads controls when customers can redeem a reward on the transaction form.
+              </p>
+            </div>
+            {loyaltySettingsLoading ? (
+              <p className="text-sm text-[var(--muted)] md:justify-self-end">Loading…</p>
+            ) : (
+              <form
+                className="w-full max-w-[480px] space-y-4 md:justify-self-end"
+                onSubmit={handleSaveLoyaltySettings}
+              >
+                <label className="block space-y-1.5">
+                  <span className="text-xs font-medium text-[var(--muted)] uppercase tracking-wider">
+                    Kilograms per load
+                  </span>
+                  <input
+                    className={inputClass}
+                    min={0.1}
+                    onChange={(e) => setLoyaltyKgPerLoad(Number(e.target.value) || 0)}
+                    step="0.1"
+                    type="number"
+                    value={loyaltyKgPerLoad}
+                  />
+                </label>
+                <label className="block space-y-1.5">
+                  <span className="text-xs font-medium text-[var(--muted)] uppercase tracking-wider">
+                    Free load after N paid loads
+                  </span>
+                  <input
+                    className={inputClass}
+                    min={1}
+                    onChange={(e) =>
+                      setLoyaltyFreeAfterLoads(Math.max(1, Math.floor(Number(e.target.value) || 0)))
+                    }
+                    step="1"
+                    type="number"
+                    value={loyaltyFreeAfterLoads}
+                  />
+                </label>
+                <div className="flex justify-end">
+                  <button
+                    className="inline-flex items-center gap-1.5 rounded-lg bg-[var(--accent)] px-4 py-2 text-sm font-medium text-white transition hover:opacity-90 disabled:opacity-50"
+                    disabled={loyaltySettingsSaving}
+                    type="submit"
+                  >
+                    <Save className="h-3.5 w-3.5" />
+                    {loyaltySettingsSaving ? "Saving…" : "Save loyalty settings"}
                   </button>
                 </div>
               </form>

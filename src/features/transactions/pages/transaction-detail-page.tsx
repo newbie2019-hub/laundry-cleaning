@@ -253,6 +253,21 @@ export function TransactionDetailPage() {
                 <dd className="mt-0.5 tabular-nums">{transaction.staffCount ?? '—'}</dd>
               </div>
               <div>
+                <dt className="text-xs font-medium uppercase tracking-wide text-[var(--muted)]">Loads / kg</dt>
+                <dd className="mt-0.5 tabular-nums">
+                  {transaction.isLoyaltyReward ? (
+                    <span className="font-medium text-violet-600">Loyalty reward (free load)</span>
+                  ) : transaction.loads != null ? (
+                    <>
+                      {transaction.loads} load{transaction.loads === 1 ? '' : 's'}
+                      {transaction.kg != null ? <span className="text-[var(--muted)]"> ({transaction.kg} kg)</span> : null}
+                    </>
+                  ) : (
+                    '—'
+                  )}
+                </dd>
+              </div>
+              <div>
                 <dt className="text-xs font-medium uppercase tracking-wide text-[var(--muted)]">Amount</dt>
                 <dd className="mt-0.5 text-lg font-semibold tabular-nums">{formatCurrency(transaction.amount)}</dd>
               </div>

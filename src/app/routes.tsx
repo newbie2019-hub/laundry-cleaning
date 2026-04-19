@@ -2,6 +2,7 @@ import { createHashRouter, Navigate, RouterProvider } from 'react-router-dom'
 import { RedirectIfAuthenticated, RequireAuth } from '../features/auth/auth-provider'
 import { LoginPage } from '../features/auth/pages/login-page'
 import { CategoriesPage } from '../features/categories/pages/categories-page'
+import { CustomerDetailPage } from '../features/customers/pages/customer-detail-page'
 import { CustomersPage } from '../features/customers/pages/customers-page'
 import { DashboardPage } from '../features/dashboard/pages/dashboard-page'
 import { IncidentReportsPage } from '../features/incident-reports/pages/incident-reports-page'
@@ -49,6 +50,10 @@ const router = createHashRouter([
           {
             path: '/customers',
             element: <CustomersPage />,
+          },
+          {
+            path: '/customers/:id',
+            element: <CustomerDetailPage />,
           },
           {
             path: '/staff',

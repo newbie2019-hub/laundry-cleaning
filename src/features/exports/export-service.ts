@@ -150,7 +150,11 @@ export async function exportFilteredTransactions(
     { header: 'Date', key: 'entryDate', width: 14 },
     { header: 'Type', key: 'transactionType', width: 14 },
     { header: 'Category', key: 'category', width: 22 },
+    { header: 'Customer', key: 'customerName', width: 20 },
     { header: 'Description', key: 'description', width: 28 },
+    { header: 'Loads', key: 'loads', width: 12 },
+    { header: 'Kg', key: 'kg', width: 10 },
+    { header: 'Loyalty reward', key: 'loyaltyReward', width: 14 },
     { header: 'Number of Staff', key: 'staffCount', width: 18 },
     { header: 'Amount', key: 'amount', width: 16 },
   ]
@@ -164,7 +168,11 @@ export async function exportFilteredTransactions(
       entryDate: new Date(`${transaction.entryDate}T00:00:00`),
       transactionType: transaction.transactionTypeCode,
       category: transaction.categoryLabel,
+      customerName: transaction.customerName ?? '',
       description,
+      loads: transaction.loads ?? '',
+      kg: transaction.kg ?? '',
+      loyaltyReward: transaction.isLoyaltyReward ? 'Yes' : '',
       staffCount: transaction.staffCount ?? '',
       amount: transaction.amount,
     })
@@ -174,8 +182,8 @@ export async function exportFilteredTransactions(
   applyFrozenHeaderAndFilter(worksheet, worksheet.columns?.length ?? 6)
 
   const dateCol = 1
-  const staffCol = 5
-  const amountCol = 6
+  const staffCol = 9
+  const amountCol = 10
   worksheet.eachRow((row, rowNumber) => {
     if (rowNumber === 1) return
     row.getCell(dateCol).numFmt = DATE_FMT
