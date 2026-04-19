@@ -9,6 +9,7 @@ import {
   Building2,
   CreditCard,
   Download,
+  Eye,
   Pencil,
   Plus,
   Search,
@@ -19,6 +20,7 @@ import {
   WalletCards,
   X,
 } from 'lucide-react'
+import { Link } from 'react-router-dom'
 import { exportFilteredTransactions } from '../../exports/export-service'
 import { MonthPicker } from '../../../components/month-picker'
 import { formatCurrency } from '../../../lib/format'
@@ -813,6 +815,13 @@ export function TransactionsPage() {
                       <div className="flex items-center gap-2">
                         <p className="text-sm font-semibold tabular-nums">{formatCurrency(transaction.amount)}</p>
                         <div className="flex shrink-0 items-center justify-end gap-0.5">
+                          <Link
+                            aria-label="View"
+                            className="rounded p-1.5 text-[var(--muted)] transition hover:bg-[var(--accent-soft)] hover:text-[var(--accent-strong)]"
+                            to={`/transactions/${transaction.id}`}
+                          >
+                            <Eye className="h-3.5 w-3.5" />
+                          </Link>
                           <button
                             aria-label="Edit"
                             className="rounded p-1.5 text-[var(--muted)] transition hover:bg-[var(--accent-soft)] hover:text-[var(--accent-strong)] disabled:opacity-30"
@@ -860,6 +869,13 @@ export function TransactionsPage() {
                       {formatCurrency(transaction.amount)}
                     </p>
                     <div className="flex shrink-0 items-center justify-end gap-0.5">
+                      <Link
+                        aria-label="View"
+                        className="rounded p-1.5 text-[var(--muted)] transition hover:bg-[var(--accent-soft)] hover:text-[var(--accent-strong)]"
+                        to={`/transactions/${transaction.id}`}
+                      >
+                        <Eye className="h-3.5 w-3.5" />
+                      </Link>
                       <button
                         aria-label="Edit"
                         className="rounded p-1.5 text-[var(--muted)] transition hover:bg-[var(--accent-soft)] hover:text-[var(--accent-strong)] disabled:opacity-30"

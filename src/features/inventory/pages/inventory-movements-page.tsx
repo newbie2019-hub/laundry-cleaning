@@ -1,6 +1,6 @@
 import type { FormEvent, ReactNode } from 'react'
 import { useCallback, useEffect, useMemo, useState } from 'react'
-import { useSearchParams } from 'react-router-dom'
+import { Link, useSearchParams } from 'react-router-dom'
 import { endOfMonth, format } from 'date-fns'
 import {
   ArrowDownToLine,
@@ -26,7 +26,7 @@ import { useAuth } from '../../auth/use-auth'
 
 type FilterPeriodMode = 'dateRange' | 'month'
 
-type MovementColumnKey = 'date' | 'item' | 'type' | 'qty' | 'unitCost' | 'total' | 'notes' | 'by'
+type MovementColumnKey = 'date' | 'item' | 'type' | 'qty' | 'unitCost' | 'total' | 'notes' | 'by' | 'txn'
 
 const MOVEMENT_COLUMN_DEFS: { key: MovementColumnKey; label: string }[] = [
   { key: 'date', label: 'Date' },
@@ -37,6 +37,7 @@ const MOVEMENT_COLUMN_DEFS: { key: MovementColumnKey; label: string }[] = [
   { key: 'total', label: 'Total' },
   { key: 'notes', label: 'Notes' },
   { key: 'by', label: 'By' },
+  { key: 'txn', label: 'Ledger txn' },
 ]
 
 type MovementColumnVisibility = Record<MovementColumnKey, boolean>
@@ -50,6 +51,7 @@ const DEFAULT_MOVEMENT_COLUMNS: MovementColumnVisibility = {
   total: true,
   notes: true,
   by: true,
+  txn: true,
 }
 
 const MOVEMENT_COLUMNS_STORAGE_KEY = 'business-ledger.inventory-movements.columns'
@@ -192,6 +194,8 @@ export function InventoryMovementsPage() {
   const [formNotes, setFormNotes] = useState('')
   const [formError, setFormError] = useState<string | null>(null)
   const [isSubmitting, setIsSubmitting] = useState(false)
+  /** Preserved when editing a row (including null for standalone movements). */
+  const [editingMovementTransactionId, setEditingMovementTransactionId] = useState<number | null>(null)
 
   const loadItems = useCallback(async () => {
     try {
@@ -251,6 +255,7 @@ export function InventoryMovementsPage() {
 
   function openAdd() {
     setEditingId(null)
+    setEditingMovementTransactionId(null)
     setFormItemId('')
     setFormDate(format(new Date(), 'yyyy-MM-dd'))
     setFormType('IN')
@@ -263,6 +268,7 @@ export function InventoryMovementsPage() {
 
   function openEdit(mov: InventoryMovement) {
     setEditingId(mov.id)
+    setEditingMovementTransactionId(mov.transactionId)
     setFormItemId(String(mov.itemId))
     setFormDate(mov.movementDate)
     setFormType(mov.movementType)
@@ -347,6 +353,7 @@ export function InventoryMovementsPage() {
           notes: formNotes.trim(),
           quantity: qty,
           unitCost,
+          ...(editingId != null ? { transactionId: editingMovementTransactionId } : {}),
         },
         user.id,
         editingId ?? undefined,
@@ -447,7 +454,8 @@ export function InventoryMovementsPage() {
               (columns.unitCost ? 1 : 0) +
               (columns.total ? 1 : 0) +
               (columns.notes ? 1 : 0) +
-              (columns.by ? 1 : 0)
+              (columns.by ? 1 : 0) +
+              (columns.txn ? 1 : 0)
             const colSpan = Math.max(1, visibleDataCols) + 1
 
             return (
@@ -462,6 +470,7 @@ export function InventoryMovementsPage() {
                     {columns.total && <th className="px-4 py-2.5 text-right font-semibold">Total</th>}
                     {columns.notes && <th className="px-4 py-2.5 text-left font-semibold">Notes</th>}
                     {columns.by && <th className="px-4 py-2.5 text-left font-semibold">By</th>}
+                    {columns.txn && <th className="px-4 py-2.5 text-left font-semibold">Ledger</th>}
                     <th className="px-4 py-2.5 font-semibold w-0" />
                   </tr>
                 </thead>
@@ -496,6 +505,20 @@ export function InventoryMovementsPage() {
                       {columns.by && (
                         <td className="px-4 py-3 text-xs text-[var(--muted)] whitespace-nowrap">
                           {mov.createdByName ?? '—'}
+                        </td>
+                      )}
+                      {columns.txn && (
+                        <td className="px-4 py-3 whitespace-nowrap">
+                          {mov.transactionId != null ? (
+                            <Link
+                              className="inline-flex rounded-md border border-[var(--border)] bg-[var(--background)] px-2 py-0.5 text-[10px] font-semibold text-[var(--accent-strong)] hover:bg-[var(--accent-soft)] transition"
+                              to={`/transactions/${mov.transactionId}`}
+                            >
+                              Txn #{mov.transactionId}
+                            </Link>
+                          ) : (
+                            <span className="text-xs text-[var(--muted)]">—</span>
+                          )}
                         </td>
                       )}
                       <td className="px-4 py-3 whitespace-nowrap">

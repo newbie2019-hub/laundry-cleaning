@@ -1,5 +1,13 @@
 import type Database from '@tauri-apps/plugin-sql'
 import { differenceInCalendarDays, format, subDays, subMonths } from 'date-fns'
+import {
+  type AttendanceStatus,
+  computeDayPay,
+  defaultMultiplierForStatus,
+  isCutoffDay,
+  periodStartForWeekEnding,
+  roundMoney,
+} from '../../features/staff/lib/attendance'
 import { hashPassword } from '../security/password'
 import { getDatabase } from './client'
 
@@ -475,6 +483,38 @@ export async function listTransactions(filters: TransactionFilters = {}) {
     `,
     params,
   )
+}
+
+export async function getTransactionById(id: number): Promise<LedgerTransaction | null> {
+  const database = await getDatabase()
+  const rows = await database.select<LedgerTransaction[]>(
+    `
+      SELECT
+        transactions.id AS id,
+        transactions.entry_date AS entryDate,
+        transactions.description AS description,
+        transactions.amount AS amount,
+        transactions.staff_count AS staffCount,
+        transactions.category_id AS categoryId,
+        categories.label AS categoryLabel,
+        transactions.customer_id AS customerId,
+        customer.name AS customerName,
+        transaction_types.id AS transactionTypeId,
+        transaction_types.code AS transactionTypeCode,
+        transaction_types.label AS transactionTypeLabel,
+        created_by_user.display_name AS createdByName,
+        updated_by_user.display_name AS updatedByName
+      FROM transactions
+      JOIN categories ON categories.id = transactions.category_id
+      JOIN transaction_types ON transaction_types.id = transactions.transaction_type_id
+      LEFT JOIN customers AS customer ON customer.id = transactions.customer_id
+      LEFT JOIN users AS created_by_user ON created_by_user.id = transactions.created_by
+      LEFT JOIN users AS updated_by_user ON updated_by_user.id = transactions.updated_by
+      WHERE transactions.id = $1
+    `,
+    [id],
+  )
+  return rows[0] ?? null
 }
 
 export async function saveTransaction(input: TransactionDraft, userId: number, transactionId?: number) {
@@ -1972,6 +2012,7 @@ export type InventoryMovement = {
   movementType: 'IN' | 'OUT'
   notes: string
   quantity: number
+  transactionId: number | null
   unitCost: number
   unitLabel: string
 }
@@ -1982,6 +2023,7 @@ export type InventoryMovementDraft = {
   movementType: 'IN' | 'OUT'
   notes: string
   quantity: number
+  transactionId?: number | null
   unitCost: number
 }
 
@@ -2012,6 +2054,7 @@ type InventoryMovementRow = {
   movement_type: string
   notes: string
   quantity: number
+  transaction_id: number | null
   unit_cost: number
   unit_label: string
 }
@@ -2187,6 +2230,7 @@ export async function listInventoryMovements(filters?: {
         m.notes,
         m.movement_date,
         m.created_at,
+        m.transaction_id,
         i.name AS item_name,
         i.unit_label,
         u.display_name AS created_by_name
@@ -2210,6 +2254,49 @@ export async function listInventoryMovements(filters?: {
     movementType: row.movement_type as 'IN' | 'OUT',
     notes: row.notes,
     quantity: toNumber(row.quantity),
+    transactionId: row.transaction_id ?? null,
+    unitCost: toNumber(row.unit_cost),
+    unitLabel: row.unit_label,
+  }))
+}
+
+export async function listInventoryMovementsByTransaction(transactionId: number): Promise<InventoryMovement[]> {
+  const database = await getDatabase()
+  const rows = await database.select<InventoryMovementRow[]>(
+    `
+      SELECT
+        m.id,
+        m.item_id,
+        m.movement_type,
+        m.quantity,
+        m.unit_cost,
+        m.notes,
+        m.movement_date,
+        m.created_at,
+        m.transaction_id,
+        i.name AS item_name,
+        i.unit_label,
+        u.display_name AS created_by_name
+      FROM inventory_movements m
+      JOIN inventory_items i ON i.id = m.item_id
+      LEFT JOIN users u ON u.id = m.created_by
+      WHERE m.transaction_id = $1
+      ORDER BY m.movement_date DESC, m.id DESC
+    `,
+    [transactionId],
+  )
+
+  return rows.map((row) => ({
+    createdAt: row.created_at,
+    createdByName: row.created_by_name,
+    id: row.id,
+    itemId: row.item_id,
+    itemName: row.item_name,
+    movementDate: row.movement_date,
+    movementType: row.movement_type as 'IN' | 'OUT',
+    notes: row.notes,
+    quantity: toNumber(row.quantity),
+    transactionId: row.transaction_id ?? null,
     unitCost: toNumber(row.unit_cost),
     unitLabel: row.unit_label,
   }))
@@ -2223,28 +2310,45 @@ export async function saveInventoryMovement(
   const database = await getDatabase()
 
   if (id) {
-    await database.execute(
-      `
-        UPDATE inventory_movements SET
-          item_id = $1,
-          movement_type = $2,
-          quantity = $3,
-          unit_cost = $4,
-          notes = $5,
-          movement_date = $6
-        WHERE id = $7
-      `,
-      [draft.itemId, draft.movementType, draft.quantity, draft.unitCost, draft.notes, draft.movementDate, id],
-    )
+    if (draft.transactionId !== undefined) {
+      await database.execute(
+        `
+          UPDATE inventory_movements SET
+            item_id = $1,
+            movement_type = $2,
+            quantity = $3,
+            unit_cost = $4,
+            notes = $5,
+            movement_date = $6,
+            transaction_id = $7
+          WHERE id = $8
+        `,
+        [draft.itemId, draft.movementType, draft.quantity, draft.unitCost, draft.notes, draft.movementDate, draft.transactionId, id],
+      )
+    } else {
+      await database.execute(
+        `
+          UPDATE inventory_movements SET
+            item_id = $1,
+            movement_type = $2,
+            quantity = $3,
+            unit_cost = $4,
+            notes = $5,
+            movement_date = $6
+          WHERE id = $7
+        `,
+        [draft.itemId, draft.movementType, draft.quantity, draft.unitCost, draft.notes, draft.movementDate, id],
+      )
+    }
     return
   }
 
   await database.execute(
     `
-      INSERT INTO inventory_movements (item_id, movement_type, quantity, unit_cost, notes, movement_date, created_by)
-      VALUES ($1, $2, $3, $4, $5, $6, $7)
+      INSERT INTO inventory_movements (item_id, movement_type, quantity, unit_cost, notes, movement_date, created_by, transaction_id)
+      VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
     `,
-    [draft.itemId, draft.movementType, draft.quantity, draft.unitCost, draft.notes, draft.movementDate, userId],
+    [draft.itemId, draft.movementType, draft.quantity, draft.unitCost, draft.notes, draft.movementDate, userId, draft.transactionId ?? null],
   )
 }
 
@@ -3213,6 +3317,899 @@ export async function getTransactionCountForMonth(monthKey: string): Promise<num
     [monthKey],
   )
   return toNumber(rows[0]?.count)
+}
+
+// ─── Staff & payroll ─────────────────────────────────────────────────────────
+
+export type CivilStatus = 'Single' | 'Married' | 'Widowed' | 'Separated'
+
+export type Staff = {
+  address: string
+  birthdate: string
+  civilStatus: CivilStatus
+  defaultRate: number
+  displayName: string
+  emergencyContactName: string
+  emergencyContactNumber: string
+  firstName: string
+  id: number
+  isArchived: boolean
+  lastName: string
+  lastPayrollDate: string | null
+  middleName: string
+  spouseName: string
+}
+
+export type StaffDraft = {
+  address: string
+  birthdate: string
+  civilStatus: CivilStatus
+  defaultRate: number
+  emergencyContactName: string
+  emergencyContactNumber: string
+  firstName: string
+  lastName: string
+  middleName: string
+  spouseName: string
+}
+
+export type AttendanceEntry = {
+  attendanceDate: string
+  computedPay: number
+  id: number
+  isPaid: boolean
+  multiplier: number
+  notes: string
+  rateOverride: number | null
+  staffId: number
+  status: AttendanceStatus
+}
+
+export type PayrollSettings = {
+  cutoffDay: number
+  holidayDefaultMultiplier: number
+}
+
+export type PayrollListItem = {
+  cutoffDay: number
+  grossPay: number
+  id: number
+  netPay: number
+  notes: string
+  payDate: string
+  periodEnd: string
+  periodStart: string
+  staffId: number
+  status: 'paid' | 'void'
+  totalAdjustments: number
+  transactionId: number | null
+}
+
+export type PayrollAdjustmentDraft = {
+  amount: number
+  kind: 'bonus' | 'deduction'
+  label: string
+}
+
+export type PayrollPreviewItem = {
+  attendanceId: number
+  entryDate: string
+  multiplier: number
+  payAmount: number
+  rateUsed: number
+  status: string
+}
+
+export type PayrollPreview = {
+  cutoffDay: number
+  grossPay: number
+  items: PayrollPreviewItem[]
+  periodEnd: string
+  periodStart: string
+  staffDefaultRate: number
+}
+
+export type PayrollDetail = {
+  adjustments: Array<{ amount: number; id: number; kind: 'bonus' | 'deduction'; label: string }>
+  items: PayrollPreviewItem[]
+  payroll: PayrollListItem
+}
+
+export type FinalizePayrollInput = {
+  adjustments: PayrollAdjustmentDraft[]
+  notes: string
+  payDate: string
+  periodEnd: string
+  periodStart: string
+  staffId: number
+}
+
+type StaffRow = {
+  address: string
+  birthdate: string
+  civilStatus: string
+  defaultRate: number
+  emergencyContactName: string
+  emergencyContactNumber: string
+  firstName: string
+  id: number
+  isArchived: number
+  lastName: string
+  lastPayrollDate: string | null
+  middleName: string
+  spouseName: string
+}
+
+function staffRowToStaff(row: StaffRow): Staff {
+  const parts = [row.firstName, row.middleName, row.lastName].filter((p) => p.trim().length > 0)
+  return {
+    address: row.address,
+    birthdate: row.birthdate,
+    civilStatus: row.civilStatus as CivilStatus,
+    defaultRate: toNumber(row.defaultRate),
+    displayName: parts.join(' '),
+    emergencyContactName: row.emergencyContactName,
+    emergencyContactNumber: row.emergencyContactNumber,
+    firstName: row.firstName,
+    id: row.id,
+    isArchived: Boolean(row.isArchived),
+    lastName: row.lastName,
+    lastPayrollDate: row.lastPayrollDate ?? null,
+    middleName: row.middleName,
+    spouseName: row.spouseName,
+  }
+}
+
+async function getExpenseStaffSalaryIds(database: Database): Promise<{ categoryId: number; typeId: number }> {
+  const typeRows = await database.select<Array<{ id: number }>>(
+    `SELECT id FROM transaction_types WHERE code = $1`,
+    ['EXPENSE'],
+  )
+  const typeId = Number(typeRows[0]?.id ?? 0)
+  if (!typeId) throw new Error('EXPENSE transaction type is missing.')
+
+  const catRows = await database.select<Array<{ id: number }>>(
+    `
+      SELECT categories.id AS id
+      FROM categories
+      JOIN transaction_types ON transaction_types.id = categories.transaction_type_id
+      WHERE transaction_types.code = 'EXPENSE' AND categories.label = 'Staff Salary' AND categories.is_archived = 0
+      LIMIT 1
+    `,
+  )
+  const categoryId = Number(catRows[0]?.id ?? 0)
+  if (!categoryId) throw new Error('Staff Salary expense category is missing.')
+  return { categoryId, typeId }
+}
+
+export async function listStaff(filters?: { includeArchived?: boolean; search?: string }): Promise<Staff[]> {
+  const database = await getDatabase()
+  const conditions: string[] = []
+  const params: unknown[] = []
+
+  if (!filters?.includeArchived) {
+    conditions.push('staff.is_archived = 0')
+  }
+
+  const search = filters?.search?.trim()
+  if (search) {
+    const pattern = `%${search}%`
+    params.push(pattern, pattern, pattern, pattern)
+    const n = params.length
+    conditions.push(
+      `(
+        staff.first_name LIKE $${n - 3} OR staff.middle_name LIKE $${n - 2} OR staff.last_name LIKE $${n - 1} OR staff.address LIKE $${n}
+      )`,
+    )
+  }
+
+  const whereClause = conditions.length > 0 ? `WHERE ${conditions.join(' AND ')}` : ''
+
+  const rows = await database.select<StaffRow[]>(
+    `
+      SELECT
+        staff.id AS id,
+        staff.first_name AS firstName,
+        staff.middle_name AS middleName,
+        staff.last_name AS lastName,
+        staff.address AS address,
+        staff.birthdate AS birthdate,
+        staff.civil_status AS civilStatus,
+        staff.emergency_contact_name AS emergencyContactName,
+        staff.emergency_contact_number AS emergencyContactNumber,
+        staff.spouse_name AS spouseName,
+        staff.default_rate AS defaultRate,
+        staff.is_archived AS isArchived,
+        (
+          SELECT MAX(p.pay_date) FROM staff_payrolls p
+          WHERE p.staff_id = staff.id AND p.status = 'paid'
+        ) AS lastPayrollDate
+      FROM staff
+      ${whereClause}
+      ORDER BY staff.last_name COLLATE NOCASE ASC, staff.first_name COLLATE NOCASE ASC
+    `,
+    params,
+  )
+
+  return rows.map(staffRowToStaff)
+}
+
+export async function getStaff(staffId: number): Promise<Staff | null> {
+  const database = await getDatabase()
+  const rows = await database.select<StaffRow[]>(
+    `
+      SELECT
+        staff.id AS id,
+        staff.first_name AS firstName,
+        staff.middle_name AS middleName,
+        staff.last_name AS lastName,
+        staff.address AS address,
+        staff.birthdate AS birthdate,
+        staff.civil_status AS civilStatus,
+        staff.emergency_contact_name AS emergencyContactName,
+        staff.emergency_contact_number AS emergencyContactNumber,
+        staff.spouse_name AS spouseName,
+        staff.default_rate AS defaultRate,
+        staff.is_archived AS isArchived,
+        (
+          SELECT MAX(p.pay_date) FROM staff_payrolls p
+          WHERE p.staff_id = staff.id AND p.status = 'paid'
+        ) AS lastPayrollDate
+      FROM staff
+      WHERE staff.id = $1
+    `,
+    [staffId],
+  )
+  const row = rows[0]
+  return row ? staffRowToStaff(row) : null
+}
+
+export async function saveStaff(input: StaffDraft, userId: number, staffId?: number): Promise<void> {
+  const database = await getDatabase()
+  if (input.defaultRate <= 0) {
+    throw new Error('Default rate must be greater than zero.')
+  }
+
+  const firstName = input.firstName.trim()
+  const lastName = input.lastName.trim()
+  if (!firstName || !lastName) {
+    throw new Error('First name and last name are required.')
+  }
+
+  const values = [
+    firstName,
+    input.middleName.trim(),
+    lastName,
+    input.address.trim(),
+    input.birthdate.trim(),
+    input.civilStatus,
+    input.emergencyContactName.trim(),
+    input.emergencyContactNumber.trim(),
+    input.spouseName.trim(),
+    input.defaultRate,
+    userId,
+  ]
+
+  if (staffId) {
+    await database.execute(
+      `
+        UPDATE staff SET
+          first_name = $1,
+          middle_name = $2,
+          last_name = $3,
+          address = $4,
+          birthdate = $5,
+          civil_status = $6,
+          emergency_contact_name = $7,
+          emergency_contact_number = $8,
+          spouse_name = $9,
+          default_rate = $10,
+          updated_by = $11,
+          updated_at = CURRENT_TIMESTAMP
+        WHERE id = $12
+      `,
+      [...values, staffId],
+    )
+    return
+  }
+
+  await database.execute(
+    `
+      INSERT INTO staff (
+        first_name, middle_name, last_name, address, birthdate, civil_status,
+        emergency_contact_name, emergency_contact_number, spouse_name,
+        default_rate, created_by, updated_by
+      ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $11)
+    `,
+    values,
+  )
+}
+
+export async function archiveStaff(id: number, userId: number): Promise<void> {
+  await setStaffActive(id, false, userId)
+}
+
+export async function setStaffActive(id: number, active: boolean, userId: number): Promise<void> {
+  const database = await getDatabase()
+  await database.execute(
+    `
+      UPDATE staff SET
+        is_archived = $1,
+        updated_by = $2,
+        updated_at = CURRENT_TIMESTAMP
+      WHERE id = $3
+    `,
+    [active ? 0 : 1, userId, id],
+  )
+}
+
+export async function getPayrollSettings(): Promise<PayrollSettings> {
+  const database = await getDatabase()
+  const rows = await database.select<Array<{ cutoffDay: number; holidayDefaultMultiplier: number }>>(
+    `
+      SELECT cutoff_day AS cutoffDay, holiday_default_multiplier AS holidayDefaultMultiplier
+      FROM payroll_settings
+      WHERE id = 1
+    `,
+  )
+  const row = rows[0]
+  if (!row) {
+    return { cutoffDay: 6, holidayDefaultMultiplier: 1 }
+  }
+  return {
+    cutoffDay: Number(row.cutoffDay),
+    holidayDefaultMultiplier: toNumber(row.holidayDefaultMultiplier),
+  }
+}
+
+export async function savePayrollSettings(input: PayrollSettings): Promise<void> {
+  const database = await getDatabase()
+  if (input.cutoffDay < 0 || input.cutoffDay > 6) {
+    throw new Error('Cutoff day must be between 0 (Sunday) and 6 (Saturday).')
+  }
+  if (input.holidayDefaultMultiplier < 0) {
+    throw new Error('Holiday multiplier cannot be negative.')
+  }
+  await database.execute(
+    `
+      UPDATE payroll_settings
+      SET cutoff_day = $1, holiday_default_multiplier = $2
+      WHERE id = 1
+    `,
+    [input.cutoffDay, input.holidayDefaultMultiplier],
+  )
+}
+
+type AttendanceRow = {
+  attendanceDate: string
+  computedPay: number
+  id: number
+  isPaid: number
+  multiplier: number
+  notes: string
+  rateOverride: number | null
+  staffId: number
+  status: string
+}
+
+export async function listAttendance(filters: {
+  from: string
+  staffId: number
+  to: string
+}): Promise<AttendanceEntry[]> {
+  const database = await getDatabase()
+  const rows = await database.select<AttendanceRow[]>(
+    `
+      SELECT
+        a.id AS id,
+        a.staff_id AS staffId,
+        a.attendance_date AS attendanceDate,
+        a.status AS status,
+        a.multiplier AS multiplier,
+        a.rate_override AS rateOverride,
+        a.computed_pay AS computedPay,
+        a.notes AS notes,
+        CASE WHEN EXISTS (
+          SELECT 1 FROM staff_payroll_items i
+          JOIN staff_payrolls p ON p.id = i.payroll_id
+          WHERE i.attendance_id = a.id AND p.status = 'paid'
+        ) THEN 1 ELSE 0 END AS isPaid
+      FROM staff_attendance a
+      WHERE a.staff_id = $1 AND a.attendance_date >= $2 AND a.attendance_date <= $3
+      ORDER BY a.attendance_date ASC
+    `,
+    [filters.staffId, filters.from, filters.to],
+  )
+
+  return rows.map((row) => ({
+    attendanceDate: row.attendanceDate,
+    computedPay: toNumber(row.computedPay),
+    id: row.id,
+    isPaid: Boolean(row.isPaid),
+    multiplier: toNumber(row.multiplier),
+    notes: row.notes,
+    rateOverride: row.rateOverride == null ? null : toNumber(row.rateOverride),
+    staffId: row.staffId,
+    status: row.status as AttendanceStatus,
+  }))
+}
+
+export async function listUnpaidAttendanceDates(staffId: number): Promise<string[]> {
+  const database = await getDatabase()
+  const rows = await database.select<Array<{ d: string }>>(
+    `
+      SELECT a.attendance_date AS d
+      FROM staff_attendance a
+      WHERE a.staff_id = $1
+        AND NOT EXISTS (
+          SELECT 1 FROM staff_payroll_items i
+          JOIN staff_payrolls p ON p.id = i.payroll_id
+          WHERE i.attendance_id = a.id AND p.status = 'paid'
+        )
+      ORDER BY a.attendance_date ASC
+    `,
+    [staffId],
+  )
+  return rows.map((r) => r.d)
+}
+
+async function assertAttendanceNotPaid(database: Database, attendanceId: number) {
+  const rows = await database.select<CountRow[]>(
+    `
+      SELECT COUNT(*) AS count
+      FROM staff_payroll_items i
+      JOIN staff_payrolls p ON p.id = i.payroll_id
+      WHERE i.attendance_id = $1 AND p.status = 'paid'
+    `,
+    [attendanceId],
+  )
+  if (toNumber(rows[0]?.count) > 0) {
+    throw new Error('This attendance day is already included in a paid payroll.')
+  }
+}
+
+export async function upsertAttendance(
+  staffId: number,
+  attendanceDate: string,
+  input: {
+    multiplier?: number
+    notes: string
+    rateOverride: number | null
+    status: AttendanceStatus
+  },
+  userId: number,
+): Promise<void> {
+  void userId
+  const database = await getDatabase()
+  const settings = await getPayrollSettings()
+  const staff = await getStaff(staffId)
+  if (!staff) throw new Error('Staff not found.')
+
+  const existing = await database.select<Array<{ id: number }>>(
+    `SELECT id FROM staff_attendance WHERE staff_id = $1 AND attendance_date = $2`,
+    [staffId, attendanceDate],
+  )
+  const existingId = existing[0]?.id
+  if (existingId) {
+    await assertAttendanceNotPaid(database, existingId)
+  }
+
+  const mult =
+    input.multiplier ??
+    defaultMultiplierForStatus(input.status, settings.holidayDefaultMultiplier)
+  const computedPay = computeDayPay(staff.defaultRate, mult, input.rateOverride)
+
+  if (existingId) {
+    await database.execute(
+      `
+        UPDATE staff_attendance SET
+          status = $1,
+          multiplier = $2,
+          rate_override = $3,
+          computed_pay = $4,
+          notes = $5,
+          updated_at = CURRENT_TIMESTAMP
+        WHERE id = $6
+      `,
+      [input.status, mult, input.rateOverride, computedPay, input.notes.trim(), existingId],
+    )
+    return
+  }
+
+  await database.execute(
+    `
+      INSERT INTO staff_attendance (
+        staff_id, attendance_date, status, multiplier, rate_override, computed_pay, notes
+      ) VALUES ($1, $2, $3, $4, $5, $6, $7)
+    `,
+    [staffId, attendanceDate, input.status, mult, input.rateOverride, computedPay, input.notes.trim()],
+  )
+}
+
+export async function deleteAttendance(attendanceId: number): Promise<void> {
+  const database = await getDatabase()
+  await assertAttendanceNotPaid(database, attendanceId)
+  await database.execute(`DELETE FROM staff_attendance WHERE id = $1`, [attendanceId])
+}
+
+export async function buildPayrollPreview(staffId: number, periodEnd: string): Promise<PayrollPreview> {
+  const database = await getDatabase()
+  const settings = await getPayrollSettings()
+  if (!isCutoffDay(periodEnd, settings.cutoffDay)) {
+    throw new Error(
+      `Period end must fall on the payroll cutoff weekday (currently ${settings.cutoffDay}: 0=Sun … 6=Sat).`,
+    )
+  }
+
+  const periodStart = periodStartForWeekEnding(periodEnd)
+  const staff = await getStaff(staffId)
+  if (!staff) throw new Error('Staff not found.')
+
+  const rows = await database.select<
+    Array<{
+      attendanceDate: string
+      computedPay: number
+      id: number
+      multiplier: number
+      rateOverride: number | null
+      status: string
+    }>
+  >(
+    `
+      SELECT
+        a.id AS id,
+        a.attendance_date AS attendanceDate,
+        a.status AS status,
+        a.multiplier AS multiplier,
+        a.rate_override AS rateOverride,
+        a.computed_pay AS computedPay
+      FROM staff_attendance a
+      WHERE a.staff_id = $1
+        AND a.attendance_date >= $2
+        AND a.attendance_date <= $3
+        AND NOT EXISTS (
+          SELECT 1 FROM staff_payroll_items i
+          JOIN staff_payrolls p ON p.id = i.payroll_id
+          WHERE i.attendance_id = a.id AND p.status = 'paid'
+        )
+      ORDER BY a.attendance_date ASC
+    `,
+    [staffId, periodStart, periodEnd],
+  )
+
+  const items: PayrollPreviewItem[] = rows.map((r) => ({
+    attendanceId: r.id,
+    entryDate: r.attendanceDate,
+    multiplier: toNumber(r.multiplier),
+    payAmount: toNumber(r.computedPay),
+    rateUsed: r.rateOverride == null ? staff.defaultRate : toNumber(r.rateOverride),
+    status: r.status,
+  }))
+
+  const grossPay = roundMoney(items.reduce((s, it) => s + it.payAmount, 0))
+
+  return {
+    cutoffDay: settings.cutoffDay,
+    grossPay,
+    items,
+    periodEnd,
+    periodStart,
+    staffDefaultRate: staff.defaultRate,
+  }
+}
+
+export async function finalizePayroll(input: FinalizePayrollInput, userId: number): Promise<{
+  payrollId: number
+  transactionId: number
+}> {
+  const database = await getDatabase()
+  const preview = await buildPayrollPreview(input.staffId, input.periodEnd)
+
+  if (preview.periodStart !== input.periodStart) {
+    throw new Error('Invalid payroll period.')
+  }
+
+  let bonusTotal = 0
+  let deductionTotal = 0
+  for (const adj of input.adjustments) {
+    if (!adj.label.trim()) continue
+    if (adj.amount < 0) throw new Error('Adjustment amounts must be zero or positive.')
+    if (adj.kind === 'bonus') bonusTotal += adj.amount
+    else deductionTotal += adj.amount
+  }
+  bonusTotal = roundMoney(bonusTotal)
+  deductionTotal = roundMoney(deductionTotal)
+  const netPay = roundMoney(preview.grossPay + bonusTotal - deductionTotal)
+  if (netPay < 0) {
+    throw new Error('Net pay cannot be negative. Reduce deductions or increase bonuses.')
+  }
+
+  const staff = await getStaff(input.staffId)
+  if (!staff) throw new Error('Staff not found.')
+
+  const { categoryId, typeId } = await getExpenseStaffSalaryIds(database)
+  const description = `Payroll ${staff.displayName} ${input.periodStart}–${input.periodEnd}`
+
+  for (const item of preview.items) {
+    await assertAttendanceNotPaid(database, item.attendanceId)
+  }
+
+  // The Tauri SQL plugin uses a connection pool, so BEGIN/COMMIT cannot span
+  // multiple `execute()` calls. We run the inserts sequentially and rely on the
+  // `lastInsertId` returned by each call. If any step fails we manually clean
+  // up whatever was inserted so the ledger stays consistent.
+  let transactionId: number | null = null
+  let payrollId: number | null = null
+
+  try {
+    const txnResult = await database.execute(
+      `
+        INSERT INTO transactions (
+          entry_date, transaction_type_id, category_id, description, amount,
+          staff_count, customer_id, created_by, updated_by
+        ) VALUES ($1, $2, $3, $4, $5, NULL, NULL, $6, $6)
+      `,
+      [input.payDate, typeId, categoryId, description, netPay, userId],
+    )
+    transactionId = typeof txnResult.lastInsertId === 'number' ? txnResult.lastInsertId : null
+    if (!transactionId) {
+      throw new Error('Failed to record salary expense transaction.')
+    }
+
+    const totalAdjustments = roundMoney(bonusTotal - deductionTotal)
+    const payrollResult = await database.execute(
+      `
+        INSERT INTO staff_payrolls (
+          staff_id, period_start, period_end, pay_date, cutoff_day,
+          gross_pay, total_adjustments, net_pay, status, transaction_id, notes
+        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, 'paid', $9, $10)
+      `,
+      [
+        input.staffId,
+        input.periodStart,
+        input.periodEnd,
+        input.payDate,
+        preview.cutoffDay,
+        preview.grossPay,
+        totalAdjustments,
+        netPay,
+        transactionId,
+        input.notes.trim(),
+      ],
+    )
+    payrollId = typeof payrollResult.lastInsertId === 'number' ? payrollResult.lastInsertId : null
+    if (!payrollId) {
+      throw new Error('Failed to create payroll record.')
+    }
+
+    for (const item of preview.items) {
+      await database.execute(
+        `
+          INSERT INTO staff_payroll_items (
+            payroll_id, attendance_id, entry_date, status, rate_used, multiplier, pay_amount
+          ) VALUES ($1, $2, $3, $4, $5, $6, $7)
+        `,
+        [
+          payrollId,
+          item.attendanceId,
+          item.entryDate,
+          item.status,
+          item.rateUsed,
+          item.multiplier,
+          item.payAmount,
+        ],
+      )
+    }
+
+    for (const adj of input.adjustments) {
+      if (!adj.label.trim()) continue
+      await database.execute(
+        `
+          INSERT INTO staff_payroll_adjustments (payroll_id, label, kind, amount)
+          VALUES ($1, $2, $3, $4)
+        `,
+        [payrollId, adj.label.trim(), adj.kind, adj.amount],
+      )
+    }
+
+    return { payrollId, transactionId }
+  } catch (err) {
+    // Best-effort manual rollback. The staff_payrolls cascade deletes the
+    // payroll items and adjustments via ON DELETE CASCADE.
+    if (payrollId) {
+      try {
+        await database.execute(`DELETE FROM staff_payrolls WHERE id = $1`, [payrollId])
+      } catch {
+        /* swallow cleanup errors so the original failure propagates */
+      }
+    }
+    if (transactionId) {
+      try {
+        await database.execute(`DELETE FROM transactions WHERE id = $1`, [transactionId])
+      } catch {
+        /* swallow cleanup errors so the original failure propagates */
+      }
+    }
+    throw err
+  }
+}
+
+export async function listPayrolls(staffId: number): Promise<PayrollListItem[]> {
+  const database = await getDatabase()
+  const rows = await database.select<
+    Array<{
+      cutoffDay: number
+      grossPay: number
+      id: number
+      netPay: number
+      notes: string
+      payDate: string
+      periodEnd: string
+      periodStart: string
+      staffId: number
+      status: string
+      totalAdjustments: number
+      transactionId: number | null
+    }>
+  >(
+    `
+      SELECT
+        id,
+        staff_id AS staffId,
+        period_start AS periodStart,
+        period_end AS periodEnd,
+        pay_date AS payDate,
+        cutoff_day AS cutoffDay,
+        gross_pay AS grossPay,
+        total_adjustments AS totalAdjustments,
+        net_pay AS netPay,
+        status,
+        transaction_id AS transactionId,
+        notes
+      FROM staff_payrolls
+      WHERE staff_id = $1
+      ORDER BY period_end DESC, id DESC
+    `,
+    [staffId],
+  )
+
+  return rows.map((r) => ({
+    cutoffDay: Number(r.cutoffDay),
+    grossPay: toNumber(r.grossPay),
+    id: r.id,
+    netPay: toNumber(r.netPay),
+    notes: r.notes,
+    payDate: r.payDate,
+    periodEnd: r.periodEnd,
+    periodStart: r.periodStart,
+    staffId: r.staffId,
+    status: r.status as 'paid' | 'void',
+    totalAdjustments: toNumber(r.totalAdjustments),
+    transactionId: r.transactionId == null ? null : Number(r.transactionId),
+  }))
+}
+
+export async function getPayrollDetail(payrollId: number): Promise<PayrollDetail | null> {
+  const database = await getDatabase()
+  const payrollRows = await database.select<
+    Array<{
+      cutoffDay: number
+      grossPay: number
+      id: number
+      netPay: number
+      notes: string
+      payDate: string
+      periodEnd: string
+      periodStart: string
+      staffId: number
+      status: string
+      totalAdjustments: number
+      transactionId: number | null
+    }>
+  >(
+    `
+      SELECT
+        id,
+        staff_id AS staffId,
+        period_start AS periodStart,
+        period_end AS periodEnd,
+        pay_date AS payDate,
+        cutoff_day AS cutoffDay,
+        gross_pay AS grossPay,
+        total_adjustments AS totalAdjustments,
+        net_pay AS netPay,
+        status,
+        transaction_id AS transactionId,
+        notes
+      FROM staff_payrolls
+      WHERE id = $1
+    `,
+    [payrollId],
+  )
+  const pr = payrollRows[0]
+  if (!pr) return null
+
+  const payroll: PayrollListItem = {
+    cutoffDay: Number(pr.cutoffDay),
+    grossPay: toNumber(pr.grossPay),
+    id: pr.id,
+    netPay: toNumber(pr.netPay),
+    notes: pr.notes,
+    payDate: pr.payDate,
+    periodEnd: pr.periodEnd,
+    periodStart: pr.periodStart,
+    staffId: pr.staffId,
+    status: pr.status as 'paid' | 'void',
+    totalAdjustments: toNumber(pr.totalAdjustments),
+    transactionId: pr.transactionId == null ? null : Number(pr.transactionId),
+  }
+
+  const items = await database.select<PayrollPreviewItem[]>(
+    `
+      SELECT
+        i.attendance_id AS attendanceId,
+        i.entry_date AS entryDate,
+        i.status AS status,
+        i.rate_used AS rateUsed,
+        i.multiplier AS multiplier,
+        i.pay_amount AS payAmount
+      FROM staff_payroll_items i
+      WHERE i.payroll_id = $1
+      ORDER BY i.entry_date ASC
+    `,
+    [payrollId],
+  )
+
+  const adjRows = await database.select<
+    Array<{ amount: number; id: number; kind: string; label: string }>
+  >(
+    `
+      SELECT id, label, kind, amount
+      FROM staff_payroll_adjustments
+      WHERE payroll_id = $1
+      ORDER BY id ASC
+    `,
+    [payrollId],
+  )
+
+  const adjustments = adjRows.map((a) => ({
+    amount: toNumber(a.amount),
+    id: a.id,
+    kind: a.kind as 'bonus' | 'deduction',
+    label: a.label,
+  }))
+
+  return { adjustments, items, payroll }
+}
+
+export async function voidPayroll(payrollId: number): Promise<void> {
+  const database = await getDatabase()
+  const detail = await getPayrollDetail(payrollId)
+  if (!detail) throw new Error('Payroll not found.')
+  if (detail.payroll.status !== 'paid') {
+    throw new Error('Only paid payrolls can be voided.')
+  }
+
+  const transactionId = detail.payroll.transactionId
+  if (!transactionId) {
+    throw new Error('Payroll has no linked transaction.')
+  }
+
+  // The Tauri SQL plugin does not support transactions across multiple
+  // `execute()` calls (pooled connections), so we delete child rows first and
+  // flip the payroll to `void` at the end; if any step fails mid-way the
+  // caller can retry safely because each DELETE/UPDATE is idempotent.
+  await database.execute(`DELETE FROM staff_payroll_items WHERE payroll_id = $1`, [payrollId])
+  await database.execute(`DELETE FROM staff_payroll_adjustments WHERE payroll_id = $1`, [payrollId])
+  await database.execute(`DELETE FROM transactions WHERE id = $1`, [transactionId])
+  await database.execute(
+    `
+      UPDATE staff_payrolls
+      SET status = 'void', transaction_id = NULL, updated_at = CURRENT_TIMESTAMP
+      WHERE id = $1
+    `,
+    [payrollId],
+  )
 }
 
 // ─── Database Backup ─────────────────────────────────────────────────────────

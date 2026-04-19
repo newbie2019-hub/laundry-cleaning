@@ -386,6 +386,129 @@ pub fn builder() -> Builder {
       "#,
       kind: MigrationKind::Up,
     },
+    Migration {
+      version: 11,
+      description: "create_staff_and_payroll",
+      sql: r#"
+        CREATE TABLE IF NOT EXISTS payroll_settings (
+          id INTEGER PRIMARY KEY CHECK (id = 1),
+          cutoff_day INTEGER NOT NULL DEFAULT 6,
+          holiday_default_multiplier REAL NOT NULL DEFAULT 1.0
+        );
+
+        INSERT OR IGNORE INTO payroll_settings (id, cutoff_day, holiday_default_multiplier)
+        VALUES (1, 6, 1.0);
+
+        CREATE TABLE IF NOT EXISTS staff (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          first_name TEXT NOT NULL,
+          middle_name TEXT NOT NULL DEFAULT '',
+          last_name TEXT NOT NULL,
+          address TEXT NOT NULL DEFAULT '',
+          birthdate TEXT NOT NULL DEFAULT '',
+          civil_status TEXT NOT NULL DEFAULT 'Single',
+          emergency_contact_name TEXT NOT NULL DEFAULT '',
+          emergency_contact_number TEXT NOT NULL DEFAULT '',
+          spouse_name TEXT NOT NULL DEFAULT '',
+          default_rate REAL NOT NULL DEFAULT 0 CHECK (default_rate >= 0),
+          is_archived INTEGER NOT NULL DEFAULT 0,
+          created_by INTEGER,
+          updated_by INTEGER,
+          created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+          updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+          FOREIGN KEY (created_by) REFERENCES users (id),
+          FOREIGN KEY (updated_by) REFERENCES users (id)
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_staff_names ON staff(last_name COLLATE NOCASE, first_name COLLATE NOCASE);
+
+        CREATE TABLE IF NOT EXISTS staff_attendance (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          staff_id INTEGER NOT NULL,
+          attendance_date TEXT NOT NULL,
+          status TEXT NOT NULL DEFAULT 'present',
+          multiplier REAL NOT NULL DEFAULT 1.0,
+          rate_override REAL,
+          computed_pay REAL NOT NULL DEFAULT 0,
+          notes TEXT NOT NULL DEFAULT '',
+          created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+          updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+          FOREIGN KEY (staff_id) REFERENCES staff (id) ON DELETE CASCADE,
+          UNIQUE (staff_id, attendance_date)
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_staff_attendance_staff_date ON staff_attendance(staff_id, attendance_date);
+
+        CREATE TABLE IF NOT EXISTS staff_payrolls (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          staff_id INTEGER NOT NULL,
+          period_start TEXT NOT NULL,
+          period_end TEXT NOT NULL,
+          pay_date TEXT NOT NULL,
+          cutoff_day INTEGER NOT NULL,
+          gross_pay REAL NOT NULL DEFAULT 0,
+          total_adjustments REAL NOT NULL DEFAULT 0,
+          net_pay REAL NOT NULL DEFAULT 0,
+          status TEXT NOT NULL DEFAULT 'paid' CHECK (status IN ('paid', 'void')),
+          transaction_id INTEGER,
+          notes TEXT NOT NULL DEFAULT '',
+          created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+          updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+          FOREIGN KEY (staff_id) REFERENCES staff (id) ON DELETE CASCADE,
+          FOREIGN KEY (transaction_id) REFERENCES transactions (id) ON DELETE SET NULL
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_staff_payrolls_staff ON staff_payrolls(staff_id, period_end DESC);
+
+        CREATE TABLE IF NOT EXISTS staff_payroll_items (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          payroll_id INTEGER NOT NULL,
+          attendance_id INTEGER NOT NULL,
+          entry_date TEXT NOT NULL,
+          status TEXT NOT NULL,
+          rate_used REAL NOT NULL,
+          multiplier REAL NOT NULL,
+          pay_amount REAL NOT NULL,
+          FOREIGN KEY (payroll_id) REFERENCES staff_payrolls (id) ON DELETE CASCADE,
+          FOREIGN KEY (attendance_id) REFERENCES staff_attendance (id) ON DELETE CASCADE,
+          UNIQUE (attendance_id)
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_staff_payroll_items_payroll ON staff_payroll_items(payroll_id);
+
+        CREATE TABLE IF NOT EXISTS staff_payroll_adjustments (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          payroll_id INTEGER NOT NULL,
+          label TEXT NOT NULL,
+          kind TEXT NOT NULL CHECK (kind IN ('bonus', 'deduction')),
+          amount REAL NOT NULL CHECK (amount >= 0),
+          FOREIGN KEY (payroll_id) REFERENCES staff_payrolls (id) ON DELETE CASCADE
+        );
+
+        INSERT OR IGNORE INTO permissions (key, label)
+        VALUES
+          ('manage_staff', 'Manage staff'),
+          ('process_payroll', 'Process payroll');
+
+        INSERT OR IGNORE INTO role_permissions (role_id, permission_id, allowed)
+        SELECT roles.id, permissions.id, 1
+        FROM roles
+        CROSS JOIN permissions
+        WHERE roles.name IN ('admin', 'manager')
+          AND permissions.key IN ('manage_staff', 'process_payroll');
+      "#,
+      kind: MigrationKind::Up,
+    },
+    Migration {
+      version: 12,
+      description: "link_inventory_movements_to_transactions",
+      sql: r#"
+        ALTER TABLE inventory_movements ADD COLUMN transaction_id INTEGER REFERENCES transactions(id) ON DELETE CASCADE;
+
+        CREATE INDEX IF NOT EXISTS idx_inventory_movements_transaction_id ON inventory_movements (transaction_id);
+      "#,
+      kind: MigrationKind::Up,
+    },
   ];
 
   Builder::default().add_migrations(DB_URL, migrations)

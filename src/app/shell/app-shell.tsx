@@ -1,11 +1,26 @@
-import type { LucideIcon } from 'lucide-react'
-import { AlertTriangle, ArrowLeftRight, BarChart3, ChevronDown, LayoutDashboard, LogOut, Package, PieChart, Settings, Tags, UserRound, Users, WalletCards } from 'lucide-react'
-import { useCallback, useEffect, useState } from 'react'
-import { NavLink, Outlet, useLocation, useNavigate } from 'react-router-dom'
-import { loadAppSettings, type AppSettings } from '../../lib/app-settings'
-import { useAuth } from '../../features/auth/use-auth'
+import type { LucideIcon } from "lucide-react"
+import {
+  AlertTriangle,
+  ArrowLeftRight,
+  BarChart3,
+  ChevronDown,
+  LayoutDashboard,
+  LogOut,
+  Package,
+  PieChart,
+  Settings,
+  Tags,
+  UserCog,
+  UserRound,
+  Users,
+  WalletCards,
+} from "lucide-react"
+import { useCallback, useEffect, useState } from "react"
+import { NavLink, Outlet, useLocation, useNavigate } from "react-router-dom"
+import { loadAppSettings, type AppSettings } from "../../lib/app-settings"
+import { useAuth } from "../../features/auth/use-auth"
 
-const SIDEBAR_COLLAPSED_KEY = 'sidebar-collapsed'
+const SIDEBAR_COLLAPSED_KEY = "sidebar-collapsed"
 
 type NavItem = {
   to: string
@@ -16,47 +31,52 @@ type NavItem = {
 
 const navigationItems: NavItem[] = [
   {
-    to: '/dashboard',
-    label: 'Dashboard',
+    to: "/dashboard",
+    label: "Dashboard",
     icon: LayoutDashboard,
   },
   {
-    to: '/transactions',
-    label: 'Transactions',
+    to: "/transactions",
+    label: "Transactions",
     icon: WalletCards,
     children: [
-      { to: '/transactions-summary', label: 'Summary', icon: BarChart3 },
-      { to: '/categories', label: 'Categories', icon: Tags },
-      { to: '/income-share', label: 'Income Share', icon: PieChart },
+      { to: "/transactions-summary", label: "Summary", icon: BarChart3 },
+      { to: "/categories", label: "Categories", icon: Tags },
+      { to: "/income-share", label: "Income Share", icon: PieChart },
     ],
   },
   {
-    to: '/customers',
-    label: 'Customers',
+    to: "/inventory",
+    label: "Inventory",
+    icon: Package,
+    children: [
+      { to: "/inventory-movements", label: "Movements", icon: ArrowLeftRight },
+      { to: "/inventory-summary", label: "Summary", icon: BarChart3 },
+    ],
+  },
+  {
+    to: "/staff",
+    label: "Staff",
+    icon: UserCog,
+  },
+  {
+    to: "/customers",
+    label: "Customers",
     icon: UserRound,
   },
   {
-    to: '/inventory',
-    label: 'Inventory',
-    icon: Package,
-    children: [
-      { to: '/inventory-movements', label: 'Movements', icon: ArrowLeftRight },
-      { to: '/inventory-summary', label: 'Summary', icon: BarChart3 },
-    ],
-  },
-  {
-    to: '/incident-reports',
-    label: 'Incident Reports',
+    to: "/incident-reports",
+    label: "Incident Reports",
     icon: AlertTriangle,
   },
   {
-    to: '/users',
-    label: 'Users & Roles',
+    to: "/users",
+    label: "Users & Roles",
     icon: Users,
   },
   {
-    to: '/settings',
-    label: 'Settings',
+    to: "/settings",
+    label: "Settings",
     icon: Settings,
   },
 ]
@@ -67,19 +87,19 @@ const allMobileItems = navigationItems.flatMap((item) =>
 
 function navClassName(isActive: boolean, collapsed: boolean) {
   return [
-    'flex items-center rounded-md py-2.5 text-sm font-medium transition-all',
-    collapsed ? 'justify-center px-2.5' : 'gap-3 px-3',
+    "flex items-center rounded-md py-2.5 text-sm font-medium transition-all",
+    collapsed ? "justify-center px-2.5" : "gap-3 px-3",
     isActive
-      ? 'bg-[var(--accent-soft)] text-[var(--accent-strong)]'
-      : 'text-[var(--muted)] hover:bg-[var(--background)] hover:text-[var(--foreground)]',
-  ].join(' ')
+      ? "bg-[var(--accent)] text-white! shadow-sm"
+      : "text-[var(--muted)]/90 hover:bg-[var(--accent-soft)] hover:text-[var(--accent-strong)]",
+  ].join(" ")
 }
 
 function UserAvatar({ name }: { name: string }) {
   const initials = name
-    .split(' ')
+    .split(" ")
     .map((n) => n[0])
-    .join('')
+    .join("")
     .toUpperCase()
     .slice(0, 2)
 
@@ -90,10 +110,19 @@ function UserAvatar({ name }: { name: string }) {
   )
 }
 
-function NavItemEntry({ item, collapsed }: { item: NavItem; collapsed: boolean }) {
+function NavItemEntry({
+  item,
+  collapsed,
+}: {
+  item: NavItem
+  collapsed: boolean
+}) {
   const location = useLocation()
-  const parentActive = location.pathname === item.to
-  const childActive = item.children?.some((child) => location.pathname.startsWith(child.to)) ?? false
+  const parentActive =
+    location.pathname === item.to || location.pathname.startsWith(`${item.to}/`)
+  const childActive =
+    item.children?.some((child) => location.pathname.startsWith(child.to)) ??
+    false
   const anyActive = parentActive || childActive
   const [expanded, setExpanded] = useState(anyActive)
 
@@ -120,7 +149,9 @@ function NavItemEntry({ item, collapsed }: { item: NavItem; collapsed: boolean }
     return (
       <>
         <NavLink
-          className={({ isActive }) => navClassName(isActive || childActive, true)}
+          className={({ isActive }) =>
+            navClassName(isActive || childActive, true)
+          }
           title={item.label}
           to={item.to}
         >
@@ -147,10 +178,12 @@ function NavItemEntry({ item, collapsed }: { item: NavItem; collapsed: boolean }
     <div>
       <div className="flex items-center">
         <NavLink
-          className={({ isActive }) => [
-            navClassName(isActive, false),
-            'flex-1 min-w-0',
-          ].join(' ')}
+          className={({ isActive }) =>
+            [
+              navClassName(isActive || childActive, false),
+              "flex-1 min-w-0",
+            ].join(" ")
+          }
           to={item.to}
         >
           <Icon className="h-4 w-4 shrink-0" />
@@ -162,7 +195,7 @@ function NavItemEntry({ item, collapsed }: { item: NavItem; collapsed: boolean }
           type="button"
         >
           <ChevronDown
-            className={`h-3.5 w-3.5 transition-transform duration-200 ${expanded ? 'rotate-0' : '-rotate-90'}`}
+            className={`h-3.5 w-3.5 transition-transform duration-200 ${expanded ? "rotate-0" : "-rotate-90"}`}
           />
         </button>
       </div>
@@ -193,7 +226,7 @@ export function AppShell() {
   const navigate = useNavigate()
   const [appSettings, setAppSettings] = useState<AppSettings>(loadAppSettings)
   const [collapsed, setCollapsed] = useState(
-    () => localStorage.getItem(SIDEBAR_COLLAPSED_KEY) === 'true',
+    () => localStorage.getItem(SIDEBAR_COLLAPSED_KEY) === "true",
   )
 
   const toggleCollapsed = useCallback(() => {
@@ -208,31 +241,34 @@ export function AppShell() {
     function handleSettingsUpdate() {
       setAppSettings(loadAppSettings())
     }
-    window.addEventListener('app-settings-updated', handleSettingsUpdate)
-    return () => window.removeEventListener('app-settings-updated', handleSettingsUpdate)
+    window.addEventListener("app-settings-updated", handleSettingsUpdate)
+    return () =>
+      window.removeEventListener("app-settings-updated", handleSettingsUpdate)
   }, [])
 
   function handleSignOut() {
     signOut()
-    navigate('/login', { replace: true })
+    navigate("/login", { replace: true })
   }
 
-  const displayName = user?.displayName ?? user?.username ?? ''
+  const displayName = user?.displayName ?? user?.username ?? ""
   const roleLabel = user?.roles?.[0]
     ? user.roles[0].charAt(0).toUpperCase() + user.roles[0].slice(1)
-    : 'User'
+    : "User"
 
   return (
     <div className="flex h-screen overflow-hidden bg-[var(--background)] text-[var(--foreground)]">
       {/* Sidebar */}
       <aside
         className={`relative hidden flex-col bg-[var(--panel)] transition-[width] duration-200 ease-in-out lg:flex ${
-          collapsed ? 'w-[68px]' : 'w-60'
+          collapsed ? "w-[68px]" : "w-60"
         }`}
       >
         {/* Logo */}
         <div className="flex h-16 shrink-0 items-center border-b border-[var(--border)] px-3">
-          <div className={`flex items-center overflow-hidden ${collapsed ? 'justify-center w-full' : 'gap-2.5 px-2'}`}>
+          <div
+            className={`flex items-center overflow-hidden ${collapsed ? "justify-center w-full" : "gap-2.5 px-2"}`}
+          >
             <div className="flex h-7 w-7 shrink-0 items-center justify-center rounded-lg bg-[var(--accent)] overflow-hidden">
               {appSettings.logoDataUrl ? (
                 <img
@@ -285,8 +321,12 @@ export function AppShell() {
             <div className="flex items-center gap-3 rounded-md border border-[var(--border)] bg-[var(--background)] px-3 py-2.5">
               <UserAvatar name={displayName} />
               <div className="min-w-0 flex-1">
-                <p className="truncate text-sm font-medium leading-tight">{displayName}</p>
-                <p className="truncate text-xs text-[var(--muted)] leading-tight mt-0.5">{roleLabel}</p>
+                <p className="truncate text-sm font-medium leading-tight">
+                  {displayName}
+                </p>
+                <p className="truncate text-xs text-[var(--muted)] leading-tight mt-0.5">
+                  {roleLabel}
+                </p>
               </div>
               <button
                 aria-label="Sign out"
@@ -302,7 +342,7 @@ export function AppShell() {
 
         {/* Edge toggle handle */}
         <button
-          aria-label={collapsed ? 'Expand sidebar' : 'Collapse sidebar'}
+          aria-label={collapsed ? "Expand sidebar" : "Collapse sidebar"}
           className="absolute -right-px top-0 z-10 h-full w-1 cursor-col-resize border-r border-[var(--border)] bg-transparent transition-colors hover:border-[var(--accent)] hover:bg-[var(--accent)]/20 active:bg-[var(--accent)]/30"
           onClick={toggleCollapsed}
           type="button"
@@ -334,11 +374,11 @@ export function AppShell() {
                   key={item.to}
                   className={({ isActive }) =>
                     [
-                      'flex items-center justify-center rounded-lg p-2 text-sm transition',
+                      "flex items-center justify-center rounded-lg p-2 text-sm transition",
                       isActive
-                        ? 'bg-[var(--accent-soft)] text-[var(--accent-strong)]'
-                        : 'text-[var(--muted)] hover:bg-[var(--background)]',
-                    ].join(' ')
+                        ? "bg-[var(--accent)] text-white shadow-sm"
+                        : "text-[var(--muted)]/90 hover:bg-[var(--accent-soft)] hover:text-[var(--accent-strong)]",
+                    ].join(" ")
                   }
                   to={item.to}
                 >

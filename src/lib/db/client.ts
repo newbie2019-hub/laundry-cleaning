@@ -922,9 +922,29 @@ async function ensureSeedData(database: Database) {
   await ensureDemoMaintenanceRecords(database)
 }
 
+// The tauri-plugin-sql crate creates SQLite databases with the default journal
+// mode (DELETE), which causes readers and writers to block each other. Under
+// the plugin's sqlx connection pool this easily hits the 5s busy timeout (e.g.
+// saving attendance fails after a ~5s wait). Enabling WAL once persists the
+// setting in the database header and removes reader/writer contention for
+// every connection thereafter. We also switch synchronous to NORMAL (safe with
+// WAL) and raise the busy timeout for added safety on the current connection.
+async function applyPragmas(database: Database) {
+  try {
+    await database.execute('PRAGMA journal_mode = WAL')
+    await database.execute('PRAGMA synchronous = NORMAL')
+    await database.execute('PRAGMA busy_timeout = 15000')
+    await database.execute('PRAGMA foreign_keys = ON')
+  } catch (error) {
+    // Pragmas are a best-effort performance tweak; never block startup.
+    console.warn('[db] failed to apply pragmas', error)
+  }
+}
+
 export function getDatabase() {
   if (!databasePromise) {
     databasePromise = Database.load(DB_PATH).then(async (database) => {
+      await applyPragmas(database)
       await ensureSeedData(database)
       return database
     })

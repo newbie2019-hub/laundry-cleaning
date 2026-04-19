@@ -1,5 +1,5 @@
 import type { ChangeEvent, FormEvent } from "react"
-import { useRef, useState } from "react"
+import { useEffect, useRef, useState } from "react"
 import { format } from "date-fns"
 import {
   Check,
@@ -10,6 +10,7 @@ import {
   Save,
   Sun,
   User,
+  Wallet,
   X,
 } from "lucide-react"
 import { downloadDir } from "@tauri-apps/api/path"
@@ -21,7 +22,12 @@ import {
   saveAppSettings,
   type AppSettings,
 } from "../../../lib/app-settings"
-import { updateUserProfile, vacuumInto } from "../../../lib/db/repository"
+import {
+  getPayrollSettings,
+  savePayrollSettings,
+  updateUserProfile,
+  vacuumInto,
+} from "../../../lib/db/repository"
 
 const inputClass =
   "h-10 w-full rounded-lg border border-[var(--border)] bg-[var(--background)] px-3 text-sm focus:outline-none focus:ring-2 focus:ring-[var(--accent)]/30"
@@ -32,8 +38,19 @@ const themeOptions = [
   { value: "system", label: "System", icon: Monitor },
 ] as const
 
+const WEEKDAY_OPTIONS = [
+  { value: 0, label: "Sunday" },
+  { value: 1, label: "Monday" },
+  { value: 2, label: "Tuesday" },
+  { value: 3, label: "Wednesday" },
+  { value: 4, label: "Thursday" },
+  { value: 5, label: "Friday" },
+  { value: 6, label: "Saturday" },
+] as const
+
 export function SettingsPage() {
-  const { user, refreshSession } = useAuth()
+  const { hasPermission, user, refreshSession } = useAuth()
+  const canManagePayrollSettings = hasPermission("manage_staff")
   const { theme, setTheme } = useTheme()
 
   const [appSettings, setAppSettings] = useState<AppSettings>(loadAppSettings)
@@ -54,6 +71,37 @@ export function SettingsPage() {
     text: string
     ok: boolean
   } | null>(null)
+
+  const [payrollCutoffDay, setPayrollCutoffDay] = useState(6)
+  const [holidayMultiplier, setHolidayMultiplier] = useState(1)
+  const [payrollSettingsLoading, setPayrollSettingsLoading] = useState(true)
+  const [payrollSettingsSaving, setPayrollSettingsSaving] = useState(false)
+
+  useEffect(() => {
+    if (!canManagePayrollSettings) {
+      setPayrollSettingsLoading(false)
+      return
+    }
+    let cancelled = false
+    void (async () => {
+      try {
+        const s = await getPayrollSettings()
+        if (!cancelled) {
+          setPayrollCutoffDay(s.cutoffDay)
+          setHolidayMultiplier(s.holidayDefaultMultiplier)
+        }
+      } catch {
+        if (!cancelled) {
+          toast.error("Unable to load payroll settings.")
+        }
+      } finally {
+        if (!cancelled) setPayrollSettingsLoading(false)
+      }
+    })()
+    return () => {
+      cancelled = true
+    }
+  }, [canManagePayrollSettings])
 
   function handleSaveAppSettings(event: FormEvent<HTMLFormElement>) {
     event.preventDefault()
@@ -97,6 +145,23 @@ export function SettingsPage() {
       toast.error("Backup failed", { description: msg })
     } finally {
       setIsExporting(false)
+    }
+  }
+
+  async function handleSavePayrollSettings(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault()
+    if (!canManagePayrollSettings) return
+    setPayrollSettingsSaving(true)
+    try {
+      await savePayrollSettings({
+        cutoffDay: payrollCutoffDay,
+        holidayDefaultMultiplier: holidayMultiplier,
+      })
+      toast.success("Payroll settings saved.")
+    } catch (err: unknown) {
+      toast.error(err instanceof Error ? err.message : "Unable to save payroll settings.")
+    } finally {
+      setPayrollSettingsSaving(false)
     }
   }
 
@@ -383,6 +448,70 @@ export function SettingsPage() {
             </div>
           </form>
         </div>
+
+        {/* Payroll (staff) */}
+        {canManagePayrollSettings && (
+          <div className="grid grid-cols-1 gap-x-10 gap-y-4 py-8 md:grid-cols-[280px_1fr]">
+            <div>
+              <div className="flex items-center gap-2">
+                <Wallet className="h-4 w-4 text-[var(--muted)]" />
+                <h2 className="text-sm font-semibold">Payroll</h2>
+              </div>
+              <p className="mt-1 text-xs leading-relaxed text-[var(--muted)]">
+                Weekly payroll periods end on this weekday. Holiday attendance
+                status uses this multiplier unless changed on a specific day.
+              </p>
+            </div>
+            {payrollSettingsLoading ? (
+              <p className="text-sm text-[var(--muted)] md:justify-self-end">Loading…</p>
+            ) : (
+              <form
+                className="w-full max-w-[480px] space-y-4 md:justify-self-end"
+                onSubmit={handleSavePayrollSettings}
+              >
+                <label className="block space-y-1.5">
+                  <span className="text-xs font-medium text-[var(--muted)] uppercase tracking-wider">
+                    Week ends on (cutoff)
+                  </span>
+                  <select
+                    className={inputClass}
+                    onChange={(e) => setPayrollCutoffDay(Number(e.target.value))}
+                    value={payrollCutoffDay}
+                  >
+                    {WEEKDAY_OPTIONS.map((d) => (
+                      <option key={d.value} value={d.value}>
+                        {d.label}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+                <label className="block space-y-1.5">
+                  <span className="text-xs font-medium text-[var(--muted)] uppercase tracking-wider">
+                    Holiday default multiplier
+                  </span>
+                  <input
+                    className={inputClass}
+                    min={0}
+                    onChange={(e) => setHolidayMultiplier(Number(e.target.value) || 0)}
+                    step="0.01"
+                    type="number"
+                    value={holidayMultiplier}
+                  />
+                </label>
+                <div className="flex justify-end">
+                  <button
+                    className="inline-flex items-center gap-1.5 rounded-lg bg-[var(--accent)] px-4 py-2 text-sm font-medium text-white transition hover:opacity-90 disabled:opacity-50"
+                    disabled={payrollSettingsSaving}
+                    type="submit"
+                  >
+                    <Save className="h-3.5 w-3.5" />
+                    {payrollSettingsSaving ? "Saving…" : "Save payroll settings"}
+                  </button>
+                </div>
+              </form>
+            )}
+          </div>
+        )}
 
         {/* Database backup */}
         <div className="grid grid-cols-1 gap-x-10 gap-y-4 py-8 md:grid-cols-[280px_1fr]">

@@ -10,6 +10,9 @@ import { InventoryPage } from '../features/inventory/pages/inventory-page'
 import { InventoryMovementsPage } from '../features/inventory/pages/inventory-movements-page'
 import { InventorySummaryPage } from '../features/inventory/pages/inventory-summary-page'
 import { SettingsPage } from '../features/settings/pages/settings-page'
+import { StaffDetailPage } from '../features/staff/pages/staff-detail-page'
+import { StaffPage } from '../features/staff/pages/staff-page'
+import { TransactionDetailPage } from '../features/transactions/pages/transaction-detail-page'
 import { TransactionsPage } from '../features/transactions/pages/transactions-page'
 import { TransactionsSummaryPage } from '../features/transactions/pages/transactions-summary-page'
 import { UsersPage } from '../features/users/pages/users-page'
@@ -36,12 +39,24 @@ const router = createHashRouter([
             element: <TransactionsPage />,
           },
           {
+            path: '/transactions-summary',
+            element: <TransactionsSummaryPage />,
+          },
+          {
+            path: '/transactions/:id',
+            element: <TransactionDetailPage />,
+          },
+          {
             path: '/customers',
             element: <CustomersPage />,
           },
           {
-            path: '/transactions-summary',
-            element: <TransactionsSummaryPage />,
+            path: '/staff',
+            element: <StaffPage />,
+          },
+          {
+            path: '/staff/:id',
+            element: <StaffDetailPage />,
           },
           {
             path: '/incident-reports',
