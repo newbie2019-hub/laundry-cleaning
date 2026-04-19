@@ -2,7 +2,16 @@ import type { FormEvent, ReactNode } from 'react'
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { Link, useParams } from 'react-router-dom'
 import { format } from 'date-fns'
-import { ArrowDownToLine, ArrowLeft, ArrowUpFromLine, Pencil, Plus, Trash2, X } from 'lucide-react'
+import {
+  ArrowDownToLine,
+  ArrowLeft,
+  ArrowUpFromLine,
+  LayoutTemplate,
+  Pencil,
+  Plus,
+  Trash2,
+  X,
+} from 'lucide-react'
 import { formatCurrency } from '../../../lib/format'
 import {
   deleteInventoryMovement,
@@ -334,7 +343,20 @@ export function TransactionDetailPage() {
                 {movements.map((mov) => (
                   <tr key={mov.id}>
                     <td className="px-3 py-2.5 tabular-nums text-[var(--muted)] whitespace-nowrap">{mov.movementDate}</td>
-                    <td className="px-3 py-2.5 font-medium max-w-[10rem] truncate">{mov.itemName}</td>
+                    <td className="px-3 py-2.5 font-medium max-w-[12rem]">
+                      <div className="flex flex-wrap items-center gap-1.5">
+                        <span className="truncate">{mov.itemName}</span>
+                        {mov.templateId != null ? (
+                          <span
+                            className="inline-flex shrink-0 items-center gap-0.5 rounded-md bg-violet-500/15 px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-violet-600"
+                            title={mov.templateName ? `From template: ${mov.templateName}` : 'From sale template'}
+                          >
+                            <LayoutTemplate className="h-3 w-3" />
+                            {mov.templateName ? mov.templateName : 'Template'}
+                          </span>
+                        ) : null}
+                      </div>
+                    </td>
                     <td className="px-3 py-2.5">{movBadge(mov.movementType)}</td>
                     <td className="px-3 py-2.5 text-right tabular-nums whitespace-nowrap">
                       {formatQty(mov.quantity)} <span className="text-[var(--muted)]">{mov.unitLabel}</span>

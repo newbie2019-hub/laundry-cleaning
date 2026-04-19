@@ -78,6 +78,7 @@ export function SettingsPage() {
 
   const [payrollCutoffDay, setPayrollCutoffDay] = useState(6)
   const [holidayMultiplier, setHolidayMultiplier] = useState(1)
+  const [autoDeductCashAdvances, setAutoDeductCashAdvances] = useState(true)
   const [payrollSettingsLoading, setPayrollSettingsLoading] = useState(true)
   const [payrollSettingsSaving, setPayrollSettingsSaving] = useState(false)
 
@@ -98,6 +99,7 @@ export function SettingsPage() {
         if (!cancelled) {
           setPayrollCutoffDay(s.cutoffDay)
           setHolidayMultiplier(s.holidayDefaultMultiplier)
+          setAutoDeductCashAdvances(s.autoDeductCashAdvances)
         }
       } catch {
         if (!cancelled) {
@@ -189,6 +191,7 @@ export function SettingsPage() {
     setPayrollSettingsSaving(true)
     try {
       await savePayrollSettings({
+        autoDeductCashAdvances,
         cutoffDay: payrollCutoffDay,
         holidayDefaultMultiplier: holidayMultiplier,
       })
@@ -550,6 +553,24 @@ export function SettingsPage() {
                     value={holidayMultiplier}
                   />
                 </label>
+                <label className="flex cursor-pointer items-start gap-3 rounded-md border border-[var(--border)] bg-[var(--panel)] px-3 py-2.5">
+                  <input
+                    checked={autoDeductCashAdvances}
+                    className="mt-0.5 h-4 w-4 rounded border-[var(--border)]"
+                    onChange={(e) => setAutoDeductCashAdvances(e.target.checked)}
+                    type="checkbox"
+                  />
+                  <span className="flex-1">
+                    <span className="block text-sm font-medium">
+                      Auto-apply outstanding cash advances on payroll
+                    </span>
+                    <span className="mt-0.5 block text-xs text-[var(--muted)]">
+                      When enabled, cash advances are pre-checked in the payroll dialog and
+                      deducted by default. You can still uncheck individual advances when
+                      processing payroll to defer them.
+                    </span>
+                  </span>
+                </label>
                 <div className="flex justify-end">
                   <button
                     className="inline-flex items-center gap-1.5 rounded-lg bg-[var(--accent)] px-4 py-2 text-sm font-medium text-white transition hover:opacity-90 disabled:opacity-50"
@@ -574,8 +595,10 @@ export function SettingsPage() {
                 <h2 className="text-sm font-semibold">Loyalty</h2>
               </div>
               <p className="mt-1 text-xs leading-relaxed text-[var(--muted)]">
-                Kilograms per load converts optional kg on a sale into load units. Free load after N
-                paid loads controls when customers can redeem a reward on the transaction form.
+                Customize the loyalty card: kilograms per load converts optional kg on a sale
+                into load units, and the free-load threshold controls how many paid loads a
+                customer needs before they earn a free one. Loyalty must be enabled per customer
+                on the Customers page.
               </p>
             </div>
             {loyaltySettingsLoading ? (
@@ -600,7 +623,7 @@ export function SettingsPage() {
                 </label>
                 <label className="block space-y-1.5">
                   <span className="text-xs font-medium text-[var(--muted)] uppercase tracking-wider">
-                    Free load after N paid loads
+                    Paid loads per free load
                   </span>
                   <input
                     className={inputClass}
@@ -612,6 +635,9 @@ export function SettingsPage() {
                     type="number"
                     value={loyaltyFreeAfterLoads}
                   />
+                  <span className="block text-xs text-[var(--muted)]">
+                    Customer earns a free load after {loyaltyFreeAfterLoads} paid loads.
+                  </span>
                 </label>
                 <div className="flex justify-end">
                   <button

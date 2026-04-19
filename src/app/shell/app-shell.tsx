@@ -5,6 +5,7 @@ import {
   BarChart3,
   ChevronDown,
   LayoutDashboard,
+  LayoutTemplate,
   LogOut,
   Package,
   PieChart,
@@ -52,6 +53,7 @@ const navigationItems: NavItem[] = [
     children: [
       { to: "/inventory-movements", label: "Movements", icon: ArrowLeftRight },
       { to: "/inventory-summary", label: "Summary", icon: BarChart3 },
+      { to: "/inventory-templates", label: "Sale templates", icon: LayoutTemplate },
     ],
   },
   {

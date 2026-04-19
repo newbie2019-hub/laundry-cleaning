@@ -5,6 +5,7 @@ import {
   ArrowDown,
   ArrowUp,
   ArrowUpDown,
+  HandCoins,
   Pencil,
   Plus,
   Search,
@@ -27,6 +28,7 @@ import {
 } from '../../../lib/db/repository'
 import { formatCurrency } from '../../../lib/format'
 import { useAuth } from '../../auth/use-auth'
+import { CashAdvanceDialog } from '../components/cash-advance-dialog'
 
 const CIVIL_STATUSES: CivilStatus[] = ['Single', 'Married', 'Widowed', 'Separated']
 
@@ -141,6 +143,7 @@ function formatPayDate(value: string | null): string {
 export function StaffPage() {
   const { hasPermission, user } = useAuth()
   const canManage = hasPermission('manage_staff')
+  const canProcessPayroll = hasPermission('process_payroll')
   const navigate = useNavigate()
 
   const [staffList, setStaffList] = useState<Staff[]>([])
@@ -177,6 +180,7 @@ export function StaffPage() {
   const [formErrors, setFormErrors] = useState<StaffFormErrors>({})
   const [formError, setFormError] = useState<string | null>(null)
   const [togglingId, setTogglingId] = useState<number | null>(null)
+  const [advanceTarget, setAdvanceTarget] = useState<Staff | null>(null)
 
   const computedAge = useMemo(() => ageFromBirthdate(formBirthdate), [formBirthdate])
 
@@ -615,6 +619,17 @@ export function StaffPage() {
                       onClick={(e) => e.stopPropagation()}
                     >
                       <div className="flex items-center justify-end gap-1">
+                        {canProcessPayroll && !s.isArchived ? (
+                          <button
+                            aria-label="Cash advance"
+                            className="rounded p-1.5 text-[var(--muted)] transition hover:bg-amber-500/10 hover:text-amber-600"
+                            onClick={() => setAdvanceTarget(s)}
+                            title="Issue or review cash advances"
+                            type="button"
+                          >
+                            <HandCoins className="h-4 w-4" />
+                          </button>
+                        ) : null}
                         <button
                           aria-label="Edit"
                           className="rounded p-1.5 text-[var(--muted)] transition hover:bg-[var(--accent-soft)] hover:text-[var(--accent-strong)]"
@@ -839,6 +854,16 @@ export function StaffPage() {
           </div>
         </div>
       )}
+
+      {user && advanceTarget ? (
+        <CashAdvanceDialog
+          onClose={() => setAdvanceTarget(null)}
+          open
+          staffDisplayName={`${advanceTarget.firstName} ${advanceTarget.lastName}`.trim()}
+          staffId={advanceTarget.id}
+          userId={user.id}
+        />
+      ) : null}
 
       {isFilterOpen && (
         <div

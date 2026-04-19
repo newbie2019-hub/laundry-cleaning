@@ -10,6 +10,7 @@ import {
   getCustomerLoyaltyStatus,
   listTransactions,
   saveCustomer,
+  setCustomerLoyaltyEnabled,
   type Customer,
   type CustomerDraft,
   type CustomerLoyaltyStatus,
@@ -41,7 +42,9 @@ export function CustomerDetailPage() {
   const [formCompany, setFormCompany] = useState('')
   const [formEmail, setFormEmail] = useState('')
   const [formPhone, setFormPhone] = useState('')
+  const [formLoyaltyEnabled, setFormLoyaltyEnabled] = useState(false)
   const [formSubmitting, setFormSubmitting] = useState(false)
+  const [loyaltyToggling, setLoyaltyToggling] = useState(false)
 
   const load = useCallback(async () => {
     if (!Number.isFinite(customerId) || customerId <= 0) {
@@ -77,7 +80,22 @@ export function CustomerDetailPage() {
     setFormCompany(customer.company)
     setFormEmail(customer.email)
     setFormPhone(customer.phone)
+    setFormLoyaltyEnabled(customer.isLoyaltyEnabled)
     setModalOpen(true)
+  }
+
+  async function handleToggleLoyalty(next: boolean) {
+    if (!user || !canManage || !customer) return
+    setLoyaltyToggling(true)
+    try {
+      await setCustomerLoyaltyEnabled(customer.id, next, user.id)
+      toast.success(next ? 'Loyalty enabled.' : 'Loyalty disabled.')
+      await load()
+    } catch (err: unknown) {
+      toast.error(err instanceof Error ? err.message : 'Unable to update loyalty.')
+    } finally {
+      setLoyaltyToggling(false)
+    }
   }
 
   async function handleSubmit(e: FormEvent<HTMLFormElement>) {
@@ -96,6 +114,7 @@ export function CustomerDetailPage() {
       const draft: CustomerDraft = {
         company: formCompany,
         email: formEmail,
+        isLoyaltyEnabled: formLoyaltyEnabled,
         name: formName,
         phone: formPhone,
       }
@@ -167,69 +186,99 @@ export function CustomerDetailPage() {
 
       {loyalty ? (
         <div className="rounded-xl border border-[var(--border)] bg-[var(--panel)] p-5">
-          <h2 className="text-sm font-semibold text-[var(--foreground)]">Loyalty card</h2>
-          <p className="mt-1 text-xs text-[var(--muted)]">
-            Paid loads on loadable sale categories count toward a free load after {loyalty.freeAfterLoads} paid
-            loads.
-          </p>
-
-          <div className="mt-4 flex flex-wrap items-center gap-2">
-            {Array.from({ length: stampSlots }, (_, i) => {
-              const isFreeSlot = i === loyalty.freeAfterLoads
-              if (isFreeSlot) {
-                return (
-                  <div
-                    key="free"
-                    className="flex h-11 w-11 shrink-0 items-center justify-center rounded-full border-2 border-dashed border-violet-400/70 bg-violet-500/10 text-[10px] font-bold uppercase tracking-wide text-violet-600"
-                  >
-                    Free
-                  </div>
-                )
-              }
-              const filled = i < fullStamps
-              return (
-                <div
-                  key={i}
-                  className={[
-                    'flex h-11 w-11 shrink-0 items-center justify-center rounded-full border-2 text-xs font-semibold tabular-nums transition',
-                    filled
-                      ? 'border-[var(--accent)] bg-[var(--accent)] text-white'
-                      : 'border-[var(--border)] bg-[var(--background)] text-[var(--muted)]',
-                  ].join(' ')}
-                  title={`Slot ${i + 1} of ${loyalty.freeAfterLoads}`}
-                >
-                  {i + 1}
-                </div>
-              )
-            })}
+          <div className="flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between">
+            <div>
+              <h2 className="text-sm font-semibold text-[var(--foreground)]">Loyalty card</h2>
+              <p className="mt-1 text-xs text-[var(--muted)]">
+                {loyalty.isLoyaltyEnabled
+                  ? `Paid loads on loadable sale categories count toward a free load after ${loyalty.freeAfterLoads} paid loads.`
+                  : 'Loyalty is not given to first-time customers. Enable it once this customer qualifies.'}
+              </p>
+            </div>
+            {canManage ? (
+              <button
+                className={[
+                  'inline-flex shrink-0 items-center gap-1.5 rounded-md px-3 py-1.5 text-xs font-medium transition disabled:opacity-50',
+                  loyalty.isLoyaltyEnabled
+                    ? 'border border-[var(--border)] text-[var(--muted)] hover:text-red-400 hover:border-red-400/60'
+                    : 'bg-[var(--accent)] text-white hover:opacity-90',
+                ].join(' ')}
+                disabled={loyaltyToggling}
+                onClick={() => {
+                  void handleToggleLoyalty(!loyalty.isLoyaltyEnabled)
+                }}
+                type="button"
+              >
+                {loyaltyToggling
+                  ? 'Saving…'
+                  : loyalty.isLoyaltyEnabled
+                    ? 'Disable loyalty'
+                    : 'Enable loyalty'}
+              </button>
+            ) : null}
           </div>
 
-          <dl className="mt-4 grid gap-3 text-sm sm:grid-cols-2 lg:grid-cols-4">
-            <div>
-              <dt className="text-xs font-medium uppercase tracking-wide text-[var(--muted)]">Progress</dt>
-              <dd className="mt-0.5 font-medium tabular-nums">
-                {loyalty.paidLoadsSinceLastReward.toFixed(2)} / {loyalty.freeAfterLoads} paid loads
-              </dd>
-            </div>
-            <div>
-              <dt className="text-xs font-medium uppercase tracking-wide text-[var(--muted)]">Rewards redeemed</dt>
-              <dd className="mt-0.5 tabular-nums">{loyalty.totalRewardsRedeemed}</dd>
-            </div>
-            <div>
-              <dt className="text-xs font-medium uppercase tracking-wide text-[var(--muted)]">Lifetime paid loads</dt>
-              <dd className="mt-0.5 tabular-nums">{loyalty.totalPaidLoads.toFixed(2)}</dd>
-            </div>
-            <div>
-              <dt className="text-xs font-medium uppercase tracking-wide text-[var(--muted)]">Last reward</dt>
-              <dd className="mt-0.5 tabular-nums">{loyalty.lastRewardDate ?? '—'}</dd>
-            </div>
-          </dl>
+          {loyalty.isLoyaltyEnabled ? (
+            <>
+              <div className="mt-4 flex flex-wrap items-center gap-2">
+                {Array.from({ length: stampSlots }, (_, i) => {
+                  const isFreeSlot = i === loyalty.freeAfterLoads
+                  if (isFreeSlot) {
+                    return (
+                      <div
+                        key="free"
+                        className="flex h-11 w-11 shrink-0 items-center justify-center rounded-full border-2 border-dashed border-violet-400/70 bg-violet-500/10 text-[10px] font-bold uppercase tracking-wide text-violet-600"
+                      >
+                        Free
+                      </div>
+                    )
+                  }
+                  const filled = i < fullStamps
+                  return (
+                    <div
+                      key={i}
+                      className={[
+                        'flex h-11 w-11 shrink-0 items-center justify-center rounded-full border-2 text-xs font-semibold tabular-nums transition',
+                        filled
+                          ? 'border-[var(--accent)] bg-[var(--accent)] text-white'
+                          : 'border-[var(--border)] bg-[var(--background)] text-[var(--muted)]',
+                      ].join(' ')}
+                      title={`Slot ${i + 1} of ${loyalty.freeAfterLoads}`}
+                    >
+                      {i + 1}
+                    </div>
+                  )
+                })}
+              </div>
 
-          {loyalty.isEligibleForReward ? (
-            <p className="mt-3 text-sm font-medium text-violet-600">
-              Customer is eligible — record the next sale with &quot;Redeem loyalty reward&quot; on the Transactions
-              page.
-            </p>
+              <dl className="mt-4 grid gap-3 text-sm sm:grid-cols-2 lg:grid-cols-4">
+                <div>
+                  <dt className="text-xs font-medium uppercase tracking-wide text-[var(--muted)]">Progress</dt>
+                  <dd className="mt-0.5 font-medium tabular-nums">
+                    {loyalty.paidLoadsSinceLastReward.toFixed(2)} / {loyalty.freeAfterLoads} paid loads
+                  </dd>
+                </div>
+                <div>
+                  <dt className="text-xs font-medium uppercase tracking-wide text-[var(--muted)]">Rewards redeemed</dt>
+                  <dd className="mt-0.5 tabular-nums">{loyalty.totalRewardsRedeemed}</dd>
+                </div>
+                <div>
+                  <dt className="text-xs font-medium uppercase tracking-wide text-[var(--muted)]">Lifetime paid loads</dt>
+                  <dd className="mt-0.5 tabular-nums">{loyalty.totalPaidLoads.toFixed(2)}</dd>
+                </div>
+                <div>
+                  <dt className="text-xs font-medium uppercase tracking-wide text-[var(--muted)]">Last reward</dt>
+                  <dd className="mt-0.5 tabular-nums">{loyalty.lastRewardDate ?? '—'}</dd>
+                </div>
+              </dl>
+
+              {loyalty.isEligibleForReward ? (
+                <p className="mt-3 text-sm font-medium text-violet-600">
+                  Customer is eligible — record the next sale with &quot;Redeem loyalty reward&quot; on the Transactions
+                  page.
+                </p>
+              ) : null}
+            </>
           ) : null}
         </div>
       ) : null}
@@ -376,6 +425,20 @@ export function CustomerDetailPage() {
                   value={formPhone}
                 />
               </div>
+              <label className="flex items-start gap-2.5 rounded-md border border-[var(--border)] bg-[var(--background)] p-3">
+                <input
+                  checked={formLoyaltyEnabled}
+                  className="mt-0.5 h-4 w-4 rounded border-[var(--border)] text-[var(--accent)] focus:ring-[var(--accent)]"
+                  onChange={(e) => setFormLoyaltyEnabled(e.target.checked)}
+                  type="checkbox"
+                />
+                <span className="flex-1">
+                  <span className="block text-sm font-medium">Enable loyalty card</span>
+                  <span className="block text-xs text-[var(--muted)]">
+                    Loyalty is not given to first-time customers. Turn this on once they qualify.
+                  </span>
+                </span>
+              </label>
               <div className="flex justify-end gap-2 pt-2">
                 <button
                   className="h-9 rounded-md border border-[var(--border)] px-4 text-sm font-medium transition hover:bg-[var(--background)]"

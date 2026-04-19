@@ -534,6 +534,86 @@ pub fn builder() -> Builder {
       "#,
       kind: MigrationKind::Up,
     },
+    Migration {
+      version: 14,
+      description: "customers_loyalty_enabled_flag",
+      sql: r#"
+        ALTER TABLE customers ADD COLUMN is_loyalty_enabled INTEGER NOT NULL DEFAULT 0;
+      "#,
+      kind: MigrationKind::Up,
+    },
+    Migration {
+      version: 15,
+      description: "staff_cash_advances",
+      sql: r#"
+        ALTER TABLE payroll_settings
+          ADD COLUMN auto_deduct_cash_advances INTEGER NOT NULL DEFAULT 1;
+
+        INSERT OR IGNORE INTO categories (transaction_type_id, label, is_seeded)
+        SELECT id, 'Cash Advance', 1 FROM transaction_types WHERE code = 'EXPENSE';
+
+        CREATE TABLE IF NOT EXISTS staff_cash_advances (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          staff_id INTEGER NOT NULL,
+          advance_date TEXT NOT NULL,
+          amount REAL NOT NULL CHECK (amount > 0),
+          notes TEXT NOT NULL DEFAULT '',
+          status TEXT NOT NULL DEFAULT 'outstanding'
+            CHECK (status IN ('outstanding', 'settled', 'void')),
+          transaction_id INTEGER,
+          settled_payroll_id INTEGER,
+          settled_at TEXT,
+          created_by INTEGER,
+          updated_by INTEGER,
+          created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+          updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+          FOREIGN KEY (staff_id) REFERENCES staff (id) ON DELETE CASCADE,
+          FOREIGN KEY (transaction_id) REFERENCES transactions (id) ON DELETE SET NULL,
+          FOREIGN KEY (settled_payroll_id) REFERENCES staff_payrolls (id) ON DELETE SET NULL,
+          FOREIGN KEY (created_by) REFERENCES users (id),
+          FOREIGN KEY (updated_by) REFERENCES users (id)
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_cash_advances_staff
+          ON staff_cash_advances(staff_id, status, advance_date);
+        CREATE INDEX IF NOT EXISTS idx_cash_advances_payroll
+          ON staff_cash_advances(settled_payroll_id);
+      "#,
+      kind: MigrationKind::Up,
+    },
+    Migration {
+      version: 16,
+      description: "transaction_inventory_templates",
+      sql: r#"
+        CREATE TABLE IF NOT EXISTS transaction_templates (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          name TEXT NOT NULL UNIQUE,
+          description TEXT NOT NULL DEFAULT '',
+          is_active INTEGER NOT NULL DEFAULT 1,
+          created_at TEXT NOT NULL DEFAULT (datetime('now')),
+          updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+        );
+
+        CREATE TABLE IF NOT EXISTS transaction_template_items (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          template_id INTEGER NOT NULL REFERENCES transaction_templates(id) ON DELETE CASCADE,
+          inventory_item_id INTEGER NOT NULL REFERENCES inventory_items(id) ON DELETE CASCADE,
+          quantity REAL NOT NULL CHECK (quantity > 0),
+          sort_order INTEGER NOT NULL DEFAULT 0,
+          UNIQUE (template_id, inventory_item_id)
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_transaction_template_items_template
+          ON transaction_template_items(template_id);
+
+        ALTER TABLE inventory_movements ADD COLUMN template_id INTEGER
+          REFERENCES transaction_templates(id);
+
+        CREATE INDEX IF NOT EXISTS idx_inventory_movements_template_id
+          ON inventory_movements(template_id);
+      "#,
+      kind: MigrationKind::Up,
+    },
   ];
 
   Builder::default().add_migrations(DB_URL, migrations)

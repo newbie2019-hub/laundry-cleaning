@@ -68,6 +68,9 @@ export type TransactionDraft = {
   kg: number | null
   loads: number | null
   staffCount: number | null
+  /** When set with non-empty templateItems, OUT movements are created for a SALE. */
+  templateId?: number | null
+  templateItems?: Array<{ inventoryItemId: number; quantity: number }> | null
   transactionTypeId: number
 }
 
@@ -79,6 +82,7 @@ export type LoyaltySettings = {
 export type CustomerLoyaltyStatus = {
   freeAfterLoads: number
   isEligibleForReward: boolean
+  isLoyaltyEnabled: boolean
   lastRewardDate: string | null
   paidLoadsSinceLastReward: number
   totalPaidLoads: number
@@ -90,6 +94,7 @@ export type Customer = {
   email: string
   id: number
   isArchived: boolean
+  isLoyaltyEnabled: boolean
   name: string
   phone: string
 }
@@ -97,8 +102,17 @@ export type Customer = {
 export type CustomerDraft = {
   company: string
   email: string
+  isLoyaltyEnabled?: boolean
   name: string
   phone: string
+}
+
+export type CustomerSummary = Customer & {
+  freeAfterLoads: number
+  isEligibleForReward: boolean
+  lastTransactionAmount: number | null
+  lastTransactionDate: string | null
+  paidLoadsSinceLastReward: number
 }
 
 export type UserListItem = {
@@ -607,7 +621,93 @@ export async function getTransactionById(id: number): Promise<LedgerTransaction 
   return row ? mapLedgerTransactionRow(row) : null
 }
 
-export async function saveTransaction(input: TransactionDraft, userId: number, transactionId?: number) {
+async function syncSaleTemplateMovementsForTransaction(
+  database: Database,
+  params: {
+    entryDate: string
+    isSale: boolean
+    templateId: number | null | undefined
+    templateItems: Array<{ inventoryItemId: number; quantity: number }> | null | undefined
+    transactionId: number
+    userId: number
+  },
+): Promise<void> {
+  const explicitTemplatePayload = params.templateItems !== undefined
+
+  if (!explicitTemplatePayload) {
+    if (!params.isSale) {
+      await database.execute(
+        `DELETE FROM inventory_movements WHERE transaction_id = $1 AND template_id IS NOT NULL`,
+        [params.transactionId],
+      )
+    }
+    return
+  }
+
+  await database.execute(
+    `DELETE FROM inventory_movements WHERE transaction_id = $1 AND template_id IS NOT NULL`,
+    [params.transactionId],
+  )
+
+  if (!params.isSale) {
+    return
+  }
+
+  const lines =
+    (params.templateItems ?? []).filter(
+      (row) =>
+        Number.isFinite(row.quantity) &&
+        row.quantity > 0 &&
+        Number.isFinite(row.inventoryItemId) &&
+        row.inventoryItemId > 0,
+    )
+  if (lines.length === 0) {
+    return
+  }
+
+  const templateIdForRow = params.templateId ?? null
+  let templateLabel = 'Sale template'
+  if (templateIdForRow != null) {
+    const names = await database.select<{ name: string }[]>(
+      `SELECT name FROM transaction_templates WHERE id = $1`,
+      [templateIdForRow],
+    )
+    const n = names[0]?.name
+    if (n) templateLabel = n
+  }
+
+  const ids = [...new Set(lines.map((l) => l.inventoryItemId))]
+  const placeholders = ids.map((_, i) => `$${i + 1}`).join(', ')
+  const costRows = await database.select<Array<{ cost_per_unit: number; id: number }>>(
+    `SELECT id, cost_per_unit FROM inventory_items WHERE id IN (${placeholders})`,
+    ids,
+  )
+  const costById = new Map(costRows.map((r) => [r.id, toNumber(r.cost_per_unit)]))
+
+  for (const line of lines) {
+    const cost = costById.get(line.inventoryItemId) ?? 0
+    await database.execute(
+      `
+        INSERT INTO inventory_movements (
+          item_id, movement_type, quantity, unit_cost, notes, movement_date, created_by, transaction_id, template_id
+        )
+        VALUES ($1, 'OUT', $2, $3, $4, $5, $6, $7, $8)
+      `,
+      [
+        line.inventoryItemId,
+        line.quantity,
+        cost,
+        `Stock out (${templateLabel})`,
+        params.entryDate,
+        params.userId,
+        params.transactionId,
+        templateIdForRow,
+      ],
+    )
+  }
+}
+
+export async function saveTransaction(input: TransactionDraft, userId: number, transactionId?: number): Promise<number> {
   const database = await getDatabase()
 
   const metaRows = await database.select<Array<{ code: string; isLoadable: number }>>(
@@ -672,6 +772,8 @@ export async function saveTransaction(input: TransactionDraft, userId: number, t
     }
   }
 
+  let finalTransactionId: number
+
   if (transactionId) {
     await database.execute(
       `
@@ -706,45 +808,65 @@ export async function saveTransaction(input: TransactionDraft, userId: number, t
         transactionId,
       ],
     )
-    return
-  }
-
-  await database.execute(
-    `
-      INSERT INTO transactions (
-        entry_date,
-        transaction_type_id,
-        category_id,
-        description,
-        amount,
-        staff_count,
-        customer_id,
+    finalTransactionId = transactionId
+  } else {
+    const insertResult = await database.execute(
+      `
+        INSERT INTO transactions (
+          entry_date,
+          transaction_type_id,
+          category_id,
+          description,
+          amount,
+          staff_count,
+          customer_id,
+          kg,
+          loads,
+          is_loyalty_reward,
+          created_by,
+          updated_by
+        )
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $11)
+      `,
+      [
+        input.entryDate,
+        input.transactionTypeId,
+        input.categoryId,
+        input.description,
+        input.amount,
+        input.staffCount,
+        input.customerId,
         kg,
         loads,
-        is_loyalty_reward,
-        created_by,
-        updated_by
-      )
-      VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $11)
-    `,
-    [
-      input.entryDate,
-      input.transactionTypeId,
-      input.categoryId,
-      input.description,
-      input.amount,
-      input.staffCount,
-      input.customerId,
-      kg,
-      loads,
-      isRewardInt,
-      userId,
-    ],
-  )
+        isRewardInt,
+        userId,
+      ],
+    )
+    const lid = insertResult.lastInsertId
+    finalTransactionId = typeof lid === 'number' ? lid : Number(lid)
+    if (!Number.isFinite(finalTransactionId) || finalTransactionId <= 0) {
+      throw new Error('Failed to create transaction.')
+    }
+  }
+
+  await syncSaleTemplateMovementsForTransaction(database, {
+    entryDate: input.entryDate,
+    isSale,
+    templateId: input.templateId,
+    templateItems: input.templateItems,
+    transactionId: finalTransactionId,
+    userId,
+  })
+
+  return finalTransactionId
 }
 
 export async function deleteTransaction(transactionId: number) {
   const database = await getDatabase()
+  await database.execute(
+    `UPDATE inventory_movements SET transaction_id = NULL WHERE transaction_id = $1 AND template_id IS NULL`,
+    [transactionId],
+  )
   await database.execute('DELETE FROM transactions WHERE id = $1', [transactionId])
 }
 
@@ -753,6 +875,7 @@ type CustomerRow = {
   email: string
   id: number
   isArchived: number
+  isLoyaltyEnabled: number
   name: string
   phone: string
 }
@@ -786,7 +909,8 @@ export async function listCustomers(filters?: { includeArchived?: boolean; searc
         company,
         email,
         phone,
-        is_archived AS isArchived
+        is_archived AS isArchived,
+        is_loyalty_enabled AS isLoyaltyEnabled
       FROM customers
       ${whereClause}
       ORDER BY name COLLATE NOCASE ASC
@@ -799,9 +923,122 @@ export async function listCustomers(filters?: { includeArchived?: boolean; searc
     email: row.email,
     id: row.id,
     isArchived: Boolean(row.isArchived),
+    isLoyaltyEnabled: Boolean(row.isLoyaltyEnabled),
     name: row.name,
     phone: row.phone,
   }))
+}
+
+type CustomerSummaryRow = CustomerRow & {
+  lastTransactionAmount: number | null
+  lastTransactionDate: string | null
+  lastRewardId: number | null
+  paidLoadsSinceLastReward: number | null
+}
+
+export async function listCustomerSummaries(filters?: {
+  includeArchived?: boolean
+  search?: string
+}): Promise<CustomerSummary[]> {
+  const database = await getDatabase()
+  const settings = await getLoyaltySettings()
+  const freeAfterLoads = settings.freeAfterLoads
+
+  const conditions: string[] = []
+  const params: unknown[] = []
+
+  if (!filters?.includeArchived) {
+    conditions.push('c.is_archived = 0')
+  }
+
+  const search = filters?.search?.trim()
+  if (search) {
+    const pattern = `%${search}%`
+    params.push(pattern, pattern, pattern, pattern)
+    const n = params.length
+    conditions.push(
+      `(c.name LIKE $${n - 3} OR c.company LIKE $${n - 2} OR c.email LIKE $${n - 1} OR c.phone LIKE $${n})`,
+    )
+  }
+
+  const whereClause = conditions.length > 0 ? `WHERE ${conditions.join(' AND ')}` : ''
+
+  const rows = await database.select<CustomerSummaryRow[]>(
+    `
+      SELECT
+        c.id AS id,
+        c.name AS name,
+        c.company AS company,
+        c.email AS email,
+        c.phone AS phone,
+        c.is_archived AS isArchived,
+        c.is_loyalty_enabled AS isLoyaltyEnabled,
+        last_tx.last_date AS lastTransactionDate,
+        last_tx.last_amount AS lastTransactionAmount,
+        reward.last_reward_id AS lastRewardId,
+        COALESCE(progress.paid_loads, 0) AS paidLoadsSinceLastReward
+      FROM customers c
+      LEFT JOIN (
+        SELECT t.customer_id,
+               t.entry_date AS last_date,
+               t.amount AS last_amount
+        FROM transactions t
+        JOIN (
+          SELECT customer_id, MAX(id) AS max_id
+          FROM transactions
+          WHERE customer_id IS NOT NULL
+          GROUP BY customer_id
+        ) latest ON latest.customer_id = t.customer_id AND latest.max_id = t.id
+      ) last_tx ON last_tx.customer_id = c.id
+      LEFT JOIN (
+        SELECT customer_id, MAX(id) AS last_reward_id
+        FROM transactions
+        WHERE is_loyalty_reward != 0 AND customer_id IS NOT NULL
+        GROUP BY customer_id
+      ) reward ON reward.customer_id = c.id
+      LEFT JOIN (
+        SELECT t.customer_id, SUM(COALESCE(t.loads, 0)) AS paid_loads
+        FROM transactions t
+        JOIN categories cat ON cat.id = t.category_id
+        JOIN transaction_types tt ON tt.id = t.transaction_type_id
+        LEFT JOIN (
+          SELECT customer_id, MAX(id) AS last_reward_id
+          FROM transactions
+          WHERE is_loyalty_reward != 0 AND customer_id IS NOT NULL
+          GROUP BY customer_id
+        ) r ON r.customer_id = t.customer_id
+        WHERE t.customer_id IS NOT NULL
+          AND t.is_loyalty_reward = 0
+          AND tt.code = 'SALE'
+          AND cat.is_loadable != 0
+          AND (r.last_reward_id IS NULL OR t.id > r.last_reward_id)
+        GROUP BY t.customer_id
+      ) progress ON progress.customer_id = c.id
+      ${whereClause}
+      ORDER BY c.name COLLATE NOCASE ASC
+    `,
+    params,
+  )
+
+  return rows.map((row) => {
+    const paidLoads = toNumber(row.paidLoadsSinceLastReward)
+    const isLoyaltyEnabled = Boolean(row.isLoyaltyEnabled)
+    return {
+      company: row.company,
+      email: row.email,
+      freeAfterLoads,
+      id: row.id,
+      isArchived: Boolean(row.isArchived),
+      isEligibleForReward: isLoyaltyEnabled && paidLoads >= freeAfterLoads,
+      isLoyaltyEnabled,
+      lastTransactionAmount:
+        row.lastTransactionAmount != null ? toNumber(row.lastTransactionAmount) : null,
+      lastTransactionDate: row.lastTransactionDate ?? null,
+      name: row.name,
+      paidLoadsSinceLastReward: paidLoads,
+      phone: row.phone,
+    }
+  })
 }
 
 export async function getLoyaltySettings(): Promise<LoyaltySettings> {
@@ -851,7 +1088,8 @@ export async function getCustomerById(id: number): Promise<Customer | null> {
         company,
         email,
         phone,
-        is_archived AS isArchived
+        is_archived AS isArchived,
+        is_loyalty_enabled AS isLoyaltyEnabled
       FROM customers
       WHERE id = $1
     `,
@@ -864,6 +1102,7 @@ export async function getCustomerById(id: number): Promise<Customer | null> {
     email: row.email,
     id: row.id,
     isArchived: Boolean(row.isArchived),
+    isLoyaltyEnabled: Boolean(row.isLoyaltyEnabled),
     name: row.name,
     phone: row.phone,
   }
@@ -873,6 +1112,12 @@ export async function getCustomerLoyaltyStatus(customerId: number): Promise<Cust
   const database = await getDatabase()
   const settings = await getLoyaltySettings()
   const freeAfterLoads = settings.freeAfterLoads
+
+  const enabledRows = await database.select<Array<{ isLoyaltyEnabled: number }>>(
+    `SELECT is_loyalty_enabled AS isLoyaltyEnabled FROM customers WHERE id = $1`,
+    [customerId],
+  )
+  const isLoyaltyEnabled = Boolean(enabledRows[0]?.isLoyaltyEnabled)
 
   const lastRewardRows = await database.select<Array<{ lastId: number | null }>>(
     `
@@ -939,7 +1184,8 @@ export async function getCustomerLoyaltyStatus(customerId: number): Promise<Cust
 
   return {
     freeAfterLoads,
-    isEligibleForReward: paidLoadsSinceLastReward >= freeAfterLoads,
+    isEligibleForReward: isLoyaltyEnabled && paidLoadsSinceLastReward >= freeAfterLoads,
+    isLoyaltyEnabled,
     lastRewardDate,
     paidLoadsSinceLastReward,
     totalPaidLoads,
@@ -953,31 +1199,69 @@ export async function saveCustomer(input: CustomerDraft, userId: number, custome
   const company = input.company.trim()
   const email = input.email.trim()
   const phone = input.phone.trim()
+  const isLoyaltyEnabled = input.isLoyaltyEnabled ? 1 : 0
 
   if (customerId) {
-    await database.execute(
-      `
-        UPDATE customers
-        SET
-          name = $1,
-          company = $2,
-          email = $3,
-          phone = $4,
-          updated_by = $5,
-          updated_at = CURRENT_TIMESTAMP
-        WHERE id = $6
-      `,
-      [name, company, email, phone, userId, customerId],
-    )
+    if (input.isLoyaltyEnabled === undefined) {
+      await database.execute(
+        `
+          UPDATE customers
+          SET
+            name = $1,
+            company = $2,
+            email = $3,
+            phone = $4,
+            updated_by = $5,
+            updated_at = CURRENT_TIMESTAMP
+          WHERE id = $6
+        `,
+        [name, company, email, phone, userId, customerId],
+      )
+    } else {
+      await database.execute(
+        `
+          UPDATE customers
+          SET
+            name = $1,
+            company = $2,
+            email = $3,
+            phone = $4,
+            is_loyalty_enabled = $5,
+            updated_by = $6,
+            updated_at = CURRENT_TIMESTAMP
+          WHERE id = $7
+        `,
+        [name, company, email, phone, isLoyaltyEnabled, userId, customerId],
+      )
+    }
     return
   }
 
   await database.execute(
     `
-      INSERT INTO customers (name, company, email, phone, created_by, updated_by)
-      VALUES ($1, $2, $3, $4, $5, $5)
+      INSERT INTO customers (name, company, email, phone, is_loyalty_enabled, created_by, updated_by)
+      VALUES ($1, $2, $3, $4, $5, $6, $6)
     `,
-    [name, company, email, phone, userId],
+    [name, company, email, phone, isLoyaltyEnabled, userId],
+  )
+}
+
+export async function setCustomerLoyaltyEnabled(
+  customerId: number,
+  isEnabled: boolean,
+  userId: number,
+): Promise<void> {
+  const database = await getDatabase()
+  await database.execute(
+    `
+      UPDATE customers
+      SET
+        is_loyalty_enabled = $1,
+        updated_by = $2,
+        updated_at = CURRENT_TIMESTAMP
+      WHERE id = $3
+    `,
+    [isEnabled ? 1 : 0, userId, customerId],
   )
 }
 
@@ -2283,6 +2567,212 @@ export async function listDistinctIncidentHandledBy(): Promise<string[]> {
   return rows.map((row) => row.name).filter(Boolean)
 }
 
+// ─── Transaction inventory templates (SALE stock-out sets) ───────────────────
+
+export type TransactionTemplateItemLine = {
+  inventoryItemId: number
+  isItemActive: boolean
+  itemName: string
+  quantity: number
+  sortOrder: number
+  unitLabel: string
+}
+
+export type TransactionTemplateSummary = {
+  description: string
+  id: number
+  isActive: boolean
+  items: TransactionTemplateItemLine[]
+  name: string
+}
+
+export type TransactionTemplateItemDraft = {
+  inventoryItemId: number
+  quantity: number
+  sortOrder?: number
+}
+
+export type TransactionTemplateDraft = {
+  description: string
+  id?: number
+  isActive: boolean
+  items: TransactionTemplateItemDraft[]
+  name: string
+}
+
+type TransactionTemplateFlatRow = {
+  inventory_item_id: number | null
+  item_is_active: number | null
+  item_name: string | null
+  quantity: number | null
+  sort_order: number | null
+  template_description: string
+  template_id: number
+  template_is_active: number
+  template_name: string
+  unit_label: string | null
+}
+
+function mapFlatRowsToTemplateSummaries(rows: TransactionTemplateFlatRow[]): TransactionTemplateSummary[] {
+  const byId = new Map<number, TransactionTemplateSummary>()
+  for (const row of rows) {
+    let t = byId.get(row.template_id)
+    if (!t) {
+      t = {
+        description: row.template_description,
+        id: row.template_id,
+        isActive: Boolean(row.template_is_active),
+        items: [],
+        name: row.template_name,
+      }
+      byId.set(row.template_id, t)
+    }
+    if (row.inventory_item_id != null && row.quantity != null) {
+      t.items.push({
+        inventoryItemId: row.inventory_item_id,
+        isItemActive: Boolean(row.item_is_active),
+        itemName: row.item_name ?? '(unknown item)',
+        quantity: toNumber(row.quantity),
+        sortOrder: row.sort_order ?? 0,
+        unitLabel: row.unit_label ?? '',
+      })
+    }
+  }
+  return [...byId.values()].sort((a, b) => a.name.localeCompare(b.name, undefined, { sensitivity: 'base' }))
+}
+
+export async function listTransactionTemplates(): Promise<TransactionTemplateSummary[]> {
+  const database = await getDatabase()
+  const rows = await database.select<TransactionTemplateFlatRow[]>(
+    `
+      SELECT
+        tt.id AS template_id,
+        tt.name AS template_name,
+        tt.description AS template_description,
+        tt.is_active AS template_is_active,
+        ti.inventory_item_id AS inventory_item_id,
+        ti.quantity AS quantity,
+        ti.sort_order AS sort_order,
+        i.name AS item_name,
+        i.unit_label AS unit_label,
+        i.is_active AS item_is_active
+      FROM transaction_templates tt
+      LEFT JOIN transaction_template_items ti ON ti.template_id = tt.id
+      LEFT JOIN inventory_items i ON i.id = ti.inventory_item_id
+      ORDER BY tt.name COLLATE NOCASE ASC, ti.sort_order ASC, ti.id ASC
+    `,
+  )
+  return mapFlatRowsToTemplateSummaries(rows)
+}
+
+export async function getTransactionTemplateById(id: number): Promise<TransactionTemplateSummary | null> {
+  const database = await getDatabase()
+  const rows = await database.select<TransactionTemplateFlatRow[]>(
+    `
+      SELECT
+        tt.id AS template_id,
+        tt.name AS template_name,
+        tt.description AS template_description,
+        tt.is_active AS template_is_active,
+        ti.inventory_item_id AS inventory_item_id,
+        ti.quantity AS quantity,
+        ti.sort_order AS sort_order,
+        i.name AS item_name,
+        i.unit_label AS unit_label,
+        i.is_active AS item_is_active
+      FROM transaction_templates tt
+      LEFT JOIN transaction_template_items ti ON ti.template_id = tt.id
+      LEFT JOIN inventory_items i ON i.id = ti.inventory_item_id
+      WHERE tt.id = $1
+      ORDER BY ti.sort_order ASC, ti.id ASC
+    `,
+    [id],
+  )
+  const list = mapFlatRowsToTemplateSummaries(rows)
+  return list[0] ?? null
+}
+
+export async function saveTransactionTemplate(draft: TransactionTemplateDraft): Promise<number> {
+  const database = await getDatabase()
+  const name = draft.name.trim()
+  if (!name) {
+    throw new Error('Template name is required.')
+  }
+
+  const seenItemIds = new Set<number>()
+  for (const item of draft.items) {
+    if (!Number.isFinite(item.inventoryItemId) || item.inventoryItemId <= 0) {
+      throw new Error('Each line must reference a valid inventory item.')
+    }
+    if (seenItemIds.has(item.inventoryItemId)) {
+      throw new Error('Duplicate inventory item in template.')
+    }
+    seenItemIds.add(item.inventoryItemId)
+    const q = Number(item.quantity)
+    if (!Number.isFinite(q) || q <= 0) {
+      throw new Error('Each line must have a positive quantity.')
+    }
+  }
+
+  if (draft.id) {
+    await database.execute(
+      `
+        UPDATE transaction_templates
+        SET
+          name = $1,
+          description = $2,
+          is_active = $3,
+          updated_at = datetime('now')
+        WHERE id = $4
+      `,
+      [name, draft.description.trim(), draft.isActive ? 1 : 0, draft.id],
+    )
+    await database.execute(`DELETE FROM transaction_template_items WHERE template_id = $1`, [draft.id])
+    let order = 0
+    for (const item of draft.items) {
+      await database.execute(
+        `
+          INSERT INTO transaction_template_items (template_id, inventory_item_id, quantity, sort_order)
+          VALUES ($1, $2, $3, $4)
+        `,
+        [draft.id, item.inventoryItemId, item.quantity, item.sortOrder ?? order],
+      )
+      order += 1
+    }
+    return draft.id
+  }
+
+  const insertResult = await database.execute(
+    `
+      INSERT INTO transaction_templates (name, description, is_active)
+      VALUES ($1, $2, $3)
+    `,
+    [name, draft.description.trim(), draft.isActive ? 1 : 0],
+  )
+  const lid = insertResult.lastInsertId
+  const templateId = typeof lid === 'number' ? lid : Number(lid)
+  if (!Number.isFinite(templateId) || templateId <= 0) {
+    throw new Error('Failed to create template.')
+  }
+  let order = 0
+  for (const item of draft.items) {
+    await database.execute(
+      `
+        INSERT INTO transaction_template_items (template_id, inventory_item_id, quantity, sort_order)
+        VALUES ($1, $2, $3, $4)
+      `,
+      [templateId, item.inventoryItemId, item.quantity, item.sortOrder ?? order],
+    )
+    order += 1
+  }
+  return templateId
+}
+
+export async function deleteTransactionTemplate(id: number): Promise<void> {
+  const database = await getDatabase()
+  await database.execute(`DELETE FROM transaction_templates WHERE id = $1`, [id])
+}
+
 // ─── Inventory ────────────────────────────────────────────────────────────────
 
 export type InventoryItem = {
@@ -2328,6 +2818,8 @@ export type InventoryMovement = {
   movementType: 'IN' | 'OUT'
   notes: string
   quantity: number
+  templateId: number | null
+  templateName: string | null
   transactionId: number | null
   unitCost: number
   unitLabel: string
@@ -2339,6 +2831,7 @@ export type InventoryMovementDraft = {
   movementType: 'IN' | 'OUT'
   notes: string
   quantity: number
+  templateId?: number | null
   transactionId?: number | null
   unitCost: number
 }
@@ -2370,6 +2863,8 @@ type InventoryMovementRow = {
   movement_type: string
   notes: string
   quantity: number
+  template_id: number | null
+  template_name: string | null
   transaction_id: number | null
   unit_cost: number
   unit_label: string
@@ -2547,12 +3042,15 @@ export async function listInventoryMovements(filters?: {
         m.movement_date,
         m.created_at,
         m.transaction_id,
+        m.template_id,
+        tt.name AS template_name,
         i.name AS item_name,
         i.unit_label,
         u.display_name AS created_by_name
       FROM inventory_movements m
       JOIN inventory_items i ON i.id = m.item_id
       LEFT JOIN users u ON u.id = m.created_by
+      LEFT JOIN transaction_templates tt ON tt.id = m.template_id
       ${where}
       ORDER BY m.movement_date DESC, m.id DESC
       ${limitClause}
@@ -2570,6 +3068,8 @@ export async function listInventoryMovements(filters?: {
     movementType: row.movement_type as 'IN' | 'OUT',
     notes: row.notes,
     quantity: toNumber(row.quantity),
+    templateId: row.template_id ?? null,
+    templateName: row.template_name ?? null,
     transactionId: row.transaction_id ?? null,
     unitCost: toNumber(row.unit_cost),
     unitLabel: row.unit_label,
@@ -2590,12 +3090,15 @@ export async function listInventoryMovementsByTransaction(transactionId: number)
         m.movement_date,
         m.created_at,
         m.transaction_id,
+        m.template_id,
+        tt.name AS template_name,
         i.name AS item_name,
         i.unit_label,
         u.display_name AS created_by_name
       FROM inventory_movements m
       JOIN inventory_items i ON i.id = m.item_id
       LEFT JOIN users u ON u.id = m.created_by
+      LEFT JOIN transaction_templates tt ON tt.id = m.template_id
       WHERE m.transaction_id = $1
       ORDER BY m.movement_date DESC, m.id DESC
     `,
@@ -2612,6 +3115,8 @@ export async function listInventoryMovementsByTransaction(transactionId: number)
     movementType: row.movement_type as 'IN' | 'OUT',
     notes: row.notes,
     quantity: toNumber(row.quantity),
+    templateId: row.template_id ?? null,
+    templateName: row.template_name ?? null,
     transactionId: row.transaction_id ?? null,
     unitCost: toNumber(row.unit_cost),
     unitLabel: row.unit_label,
@@ -2626,7 +3131,33 @@ export async function saveInventoryMovement(
   const database = await getDatabase()
 
   if (id) {
-    if (draft.transactionId !== undefined) {
+    if (draft.transactionId !== undefined && draft.templateId !== undefined) {
+      await database.execute(
+        `
+          UPDATE inventory_movements SET
+            item_id = $1,
+            movement_type = $2,
+            quantity = $3,
+            unit_cost = $4,
+            notes = $5,
+            movement_date = $6,
+            transaction_id = $7,
+            template_id = $8
+          WHERE id = $9
+        `,
+        [
+          draft.itemId,
+          draft.movementType,
+          draft.quantity,
+          draft.unitCost,
+          draft.notes,
+          draft.movementDate,
+          draft.transactionId,
+          draft.templateId,
+          id,
+        ],
+      )
+    } else if (draft.transactionId !== undefined) {
       await database.execute(
         `
           UPDATE inventory_movements SET
@@ -2640,6 +3171,21 @@ export async function saveInventoryMovement(
           WHERE id = $8
         `,
         [draft.itemId, draft.movementType, draft.quantity, draft.unitCost, draft.notes, draft.movementDate, draft.transactionId, id],
+      )
+    } else if (draft.templateId !== undefined) {
+      await database.execute(
+        `
+          UPDATE inventory_movements SET
+            item_id = $1,
+            movement_type = $2,
+            quantity = $3,
+            unit_cost = $4,
+            notes = $5,
+            movement_date = $6,
+            template_id = $7
+          WHERE id = $8
+        `,
+        [draft.itemId, draft.movementType, draft.quantity, draft.unitCost, draft.notes, draft.movementDate, draft.templateId, id],
       )
     } else {
       await database.execute(
@@ -2661,10 +3207,20 @@ export async function saveInventoryMovement(
 
   await database.execute(
     `
-      INSERT INTO inventory_movements (item_id, movement_type, quantity, unit_cost, notes, movement_date, created_by, transaction_id)
-      VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+      INSERT INTO inventory_movements (item_id, movement_type, quantity, unit_cost, notes, movement_date, created_by, transaction_id, template_id)
+      VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
     `,
-    [draft.itemId, draft.movementType, draft.quantity, draft.unitCost, draft.notes, draft.movementDate, userId, draft.transactionId ?? null],
+    [
+      draft.itemId,
+      draft.movementType,
+      draft.quantity,
+      draft.unitCost,
+      draft.notes,
+      draft.movementDate,
+      userId,
+      draft.transactionId ?? null,
+      draft.templateId !== undefined ? draft.templateId : null,
+    ],
   )
 }
 
@@ -3686,8 +4242,30 @@ export type AttendanceEntry = {
 }
 
 export type PayrollSettings = {
+  autoDeductCashAdvances: boolean
   cutoffDay: number
   holidayDefaultMultiplier: number
+}
+
+export type CashAdvanceStatus = 'outstanding' | 'settled' | 'void'
+
+export type CashAdvance = {
+  advanceDate: string
+  amount: number
+  id: number
+  notes: string
+  settledAt: string | null
+  settledPayrollId: number | null
+  staffId: number
+  status: CashAdvanceStatus
+  transactionId: number | null
+}
+
+export type CashAdvanceDraft = {
+  advanceDate: string
+  amount: number
+  notes: string
+  staffId: number
 }
 
 export type PayrollListItem = {
@@ -3737,6 +4315,7 @@ export type PayrollDetail = {
 
 export type FinalizePayrollInput = {
   adjustments: PayrollAdjustmentDraft[]
+  cashAdvanceIds: number[]
   notes: string
   payDate: string
   periodEnd: string
@@ -3965,18 +4544,28 @@ export async function setStaffActive(id: number, active: boolean, userId: number
 
 export async function getPayrollSettings(): Promise<PayrollSettings> {
   const database = await getDatabase()
-  const rows = await database.select<Array<{ cutoffDay: number; holidayDefaultMultiplier: number }>>(
+  const rows = await database.select<
+    Array<{
+      autoDeductCashAdvances: number
+      cutoffDay: number
+      holidayDefaultMultiplier: number
+    }>
+  >(
     `
-      SELECT cutoff_day AS cutoffDay, holiday_default_multiplier AS holidayDefaultMultiplier
+      SELECT
+        cutoff_day AS cutoffDay,
+        holiday_default_multiplier AS holidayDefaultMultiplier,
+        auto_deduct_cash_advances AS autoDeductCashAdvances
       FROM payroll_settings
       WHERE id = 1
     `,
   )
   const row = rows[0]
   if (!row) {
-    return { cutoffDay: 6, holidayDefaultMultiplier: 1 }
+    return { autoDeductCashAdvances: true, cutoffDay: 6, holidayDefaultMultiplier: 1 }
   }
   return {
+    autoDeductCashAdvances: Boolean(row.autoDeductCashAdvances),
     cutoffDay: Number(row.cutoffDay),
     holidayDefaultMultiplier: toNumber(row.holidayDefaultMultiplier),
   }
@@ -3993,10 +4582,13 @@ export async function savePayrollSettings(input: PayrollSettings): Promise<void>
   await database.execute(
     `
       UPDATE payroll_settings
-      SET cutoff_day = $1, holiday_default_multiplier = $2
+      SET
+        cutoff_day = $1,
+        holiday_default_multiplier = $2,
+        auto_deduct_cash_advances = $3
       WHERE id = 1
     `,
-    [input.cutoffDay, input.holidayDefaultMultiplier],
+    [input.cutoffDay, input.holidayDefaultMultiplier, input.autoDeductCashAdvances ? 1 : 0],
   )
 }
 
@@ -4229,6 +4821,43 @@ export async function finalizePayroll(input: FinalizePayrollInput, userId: numbe
     throw new Error('Invalid payroll period.')
   }
 
+  // Cash advances selected for settlement on this payroll become deduction
+  // adjustments. They are validated up-front so we don't build a partial
+  // payroll that references stale or already-settled advances.
+  const cashAdvanceIds = Array.from(new Set(input.cashAdvanceIds ?? [])).filter(
+    (id) => Number.isFinite(id) && id > 0,
+  )
+  const cashAdvancesToSettle: CashAdvance[] = []
+  if (cashAdvanceIds.length > 0) {
+    const placeholders = cashAdvanceIds.map((_, i) => `$${i + 2}`).join(', ')
+    const rows = await database.select<CashAdvanceRow[]>(
+      `
+        SELECT
+          id,
+          staff_id AS staffId,
+          advance_date AS advanceDate,
+          amount,
+          notes,
+          status,
+          transaction_id AS transactionId,
+          settled_payroll_id AS settledPayrollId,
+          settled_at AS settledAt
+        FROM staff_cash_advances
+        WHERE staff_id = $1 AND id IN (${placeholders})
+      `,
+      [input.staffId, ...cashAdvanceIds],
+    )
+    if (rows.length !== cashAdvanceIds.length) {
+      throw new Error('One or more selected cash advances could not be found for this staff member.')
+    }
+    for (const row of rows) {
+      if (row.status !== 'outstanding') {
+        throw new Error(`Cash advance dated ${row.advanceDate} is no longer outstanding.`)
+      }
+      cashAdvancesToSettle.push(cashAdvanceRowToModel(row))
+    }
+  }
+
   let bonusTotal = 0
   let deductionTotal = 0
   for (const adj of input.adjustments) {
@@ -4236,6 +4865,9 @@ export async function finalizePayroll(input: FinalizePayrollInput, userId: numbe
     if (adj.amount < 0) throw new Error('Adjustment amounts must be zero or positive.')
     if (adj.kind === 'bonus') bonusTotal += adj.amount
     else deductionTotal += adj.amount
+  }
+  for (const adv of cashAdvancesToSettle) {
+    deductionTotal += adv.amount
   }
   bonusTotal = roundMoney(bonusTotal)
   deductionTotal = roundMoney(deductionTotal)
@@ -4329,6 +4961,29 @@ export async function finalizePayroll(input: FinalizePayrollInput, userId: numbe
           VALUES ($1, $2, $3, $4)
         `,
         [payrollId, adj.label.trim(), adj.kind, adj.amount],
+      )
+    }
+
+    for (const adv of cashAdvancesToSettle) {
+      await database.execute(
+        `
+          INSERT INTO staff_payroll_adjustments (payroll_id, label, kind, amount)
+          VALUES ($1, $2, 'deduction', $3)
+        `,
+        [payrollId, `Cash advance · ${adv.advanceDate}`, adv.amount],
+      )
+      await database.execute(
+        `
+          UPDATE staff_cash_advances
+          SET
+            status = 'settled',
+            settled_payroll_id = $1,
+            settled_at = CURRENT_TIMESTAMP,
+            updated_by = $2,
+            updated_at = CURRENT_TIMESTAMP
+          WHERE id = $3
+        `,
+        [payrollId, userId, adv.id],
       )
     }
 
@@ -4521,6 +5176,18 @@ export async function voidPayroll(payrollId: number): Promise<void> {
   // caller can retry safely because each DELETE/UPDATE is idempotent.
   await database.execute(`DELETE FROM staff_payroll_items WHERE payroll_id = $1`, [payrollId])
   await database.execute(`DELETE FROM staff_payroll_adjustments WHERE payroll_id = $1`, [payrollId])
+  await database.execute(
+    `
+      UPDATE staff_cash_advances
+      SET
+        status = 'outstanding',
+        settled_payroll_id = NULL,
+        settled_at = NULL,
+        updated_at = CURRENT_TIMESTAMP
+      WHERE settled_payroll_id = $1
+    `,
+    [payrollId],
+  )
   await database.execute(`DELETE FROM transactions WHERE id = $1`, [transactionId])
   await database.execute(
     `
@@ -4529,6 +5196,207 @@ export async function voidPayroll(payrollId: number): Promise<void> {
       WHERE id = $1
     `,
     [payrollId],
+  )
+}
+
+// ─── Cash Advances ───────────────────────────────────────────────────────────
+
+type CashAdvanceRow = {
+  advanceDate: string
+  amount: number
+  id: number
+  notes: string
+  settledAt: string | null
+  settledPayrollId: number | null
+  staffId: number
+  status: string
+  transactionId: number | null
+}
+
+function cashAdvanceRowToModel(row: CashAdvanceRow): CashAdvance {
+  return {
+    advanceDate: row.advanceDate,
+    amount: toNumber(row.amount),
+    id: row.id,
+    notes: row.notes,
+    settledAt: row.settledAt,
+    settledPayrollId: row.settledPayrollId,
+    staffId: row.staffId,
+    status: row.status as CashAdvanceStatus,
+    transactionId: row.transactionId,
+  }
+}
+
+async function getCashAdvanceCategoryId(database: Database): Promise<{ categoryId: number; typeId: number }> {
+  const typeRows = await database.select<Array<{ id: number }>>(
+    `SELECT id FROM transaction_types WHERE code = $1`,
+    ['EXPENSE'],
+  )
+  const typeId = Number(typeRows[0]?.id ?? 0)
+  if (!typeId) throw new Error('EXPENSE transaction type is missing.')
+
+  const catRows = await database.select<Array<{ id: number }>>(
+    `
+      SELECT categories.id AS id
+      FROM categories
+      JOIN transaction_types ON transaction_types.id = categories.transaction_type_id
+      WHERE transaction_types.code = 'EXPENSE'
+        AND categories.label = 'Cash Advance'
+        AND categories.is_archived = 0
+      LIMIT 1
+    `,
+  )
+  const categoryId = Number(catRows[0]?.id ?? 0)
+  if (!categoryId) throw new Error('Cash Advance expense category is missing.')
+  return { categoryId, typeId }
+}
+
+export async function listCashAdvances(
+  staffId: number,
+  filters?: { status?: CashAdvanceStatus | 'all' },
+): Promise<CashAdvance[]> {
+  const database = await getDatabase()
+  const status = filters?.status ?? 'all'
+  const clauses = ['staff_id = $1']
+  const params: unknown[] = [staffId]
+  if (status !== 'all') {
+    clauses.push(`status = $${params.length + 1}`)
+    params.push(status)
+  }
+  const rows = await database.select<CashAdvanceRow[]>(
+    `
+      SELECT
+        id,
+        staff_id AS staffId,
+        advance_date AS advanceDate,
+        amount,
+        notes,
+        status,
+        transaction_id AS transactionId,
+        settled_payroll_id AS settledPayrollId,
+        settled_at AS settledAt
+      FROM staff_cash_advances
+      WHERE ${clauses.join(' AND ')}
+      ORDER BY advance_date DESC, id DESC
+    `,
+    params,
+  )
+  return rows.map(cashAdvanceRowToModel)
+}
+
+export async function getOutstandingCashAdvanceTotal(staffId: number): Promise<number> {
+  const database = await getDatabase()
+  const rows = await database.select<Array<{ total: number | null }>>(
+    `
+      SELECT COALESCE(SUM(amount), 0) AS total
+      FROM staff_cash_advances
+      WHERE staff_id = $1 AND status = 'outstanding'
+    `,
+    [staffId],
+  )
+  return toNumber(rows[0]?.total ?? 0)
+}
+
+export async function createCashAdvance(
+  draft: CashAdvanceDraft,
+  userId: number,
+): Promise<{ advanceId: number; transactionId: number }> {
+  const database = await getDatabase()
+  const amount = roundMoney(Number(draft.amount))
+  if (!Number.isFinite(amount) || amount <= 0) {
+    throw new Error('Cash advance amount must be greater than zero.')
+  }
+  if (!draft.advanceDate.trim()) {
+    throw new Error('Advance date is required.')
+  }
+
+  const staff = await getStaff(draft.staffId)
+  if (!staff) throw new Error('Staff not found.')
+
+  const { categoryId, typeId } = await getCashAdvanceCategoryId(database)
+  const description = `Cash advance · ${staff.displayName}${
+    draft.notes.trim() ? ` — ${draft.notes.trim()}` : ''
+  }`
+
+  let transactionId: number | null = null
+  let advanceId: number | null = null
+
+  try {
+    const txnResult = await database.execute(
+      `
+        INSERT INTO transactions (
+          entry_date, transaction_type_id, category_id, description, amount,
+          staff_count, customer_id, created_by, updated_by
+        ) VALUES ($1, $2, $3, $4, $5, NULL, NULL, $6, $6)
+      `,
+      [draft.advanceDate, typeId, categoryId, description, amount, userId],
+    )
+    transactionId = typeof txnResult.lastInsertId === 'number' ? txnResult.lastInsertId : null
+    if (!transactionId) throw new Error('Failed to record cash advance expense.')
+
+    const advResult = await database.execute(
+      `
+        INSERT INTO staff_cash_advances (
+          staff_id, advance_date, amount, notes, status,
+          transaction_id, created_by, updated_by
+        ) VALUES ($1, $2, $3, $4, 'outstanding', $5, $6, $6)
+      `,
+      [draft.staffId, draft.advanceDate, amount, draft.notes.trim(), transactionId, userId],
+    )
+    advanceId = typeof advResult.lastInsertId === 'number' ? advResult.lastInsertId : null
+    if (!advanceId) throw new Error('Failed to record cash advance.')
+
+    return { advanceId, transactionId }
+  } catch (err) {
+    if (transactionId) {
+      try {
+        await database.execute(`DELETE FROM transactions WHERE id = $1`, [transactionId])
+      } catch {
+        /* swallow cleanup errors so the original failure propagates */
+      }
+    }
+    throw err
+  }
+}
+
+export async function voidCashAdvance(advanceId: number, userId: number): Promise<void> {
+  const database = await getDatabase()
+  const rows = await database.select<CashAdvanceRow[]>(
+    `
+      SELECT
+        id,
+        staff_id AS staffId,
+        advance_date AS advanceDate,
+        amount,
+        notes,
+        status,
+        transaction_id AS transactionId,
+        settled_payroll_id AS settledPayrollId,
+        settled_at AS settledAt
+      FROM staff_cash_advances
+      WHERE id = $1
+    `,
+    [advanceId],
+  )
+  const row = rows[0]
+  if (!row) throw new Error('Cash advance not found.')
+  if (row.status !== 'outstanding') {
+    throw new Error('Only outstanding cash advances can be voided.')
+  }
+  if (row.transactionId) {
+    await database.execute(`DELETE FROM transactions WHERE id = $1`, [row.transactionId])
+  }
+  await database.execute(
+    `
+      UPDATE staff_cash_advances
+      SET
+        status = 'void',
+        transaction_id = NULL,
+        updated_by = $1,
+        updated_at = CURRENT_TIMESTAMP
+      WHERE id = $2
+    `,
+    [userId, advanceId],
   )
 }
 

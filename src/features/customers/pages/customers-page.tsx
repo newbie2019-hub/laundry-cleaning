@@ -1,23 +1,97 @@
 import type { FormEvent } from 'react'
 import { useCallback, useEffect, useState } from 'react'
 import { Pencil, Plus, Search, Trash2, X } from 'lucide-react'
-import { Link } from 'react-router-dom'
+import { useNavigate } from 'react-router-dom'
+import { format } from 'date-fns'
 import { toast } from 'sonner'
 import {
   archiveCustomer,
-  listCustomers,
+  listCustomerSummaries,
   saveCustomer,
-  type Customer,
+  setCustomerLoyaltyEnabled,
+  type CustomerSummary,
 } from '../../../lib/db/repository'
+import { formatCurrency } from '../../../lib/format'
 import { useAuth } from '../../auth/use-auth'
 
 const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/
 
+function formatShortDate(entryDate: string) {
+  return format(new Date(`${entryDate}T00:00:00`), 'MMM d, yyyy')
+}
+
+function LoyaltyCell({
+  customer,
+  canManage,
+  onToggle,
+}: {
+  customer: CustomerSummary
+  canManage: boolean
+  onToggle: (customer: CustomerSummary, next: boolean) => void
+}) {
+  if (!customer.isLoyaltyEnabled) {
+    if (!canManage) {
+      return <span className="text-xs text-[var(--muted)]">Not enrolled</span>
+    }
+    return (
+      <button
+        className="inline-flex items-center gap-1.5 rounded-md border border-dashed border-[var(--border)] px-2.5 py-1 text-xs font-medium text-[var(--muted)] transition hover:border-[var(--accent)] hover:text-[var(--accent-strong)]"
+        onClick={(e) => {
+          e.stopPropagation()
+          onToggle(customer, true)
+        }}
+        type="button"
+      >
+        Enable loyalty
+      </button>
+    )
+  }
+
+  const progress = Math.min(customer.paidLoadsSinceLastReward, customer.freeAfterLoads)
+  const pct = customer.freeAfterLoads > 0
+    ? Math.min(100, (progress / customer.freeAfterLoads) * 100)
+    : 0
+  const eligible = customer.isEligibleForReward
+
+  return (
+    <div className="flex items-center gap-2.5">
+      <div className="h-1.5 w-24 shrink-0 overflow-hidden rounded-full bg-[var(--background)]">
+        <div
+          className={`h-full rounded-full transition-all ${eligible ? 'bg-violet-500' : 'bg-[var(--accent)]'}`}
+          style={{ width: `${pct}%` }}
+        />
+      </div>
+      <span className="whitespace-nowrap text-xs tabular-nums text-[var(--muted)]">
+        {progress.toFixed(progress % 1 === 0 ? 0 : 2)} / {customer.freeAfterLoads}
+      </span>
+      {eligible ? (
+        <span className="rounded-md bg-violet-500/10 px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-violet-600">
+          Free ready
+        </span>
+      ) : null}
+      {canManage ? (
+        <button
+          className="text-[11px] text-[var(--muted)] transition hover:text-red-400"
+          onClick={(e) => {
+            e.stopPropagation()
+            onToggle(customer, false)
+          }}
+          title="Disable loyalty for this customer"
+          type="button"
+        >
+          Disable
+        </button>
+      ) : null}
+    </div>
+  )
+}
+
 export function CustomersPage() {
   const { hasPermission, user } = useAuth()
+  const navigate = useNavigate()
   const canManage = hasPermission('manage_master_data')
 
-  const [customers, setCustomers] = useState<Customer[]>([])
+  const [customers, setCustomers] = useState<CustomerSummary[]>([])
   const [loading, setLoading] = useState(true)
   const [search, setSearch] = useState('')
   const [debouncedSearch, setDebouncedSearch] = useState('')
@@ -28,6 +102,7 @@ export function CustomersPage() {
   const [formCompany, setFormCompany] = useState('')
   const [formEmail, setFormEmail] = useState('')
   const [formPhone, setFormPhone] = useState('')
+  const [formLoyaltyEnabled, setFormLoyaltyEnabled] = useState(false)
   const [formSubmitting, setFormSubmitting] = useState(false)
   const [confirmArchiveId, setConfirmArchiveId] = useState<number | null>(null)
 
@@ -39,7 +114,7 @@ export function CustomersPage() {
   const load = useCallback(async () => {
     setLoading(true)
     try {
-      const rows = await listCustomers({
+      const rows = await listCustomerSummaries({
         includeArchived: false,
         search: debouncedSearch.trim() || undefined,
       })
@@ -59,15 +134,17 @@ export function CustomersPage() {
     setFormCompany('')
     setFormEmail('')
     setFormPhone('')
+    setFormLoyaltyEnabled(false)
     setModalOpen(true)
   }
 
-  function openEdit(c: Customer) {
+  function openEdit(c: CustomerSummary) {
     setEditingId(c.id)
     setFormName(c.name)
     setFormCompany(c.company)
     setFormEmail(c.email)
     setFormPhone(c.phone)
+    setFormLoyaltyEnabled(c.isLoyaltyEnabled)
     setModalOpen(true)
   }
 
@@ -93,6 +170,7 @@ export function CustomersPage() {
         {
           company: formCompany,
           email: formEmail,
+          isLoyaltyEnabled: formLoyaltyEnabled,
           name: formName,
           phone: formPhone,
         },
@@ -119,6 +197,21 @@ export function CustomersPage() {
     } catch (err: unknown) {
       toast.error(err instanceof Error ? err.message : 'Unable to archive customer.')
     }
+  }
+
+  async function handleToggleLoyalty(customer: CustomerSummary, next: boolean) {
+    if (!user || !canManage) return
+    try {
+      await setCustomerLoyaltyEnabled(customer.id, next, user.id)
+      toast.success(next ? 'Loyalty enabled.' : 'Loyalty disabled.')
+      await load()
+    } catch (err: unknown) {
+      toast.error(err instanceof Error ? err.message : 'Unable to update loyalty.')
+    }
+  }
+
+  function handleRowClick(id: number) {
+    navigate(`/customers/${id}`)
   }
 
   return (
@@ -161,31 +254,60 @@ export function CustomersPage() {
         </div>
       ) : (
         <div className="overflow-x-auto rounded-lg border border-[var(--border)] bg-[var(--panel)]">
-          <table className="w-full min-w-[640px] text-left text-sm">
+          <table className="w-full min-w-[960px] text-left text-sm">
             <thead className="border-b border-[var(--border)] bg-[var(--background)]/50 text-[10px] font-semibold uppercase tracking-wider text-[var(--muted)]">
               <tr>
                 <th className="px-4 py-3">Name</th>
                 <th className="px-4 py-3">Company</th>
-                <th className="px-4 py-3">Email</th>
-                <th className="px-4 py-3">Phone</th>
-                <th className="w-40 px-4 py-3 text-right">Actions</th>
+                <th className="px-4 py-3">Contact</th>
+                <th className="px-4 py-3">Last transaction</th>
+                <th className="px-4 py-3">Loyalty</th>
+                <th className="w-32 px-4 py-3 text-right">Actions</th>
               </tr>
             </thead>
             <tbody className="divide-y divide-[var(--border)]">
               {customers.map((c) => (
-                <tr key={c.id} className="transition hover:bg-[var(--background)]/40">
+                <tr
+                  key={c.id}
+                  className="cursor-pointer transition hover:bg-[var(--background)]/40"
+                  onClick={() => handleRowClick(c.id)}
+                >
                   <td className="px-4 py-3 font-medium">
-                    <Link
-                      className="text-[var(--accent-strong)] transition hover:underline"
-                      to={`/customers/${c.id}`}
-                    >
-                      {c.name}
-                    </Link>
+                    <span className="text-[var(--accent-strong)]">{c.name}</span>
                   </td>
                   <td className="px-4 py-3 text-[var(--muted)]">{c.company || '—'}</td>
-                  <td className="px-4 py-3 text-[var(--muted)]">{c.email || '—'}</td>
-                  <td className="px-4 py-3 text-[var(--muted)]">{c.phone || '—'}</td>
-                  <td className="px-4 py-3 text-right">
+                  <td className="px-4 py-3 text-[var(--muted)]">
+                    <div className="flex flex-col leading-tight">
+                      <span>{c.email || '—'}</span>
+                      <span className="text-xs">{c.phone || ''}</span>
+                    </div>
+                  </td>
+                  <td className="px-4 py-3">
+                    {c.lastTransactionDate ? (
+                      <div className="flex flex-col leading-tight">
+                        <span className="text-[var(--foreground)]">
+                          {formatShortDate(c.lastTransactionDate)}
+                        </span>
+                        <span className="text-xs tabular-nums text-[var(--muted)]">
+                          {c.lastTransactionAmount != null
+                            ? formatCurrency(c.lastTransactionAmount)
+                            : '—'}
+                        </span>
+                      </div>
+                    ) : (
+                      <span className="text-xs text-[var(--muted)]">No transactions</span>
+                    )}
+                  </td>
+                  <td className="px-4 py-3">
+                    <LoyaltyCell
+                      canManage={canManage}
+                      customer={c}
+                      onToggle={(customer, next) => {
+                        void handleToggleLoyalty(customer, next)
+                      }}
+                    />
+                  </td>
+                  <td className="px-4 py-3 text-right" onClick={(e) => e.stopPropagation()}>
                     {canManage ? (
                       <div className="flex flex-wrap items-center justify-end gap-1">
                         <button
@@ -292,6 +414,21 @@ export function CustomersPage() {
                   value={formPhone}
                 />
               </div>
+
+              <label className="flex items-start gap-2.5 rounded-md border border-[var(--border)] bg-[var(--background)] p-3">
+                <input
+                  checked={formLoyaltyEnabled}
+                  className="mt-0.5 h-4 w-4 rounded border-[var(--border)] text-[var(--accent)] focus:ring-[var(--accent)]"
+                  onChange={(e) => setFormLoyaltyEnabled(e.target.checked)}
+                  type="checkbox"
+                />
+                <span className="flex-1">
+                  <span className="block text-sm font-medium">Enable loyalty card</span>
+                  <span className="block text-xs text-[var(--muted)]">
+                    Loyalty is not given to first-time customers. Turn this on once they qualify.
+                  </span>
+                </span>
+              </label>
 
               <div className="flex justify-end gap-2 pt-2">
                 <button

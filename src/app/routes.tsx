@@ -10,6 +10,7 @@ import { IncomeSharePage } from '../features/income-share/pages/income-share-pag
 import { InventoryPage } from '../features/inventory/pages/inventory-page'
 import { InventoryMovementsPage } from '../features/inventory/pages/inventory-movements-page'
 import { InventorySummaryPage } from '../features/inventory/pages/inventory-summary-page'
+import { InventoryTemplatesPage } from '../features/inventory/pages/inventory-templates-page'
 import { SettingsPage } from '../features/settings/pages/settings-page'
 import { StaffDetailPage } from '../features/staff/pages/staff-detail-page'
 import { StaffPage } from '../features/staff/pages/staff-page'
@@ -78,6 +79,10 @@ const router = createHashRouter([
           {
             path: '/inventory-summary',
             element: <InventorySummaryPage />,
+          },
+          {
+            path: '/inventory-templates',
+            element: <InventoryTemplatesPage />,
           },
           {
             path: '/categories',

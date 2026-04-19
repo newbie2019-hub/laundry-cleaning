@@ -7,7 +7,9 @@ import {
   buildPayrollPreview,
   finalizePayroll,
   getPayrollSettings,
+  listCashAdvances,
   listUnpaidAttendanceDates,
+  type CashAdvance,
   type PayrollAdjustmentDraft,
   type PayrollPreview,
   type PayrollPreviewItem,
@@ -116,6 +118,8 @@ export function PayrollDialog({ onClose, onSuccess, open, staffDisplayName, staf
   const [sortField, setSortField] = useState<SortField>('entryDate')
   const [sortDir, setSortDir] = useState<SortDir>('asc')
   const [adjErrors, setAdjErrors] = useState<Record<string, string>>({})
+  const [outstandingAdvances, setOutstandingAdvances] = useState<CashAdvance[]>([])
+  const [selectedAdvanceIds, setSelectedAdvanceIds] = useState<Set<number>>(new Set())
 
   const loadPreview = useCallback(
     async (end: string) => {
@@ -152,6 +156,13 @@ export function PayrollDialog({ onClose, onSuccess, open, staffDisplayName, staf
       const unpaid = await listUnpaidAttendanceDates(staffId)
       const suggested = suggestPeriodEnd(unpaid, settings.cutoffDay)
       setPeriodEnd(suggested)
+      const advances = await listCashAdvances(staffId, { status: 'outstanding' })
+      setOutstandingAdvances(advances)
+      setSelectedAdvanceIds(
+        settings.autoDeductCashAdvances
+          ? new Set(advances.map((a) => a.id))
+          : new Set(),
+      )
       await loadPreview(suggested)
     })()
   }, [open, staffId, loadPreview])
@@ -180,6 +191,14 @@ export function PayrollDialog({ onClose, onSuccess, open, staffDisplayName, staf
     return copy
   }, [preview, sortField, sortDir])
 
+  const advanceDeductionTotal = useMemo(() => {
+    let sum = 0
+    for (const a of outstandingAdvances) {
+      if (selectedAdvanceIds.has(a.id)) sum += a.amount
+    }
+    return roundMoney(sum)
+  }, [outstandingAdvances, selectedAdvanceIds])
+
   const netPay = useMemo(() => {
     if (!preview) return 0
     let bonus = 0
@@ -189,8 +208,17 @@ export function PayrollDialog({ onClose, onSuccess, open, staffDisplayName, staf
       if (a.kind === 'bonus') bonus += a.amount
       else deduction += a.amount
     }
-    return roundMoney(preview.grossPay + bonus - deduction)
-  }, [preview, adjustments])
+    return roundMoney(preview.grossPay + bonus - deduction - advanceDeductionTotal)
+  }, [preview, adjustments, advanceDeductionTotal])
+
+  function toggleAdvance(id: number) {
+    setSelectedAdvanceIds((prev) => {
+      const next = new Set(prev)
+      if (next.has(id)) next.delete(id)
+      else next.add(id)
+      return next
+    })
+  }
 
   function toggleSort(field: SortField) {
     if (field === sortField) {
@@ -230,6 +258,7 @@ export function PayrollDialog({ onClose, onSuccess, open, staffDisplayName, staf
       const result = await finalizePayroll(
         {
           adjustments: adjDrafts,
+          cashAdvanceIds: Array.from(selectedAdvanceIds),
           notes,
           payDate,
           periodEnd: preview.periodEnd,
@@ -389,6 +418,14 @@ export function PayrollDialog({ onClose, onSuccess, open, staffDisplayName, staf
                       {formatCurrency(preview.grossPay)}
                     </span>
                   </span>
+                  {advanceDeductionTotal > 0 ? (
+                    <span>
+                      <span className="text-gray-500">Cash advances:&nbsp;</span>
+                      <span className="font-semibold tabular-nums text-amber-700">
+                        −{formatCurrency(advanceDeductionTotal)}
+                      </span>
+                    </span>
+                  ) : null}
                   <span>
                     <span className="text-gray-500">Net:&nbsp;</span>
                     <span className="font-semibold tabular-nums text-blue-600">
@@ -397,6 +434,63 @@ export function PayrollDialog({ onClose, onSuccess, open, staffDisplayName, staf
                   </span>
                 </div>
               </>
+            ) : null}
+
+            {outstandingAdvances.length > 0 ? (
+              <div className="space-y-2 rounded-md border border-amber-200 bg-amber-50/60 p-3">
+                <div className="flex items-center justify-between">
+                  <div>
+                    <p className="text-sm font-semibold text-amber-900">
+                      Outstanding cash advances
+                    </p>
+                    <p className="text-[11px] text-amber-700">
+                      Checked items will be deducted from this payroll and marked settled.
+                      Uncheck to defer to a later payroll.
+                    </p>
+                  </div>
+                  <div className="flex items-center gap-2 text-xs">
+                    <button
+                      className="rounded border border-amber-300 bg-white px-2 py-1 font-medium text-amber-800 transition hover:bg-amber-100"
+                      onClick={() =>
+                        setSelectedAdvanceIds(new Set(outstandingAdvances.map((a) => a.id)))
+                      }
+                      type="button"
+                    >
+                      Select all
+                    </button>
+                    <button
+                      className="rounded border border-amber-300 bg-white px-2 py-1 font-medium text-amber-800 transition hover:bg-amber-100"
+                      onClick={() => setSelectedAdvanceIds(new Set())}
+                      type="button"
+                    >
+                      Clear
+                    </button>
+                  </div>
+                </div>
+                <ul className="divide-y divide-amber-200 rounded border border-amber-200 bg-white">
+                  {outstandingAdvances.map((a) => (
+                    <li key={a.id}>
+                      <label className="flex cursor-pointer items-center gap-3 px-3 py-2 text-sm transition hover:bg-amber-50">
+                        <input
+                          checked={selectedAdvanceIds.has(a.id)}
+                          className="h-4 w-4 rounded border-amber-400 text-amber-600 focus:ring-amber-500"
+                          onChange={() => toggleAdvance(a.id)}
+                          type="checkbox"
+                        />
+                        <span className="font-mono text-xs tabular-nums text-gray-600">
+                          {a.advanceDate}
+                        </span>
+                        <span className="flex-1 truncate text-xs text-gray-500">
+                          {a.notes || '—'}
+                        </span>
+                        <span className="font-medium tabular-nums text-gray-900">
+                          {formatCurrency(a.amount)}
+                        </span>
+                      </label>
+                    </li>
+                  ))}
+                </ul>
+              </div>
             ) : null}
 
             <div className="space-y-2">

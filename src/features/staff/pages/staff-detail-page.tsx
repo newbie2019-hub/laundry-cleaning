@@ -1,9 +1,10 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { format, startOfMonth, endOfMonth } from 'date-fns'
-import { ArrowLeft, CalendarDays, Lock, Wallet } from 'lucide-react'
+import { ArrowLeft, CalendarDays, HandCoins, Lock, Wallet } from 'lucide-react'
 import { Link, useParams } from 'react-router-dom'
 import { toast } from 'sonner'
 import {
+  getOutstandingCashAdvanceTotal,
   getPayrollSettings,
   getStaff,
   listAttendance,
@@ -18,6 +19,7 @@ import { MonthPicker } from '../../../components/month-picker'
 import { useAuth } from '../../auth/use-auth'
 import { AttendanceCalendar } from '../components/attendance-calendar'
 import { AttendanceDayDialog } from '../components/attendance-day-dialog'
+import { CashAdvanceDialog } from '../components/cash-advance-dialog'
 import { PayrollDetailDialog } from '../components/payroll-detail-dialog'
 import { PayrollDialog } from '../components/payroll-dialog'
 
@@ -39,6 +41,8 @@ export function StaffDetailPage() {
   const [payrollDetailId, setPayrollDetailId] = useState<number | null>(null)
   const [dayDialog, setDayDialog] = useState<{ date: string; entry: AttendanceEntry | null } | null>(null)
   const [voidingId, setVoidingId] = useState<number | null>(null)
+  const [cashAdvanceOpen, setCashAdvanceOpen] = useState(false)
+  const [outstandingAdvances, setOutstandingAdvances] = useState(0)
 
   const loadStaff = useCallback(async () => {
     if (!Number.isFinite(staffId) || staffId <= 0) {
@@ -69,6 +73,12 @@ export function StaffDetailPage() {
     setPayrolls(rows)
   }, [staffId])
 
+  const loadOutstandingAdvances = useCallback(async () => {
+    if (!Number.isFinite(staffId) || staffId <= 0) return
+    const total = await getOutstandingCashAdvanceTotal(staffId)
+    setOutstandingAdvances(total)
+  }, [staffId])
+
   useEffect(() => {
     void loadStaff()
   }, [loadStaff])
@@ -89,6 +99,11 @@ export function StaffDetailPage() {
     if (!staff) return
     void loadPayrolls()
   }, [staff, loadPayrolls])
+
+  useEffect(() => {
+    if (!staff) return
+    void loadOutstandingAdvances()
+  }, [staff, loadOutstandingAdvances])
 
   const entriesByDate = useMemo(() => {
     const m = new Map<string, AttendanceEntry>()
@@ -116,6 +131,7 @@ export function StaffDetailPage() {
       toast.success('Payroll voided. Attendance days are unlocked.')
       await loadPayrolls()
       await loadAttendance()
+      await loadOutstandingAdvances()
     } catch (e: unknown) {
       toast.error(e instanceof Error ? e.message : 'Unable to void payroll.')
     } finally {
@@ -154,6 +170,12 @@ export function StaffDetailPage() {
           </Link>
           <h1 className="text-xl font-semibold tracking-tight">{staff.displayName}</h1>
           <p className="mt-1 max-w-2xl text-sm text-[var(--muted)]">{staff.address || 'No address on file.'}</p>
+          {outstandingAdvances > 0 ? (
+            <p className="mt-2 inline-flex items-center gap-1.5 rounded-md bg-amber-500/10 px-2 py-1 text-xs font-medium text-amber-700">
+              <HandCoins className="h-3.5 w-3.5" />
+              Outstanding cash advance: {formatCurrency(outstandingAdvances)}
+            </p>
+          ) : null}
           <dl className="mt-3 grid gap-2 text-xs sm:grid-cols-2">
             <div>
               <dt className="text-[var(--muted)]">Default rate</dt>
@@ -179,6 +201,16 @@ export function StaffDetailPage() {
             ) : null}
           </dl>
         </div>
+        {canProcessPayroll && user ? (
+          <button
+            className="inline-flex items-center gap-1.5 self-start rounded-md border border-[var(--border)] bg-[var(--panel)] px-3 py-2 text-sm font-medium text-[var(--foreground)] transition hover:bg-[var(--background)]"
+            onClick={() => setCashAdvanceOpen(true)}
+            type="button"
+          >
+            <HandCoins className="h-4 w-4" />
+            Cash advance
+          </button>
+        ) : null}
       </div>
 
       <div className="flex flex-wrap gap-2 border-b border-[var(--border)] pb-2">
@@ -364,6 +396,7 @@ export function StaffDetailPage() {
           onSuccess={() => {
             void loadPayrolls()
             void loadAttendance()
+            void loadOutstandingAdvances()
           }}
           open
           staffDisplayName={staff.displayName}
@@ -378,6 +411,19 @@ export function StaffDetailPage() {
           open
           payrollId={payrollDetailId}
           staffDisplayName={staff.displayName}
+        />
+      ) : null}
+
+      {user && cashAdvanceOpen ? (
+        <CashAdvanceDialog
+          onChanged={() => {
+            void loadOutstandingAdvances()
+          }}
+          onClose={() => setCashAdvanceOpen(false)}
+          open
+          staffDisplayName={staff.displayName}
+          staffId={staff.id}
+          userId={user.id}
         />
       ) : null}
     </section>

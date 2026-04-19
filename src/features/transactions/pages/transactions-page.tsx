@@ -8,6 +8,7 @@ import {
   Banknote,
   Building2,
   CreditCard,
+  AlertTriangle,
   Download,
   Eye,
   Pencil,
@@ -31,14 +32,19 @@ import {
   listAvailableMonthKeys,
   listCategories,
   listCustomers,
+  listInventoryItems,
+  listInventoryMovementsByTransaction,
   listTransactionTypes,
+  listTransactionTemplates,
   listTransactions,
   saveTransaction,
   type Category,
   type Customer,
   type CustomerLoyaltyStatus,
+  type InventoryItem,
   type LedgerTransaction,
   type LoyaltySettings,
+  type TransactionTemplateSummary,
   type TransactionType,
 } from '../../../lib/db/repository'
 import { useAuth } from '../../auth/use-auth'
@@ -270,6 +276,25 @@ export function TransactionsPage() {
   const canEdit = hasPermission('edit_transaction')
   const canDelete = hasPermission('delete_transaction')
   const canExport = hasPermission('export_data')
+  const canManageInventory = hasPermission('manage_inventory')
+
+  const templateLoadGenRef = useRef(0)
+  const [formTransactionTemplates, setFormTransactionTemplates] = useState<TransactionTemplateSummary[]>([])
+  const [formInventoryForTemplates, setFormInventoryForTemplates] = useState<InventoryItem[]>([])
+  const [formTemplatePickerId, setFormTemplatePickerId] = useState('')
+  const [formTemplatePreviewLines, setFormTemplatePreviewLines] = useState<
+    Array<{
+      inventoryItemId: number
+      isItemActive: boolean
+      itemName: string
+      key: string
+      lowStockThreshold: number
+      missingItem?: boolean
+      quantityStr: string
+      unitLabel: string
+      currentStock: number
+    }>
+  >([])
 
   const filteredCategories = useMemo(
     () =>
@@ -291,6 +316,11 @@ export function TransactionsPage() {
     [formCategoryId, state.categories],
   )
   const showLoadFields = Boolean(isSaleType && selectedFormCategory?.isLoadable)
+
+  const templatesForPicker = useMemo(() => {
+    const pick = formTemplatePickerId ? Number(formTemplatePickerId) : Number.NaN
+    return formTransactionTemplates.filter((t) => t.isActive || t.id === pick)
+  }, [formTransactionTemplates, formTemplatePickerId])
 
   useEffect(() => {
     if (!showCustomerField || !formCustomerId) {
@@ -517,6 +547,36 @@ export function TransactionsPage() {
     }
   }, [showCustomerField])
 
+  const clearTemplateSection = useCallback(() => {
+    setFormTemplatePickerId('')
+    setFormTemplatePreviewLines([])
+  }, [])
+
+  useEffect(() => {
+    if (!isModalOpen || !canManageInventory) return
+    let cancelled = false
+    void (async () => {
+      try {
+        const [tpls, inv] = await Promise.all([listTransactionTemplates(), listInventoryItems({ includeInactive: true })])
+        if (!cancelled) {
+          setFormTransactionTemplates(tpls)
+          setFormInventoryForTemplates(inv)
+        }
+      } catch {
+        /* ignore */
+      }
+    })()
+    return () => {
+      cancelled = true
+    }
+  }, [canManageInventory, isModalOpen])
+
+  useEffect(() => {
+    if (!isSaleType) {
+      clearTemplateSection()
+    }
+  }, [clearTemplateSection, isSaleType])
+
   function resetForm() {
     setFormTransactionId(null)
     setFormEntryDate(format(new Date(), 'yyyy-MM-dd'))
@@ -531,16 +591,76 @@ export function TransactionsPage() {
     setFormRedeemReward(false)
     setLoyaltyStatus(null)
     setError(null)
+    clearTemplateSection()
   }
 
   function openNewModal() {
+    templateLoadGenRef.current += 1
     resetForm()
     setIsModalOpen(true)
   }
 
   function closeModal() {
+    templateLoadGenRef.current += 1
     setIsModalOpen(false)
     resetForm()
+  }
+
+  function handleTemplatePickerChange(value: string) {
+    setFormTemplatePickerId(value)
+    if (!value) {
+      setFormTemplatePreviewLines([])
+      return
+    }
+    const tid = Number(value)
+    const tpl = formTransactionTemplates.find((t) => t.id === tid)
+    if (!tpl) return
+    const stockById = new Map(formInventoryForTemplates.map((i) => [i.id, i]))
+    const lines: Array<{
+      inventoryItemId: number
+      isItemActive: boolean
+      itemName: string
+      key: string
+      lowStockThreshold: number
+      missingItem?: boolean
+      quantityStr: string
+      unitLabel: string
+      currentStock: number
+    }> = []
+    for (const it of tpl.items) {
+      const inv = stockById.get(it.inventoryItemId)
+      const key = `${tpl.id}-${it.inventoryItemId}-${Math.random().toString(36).slice(2, 9)}`
+      if (!inv) {
+        lines.push({
+          currentStock: 0,
+          inventoryItemId: it.inventoryItemId,
+          isItemActive: false,
+          itemName: it.itemName,
+          key,
+          lowStockThreshold: 0,
+          missingItem: true,
+          quantityStr: String(it.quantity),
+          unitLabel: it.unitLabel,
+        })
+        continue
+      }
+      lines.push({
+        currentStock: inv.currentStock,
+        inventoryItemId: it.inventoryItemId,
+        isItemActive: inv.isActive,
+        itemName: inv.name,
+        key,
+        lowStockThreshold: inv.lowStockThreshold,
+        missingItem: false,
+        quantityStr: String(it.quantity),
+        unitLabel: inv.unitLabel,
+      })
+    }
+    setFormTemplatePreviewLines(lines)
+  }
+
+  function updateTemplatePreviewQuantity(key: string, quantityStr: string) {
+    setFormTemplatePreviewLines((prev) => prev.map((l) => (l.key === key ? { ...l, quantityStr } : l)))
   }
 
   async function handleSubmit(event: FormEvent<HTMLFormElement>) {
@@ -621,19 +741,47 @@ export function TransactionsPage() {
     }
 
     try {
+      const baseDraft = {
+        amount: amountNum,
+        categoryId: Number(formCategoryId),
+        customerId: showCustomerField && formCustomerId ? Number(formCustomerId) : null,
+        description: description.trim(),
+        entryDate: formEntryDate,
+        isLoyaltyReward: redeem,
+        kg: showLoadFields ? resolvedKg : null,
+        loads: showLoadFields ? resolvedLoads : null,
+        staffCount: showStaffCountField ? resolvedStaffCount : null,
+        transactionTypeId: Number(formTypeId),
+      }
+
+      let templatePatch: { templateId?: number | null; templateItems?: Array<{ inventoryItemId: number; quantity: number }> | null } =
+        {}
+      if (canManageInventory) {
+        if (isSaleType) {
+          const templateItems = formTemplatePreviewLines
+            .filter((l) => !l.missingItem)
+            .map((l) => {
+              const q = Number(l.quantityStr.trim())
+              return { inventoryItemId: l.inventoryItemId, quantity: q }
+            })
+            .filter((l) => Number.isFinite(l.quantity) && l.quantity > 0)
+
+          templatePatch = {
+            templateId:
+              templateItems.length > 0 && formTemplatePickerId
+                ? Number(formTemplatePickerId)
+                : templateItems.length > 0
+                  ? null
+                  : null,
+            templateItems: templateItems.length > 0 ? templateItems : null,
+          }
+        } else {
+          templatePatch = { templateId: null, templateItems: null }
+        }
+      }
+
       await saveTransaction(
-        {
-          amount: amountNum,
-          categoryId: Number(formCategoryId),
-          customerId: showCustomerField && formCustomerId ? Number(formCustomerId) : null,
-          description: description.trim(),
-          entryDate: formEntryDate,
-          isLoyaltyReward: redeem,
-          kg: showLoadFields ? resolvedKg : null,
-          loads: showLoadFields ? resolvedLoads : null,
-          staffCount: showStaffCountField ? resolvedStaffCount : null,
-          transactionTypeId: Number(formTypeId),
-        },
+        canManageInventory ? { ...baseDraft, ...templatePatch } : baseDraft,
         user.id,
         formTransactionId ?? undefined,
       )
@@ -655,6 +803,9 @@ export function TransactionsPage() {
 
   function handleEdit(transaction: LedgerTransaction) {
     if (!canEdit) return
+    templateLoadGenRef.current += 1
+    const gen = templateLoadGenRef.current
+    clearTemplateSection()
     setFormTransactionId(transaction.id)
     setFormEntryDate(transaction.entryDate)
     setFormTypeId(String(transaction.transactionTypeId))
@@ -669,6 +820,41 @@ export function TransactionsPage() {
     setFormLoads(transaction.loads != null ? String(transaction.loads) : '')
     setFormRedeemReward(transaction.isLoyaltyReward)
     setIsModalOpen(true)
+
+    if (transaction.transactionTypeCode === 'SALE' && canManageInventory) {
+      void (async () => {
+        try {
+          const [movs, items] = await Promise.all([
+            listInventoryMovementsByTransaction(transaction.id),
+            listInventoryItems({ includeInactive: true }),
+          ])
+          if (gen !== templateLoadGenRef.current) return
+          const tmplMovs = movs.filter((m) => m.movementType === 'OUT' && m.templateId != null)
+          if (tmplMovs.length === 0) return
+          const tid = tmplMovs[0]!.templateId
+          if (tid != null) setFormTemplatePickerId(String(tid))
+          const itemById = new Map(items.map((i) => [i.id, i]))
+          setFormTemplatePreviewLines(
+            tmplMovs.map((m) => {
+              const inv = itemById.get(m.itemId)
+              return {
+                currentStock: inv?.currentStock ?? 0,
+                inventoryItemId: m.itemId,
+                isItemActive: inv?.isActive ?? false,
+                itemName: inv?.name ?? m.itemName,
+                key: `edit-${m.id}-${Math.random().toString(36).slice(2, 9)}`,
+                lowStockThreshold: inv?.lowStockThreshold ?? 0,
+                missingItem: inv == null,
+                quantityStr: String(m.quantity),
+                unitLabel: inv?.unitLabel ?? m.unitLabel,
+              }
+            }),
+          )
+        } catch {
+          /* ignore */
+        }
+      })()
+    }
   }
 
   function openFilter() {
@@ -1254,9 +1440,11 @@ export function TransactionsPage() {
           />
 
           {/* Modal panel — always white */}
-          <div className="relative z-10 w-full max-w-md rounded-xl bg-white shadow-2xl">
+          <div
+            className={`relative z-10 flex max-h-[90vh] w-full flex-col overflow-hidden rounded-xl bg-white shadow-2xl ${isSaleType && canManageInventory ? 'max-w-xl' : 'max-w-md'}`}
+          >
             {/* Header */}
-            <div className="flex items-center justify-between border-b border-gray-200 px-5 py-4">
+            <div className="flex shrink-0 items-center justify-between border-b border-gray-200 px-5 py-4">
               <h2 className="text-base font-semibold text-gray-900">
                 {formTransactionId ? 'Edit transaction' : 'New transaction'}
               </h2>
@@ -1270,8 +1458,8 @@ export function TransactionsPage() {
             </div>
 
             {/* Form */}
-            <form className="divide-y divide-gray-100" onSubmit={handleSubmit}>
-              <div className="space-y-4 p-5">
+            <form className="flex min-h-0 flex-1 flex-col overflow-hidden" onSubmit={handleSubmit}>
+              <div className="min-h-0 flex-1 space-y-4 overflow-y-auto p-5">
                 <ModalField label="Date" required>
                   <input
                     className={modalInputClass}
@@ -1311,6 +1499,103 @@ export function TransactionsPage() {
                     ))}
                   </select>
                 </ModalField>
+
+                {isSaleType && canManageInventory ? (
+                  <div className="space-y-2 rounded-lg border border-gray-200 bg-gray-50/80 p-3">
+                    <div className="flex flex-wrap items-end justify-between gap-2">
+                      <ModalField label="Inventory template (optional)">
+                        <select
+                          className={modalSelectClass}
+                          onChange={(event) => handleTemplatePickerChange(event.target.value)}
+                          value={formTemplatePickerId}
+                        >
+                          <option value="">None</option>
+                          {templatesForPicker.map((t) => (
+                            <option key={t.id} value={t.id}>
+                              {t.name}
+                              {!t.isActive ? ' (inactive)' : ''}
+                            </option>
+                          ))}
+                        </select>
+                      </ModalField>
+                      {formTemplatePreviewLines.length > 0 ? (
+                        <button
+                          className="mb-0.5 shrink-0 text-xs font-medium text-gray-600 underline decoration-gray-400 hover:text-gray-900"
+                          onClick={() => {
+                            clearTemplateSection()
+                          }}
+                          type="button"
+                        >
+                          Clear template
+                        </button>
+                      ) : null}
+                    </div>
+                    <p className="text-xs text-gray-500">
+                      Applies stock-out movements when you save. Manage templates under{' '}
+                      <span className="font-medium text-gray-700">Inventory → Sale templates</span>.
+                    </p>
+                    {formTemplatePreviewLines.length > 0 ? (
+                      <div className="mt-2 overflow-x-auto rounded-md border border-gray-200 bg-white">
+                        <table className="w-full min-w-[280px] text-xs">
+                          <thead>
+                            <tr className="border-b border-gray-200 bg-gray-50 text-left text-[10px] font-semibold uppercase tracking-wide text-gray-500">
+                              <th className="px-2 py-1.5">Item</th>
+                              <th className="px-2 py-1.5 text-right">Stock</th>
+                              <th className="px-2 py-1.5 text-right">Qty out</th>
+                            </tr>
+                          </thead>
+                          <tbody className="divide-y divide-gray-100">
+                            {formTemplatePreviewLines.map((line) => {
+                              const q = Number(line.quantityStr.trim())
+                              const projected = Number.isFinite(q) ? line.currentStock - q : line.currentStock
+                              const lowWarn =
+                                !line.missingItem &&
+                                Number.isFinite(q) &&
+                                q > 0 &&
+                                (projected < 0 || projected <= line.lowStockThreshold)
+                              return (
+                                <tr key={line.key}>
+                                  <td className="px-2 py-1.5">
+                                    <div className="font-medium text-gray-900">{line.itemName}</div>
+                                    <div className="text-[10px] text-gray-500">{line.unitLabel}</div>
+                                    {line.missingItem ? (
+                                      <div className="mt-0.5 flex items-center gap-1 text-amber-700">
+                                        <AlertTriangle className="h-3 w-3 shrink-0" />
+                                        Item missing — skipped on save
+                                      </div>
+                                    ) : !line.isItemActive ? (
+                                      <div className="mt-0.5 flex items-center gap-1 text-amber-700">
+                                        <AlertTriangle className="h-3 w-3 shrink-0" />
+                                        Inactive item
+                                      </div>
+                                    ) : null}
+                                  </td>
+                                  <td className="px-2 py-1.5 text-right tabular-nums text-gray-600">
+                                    {line.missingItem ? '—' : line.currentStock}
+                                  </td>
+                                  <td className="px-2 py-1.5 text-right">
+                                    <input
+                                      className="w-20 rounded border border-gray-300 bg-white px-1.5 py-1 text-right tabular-nums text-gray-900 outline-none focus:border-blue-500"
+                                      disabled={line.missingItem}
+                                      min="0"
+                                      onChange={(e) => updateTemplatePreviewQuantity(line.key, e.target.value)}
+                                      step="any"
+                                      type="number"
+                                      value={line.quantityStr}
+                                    />
+                                    {lowWarn ? (
+                                      <div className="mt-0.5 text-[10px] font-medium text-amber-700">Low / over stock</div>
+                                    ) : null}
+                                  </td>
+                                </tr>
+                              )
+                            })}
+                          </tbody>
+                        </table>
+                      </div>
+                    ) : null}
+                  </div>
+                ) : null}
 
                 {showCustomerField ? (
                   <ModalField label="Customer">
@@ -1447,7 +1732,7 @@ export function TransactionsPage() {
               </div>
 
               {/* Footer */}
-              <div className="flex items-center justify-between px-5 py-4">
+              <div className="flex shrink-0 items-center justify-between border-t border-gray-100 px-5 py-4">
                 <p className="text-xs text-gray-400">
                   <span className="text-red-500">*</span> Required fields
                 </p>
