@@ -36,7 +36,6 @@ import {
   listStaff,
   listTransactionLineItems,
   listTransactionTypes,
-  listTransactionTemplates,
   listTransactions,
   saveTransaction,
   type Category,
@@ -46,7 +45,6 @@ import {
   type LedgerTransaction,
   type LoyaltySettings,
   type Staff,
-  type TransactionTemplateSummary,
   type TransactionType,
 } from '../../../lib/db/repository'
 import { useAuth } from '../../auth/use-auth'
@@ -292,8 +290,6 @@ export function TransactionsPage() {
   const canManageInventory = hasPermission('manage_inventory')
 
   const templateLoadGenRef = useRef(0)
-  const [formTransactionTemplates, setFormTransactionTemplates] = useState<TransactionTemplateSummary[]>([])
-  const [formInventoryForTemplates, setFormInventoryForTemplates] = useState<InventoryItem[]>([])
   const [formInventoryOptions, setFormInventoryOptions] = useState<InventoryItem[]>([])
   const [formTemplatePickerId, setFormTemplatePickerId] = useState('')
   const [formLineItems, setFormLineItems] = useState<
@@ -348,11 +344,6 @@ export function TransactionsPage() {
     () => state.staff.filter((s) => !s.isArchived),
     [state.staff],
   )
-
-  const templatesForPicker = useMemo(() => {
-    const pick = formTemplatePickerId ? Number(formTemplatePickerId) : Number.NaN
-    return formTransactionTemplates.filter((t) => t.isActive || t.id === pick)
-  }, [formTransactionTemplates, formTemplatePickerId])
 
   useEffect(() => {
     if (!showCustomerField || !formCustomerId) {
@@ -660,25 +651,6 @@ export function TransactionsPage() {
   )
 
   useEffect(() => {
-    if (!isModalOpen || !canManageInventory) return
-    let cancelled = false
-    void (async () => {
-      try {
-        const [tpls, inv] = await Promise.all([listTransactionTemplates(), listInventoryItems({ includeInactive: true })])
-        if (!cancelled) {
-          setFormTransactionTemplates(tpls)
-          setFormInventoryForTemplates(inv)
-        }
-      } catch {
-        /* ignore */
-      }
-    })()
-    return () => {
-      cancelled = true
-    }
-  }, [canManageInventory, isModalOpen])
-
-  useEffect(() => {
     if (!isModalOpen) return
     let cancelled = false
     void (async () => {
@@ -730,63 +702,6 @@ export function TransactionsPage() {
     templateLoadGenRef.current += 1
     setIsModalOpen(false)
     resetForm()
-  }
-
-  function handleTemplatePickerChange(value: string) {
-    setFormTemplatePickerId(value)
-    if (!value) {
-      setFormTemplatePreviewLines([])
-      return
-    }
-    const tid = Number(value)
-    const tpl = formTransactionTemplates.find((t) => t.id === tid)
-    if (!tpl) return
-    const stockById = new Map(formInventoryForTemplates.map((i) => [i.id, i]))
-    const lines: Array<{
-      inventoryItemId: number
-      isItemActive: boolean
-      itemName: string
-      key: string
-      lowStockThreshold: number
-      missingItem?: boolean
-      quantityStr: string
-      unitLabel: string
-      currentStock: number
-    }> = []
-    for (const it of tpl.items) {
-      const inv = stockById.get(it.inventoryItemId)
-      const key = `${tpl.id}-${it.inventoryItemId}-${Math.random().toString(36).slice(2, 9)}`
-      if (!inv) {
-        lines.push({
-          currentStock: 0,
-          inventoryItemId: it.inventoryItemId,
-          isItemActive: false,
-          itemName: it.itemName,
-          key,
-          lowStockThreshold: 0,
-          missingItem: true,
-          quantityStr: String(it.quantity),
-          unitLabel: it.unitLabel,
-        })
-        continue
-      }
-      lines.push({
-        currentStock: inv.currentStock,
-        inventoryItemId: it.inventoryItemId,
-        isItemActive: inv.isActive,
-        itemName: inv.name,
-        key,
-        lowStockThreshold: inv.lowStockThreshold,
-        missingItem: false,
-        quantityStr: String(it.quantity),
-        unitLabel: inv.unitLabel,
-      })
-    }
-    setFormTemplatePreviewLines(lines)
-  }
-
-  function updateTemplatePreviewQuantity(key: string, quantityStr: string) {
-    setFormTemplatePreviewLines((prev) => prev.map((l) => (l.key === key ? { ...l, quantityStr } : l)))
   }
 
   async function handleSubmit(event: FormEvent<HTMLFormElement>) {
