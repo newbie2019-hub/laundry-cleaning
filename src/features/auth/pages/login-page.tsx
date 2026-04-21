@@ -1,8 +1,11 @@
 import type { FormEvent } from 'react'
 import { useState } from 'react'
 import { useLocation, useNavigate } from 'react-router-dom'
-import { loadAppSettings } from '../../../lib/app-settings'
 import { useAuth } from '../use-auth'
+
+// The login screen is shown before a business is selected, so it intentionally
+// uses a generic app name instead of the per-tenant app settings value.
+const APP_NAME = 'Business Manager'
 
 export function LoginPage() {
   const { signIn } = useAuth()
@@ -12,8 +15,6 @@ export function LoginPage() {
   const [password, setPassword] = useState('')
   const [error, setError] = useState<string | null>(null)
   const [isSubmitting, setIsSubmitting] = useState(false)
-
-  const appSettings = loadAppSettings()
 
   const redirectTo =
     typeof location.state === 'object' &&
@@ -52,19 +53,11 @@ export function LoginPage() {
     <section className="flex min-h-screen items-center justify-center px-4">
       <div className="w-full max-w-sm">
         <div className="mb-8 text-center">
-          {appSettings.logoDataUrl ? (
-            <img
-              alt={appSettings.name}
-              className="mx-auto mb-4 h-12 w-12 rounded-xl object-contain"
-              src={appSettings.logoDataUrl}
-            />
-          ) : (
-            <div className="mx-auto mb-4 flex h-12 w-12 items-center justify-center rounded-xl bg-[var(--accent)] text-lg font-bold text-white">
-              {appSettings.name.charAt(0)}
-            </div>
-          )}
+          <div className="mx-auto mb-4 flex h-12 w-12 items-center justify-center rounded-xl bg-[var(--accent)] text-lg font-bold text-white">
+            {APP_NAME.charAt(0)}
+          </div>
           <h1 className="text-xl font-semibold tracking-tight">
-            {appSettings.name}
+            {APP_NAME}
           </h1>
           <p className="mt-1 text-sm text-[var(--muted)]">
             Sign in to continue

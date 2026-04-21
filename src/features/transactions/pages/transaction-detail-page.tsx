@@ -86,7 +86,8 @@ function formatQty(qty: number, unitLabel?: string) {
 export function TransactionDetailPage() {
   const { id } = useParams<{ id: string }>()
   const transactionId = Number(id)
-  const { user, hasPermission } = useAuth()
+  const { activeBusiness, user, hasPermission } = useAuth()
+  const isCleaningBusiness = activeBusiness === 'cleaning'
   const canManageInventory = hasPermission('manage_inventory')
   const canDeleteInventory = hasPermission('delete_inventory')
   const canEditTransaction = hasPermission('edit_transaction')
@@ -244,13 +245,15 @@ export function TransactionDetailPage() {
 
   const trimmedDescription = transaction.description.trim()
   const hasLineItems = lineItems.length > 0
-  const loadsSummary = transaction.isLoyaltyReward
-    ? 'Loyalty reward (free load)'
-    : transaction.loads != null
-      ? `${transaction.loads} load${transaction.loads === 1 ? '' : 's'}${
-          transaction.kg != null ? ` · ${transaction.kg} kg` : ''
-        }`
-      : null
+  const loadsSummary = isCleaningBusiness
+    ? null
+    : transaction.isLoyaltyReward
+      ? 'Loyalty reward (free load)'
+      : transaction.loads != null
+        ? `${transaction.loads} load${transaction.loads === 1 ? '' : 's'}${
+            transaction.kg != null ? ` · ${transaction.kg} kg` : ''
+          }`
+        : null
 
   const detailRows: Array<{ label: string; value: ReactNode }> = [
     { label: 'Category', value: transaction.categoryLabel },

@@ -1,9 +1,14 @@
 use tauri_plugin_sql::{Builder, Migration, MigrationKind};
 
-const DB_URL: &str = "sqlite:business-ledger.db";
+// Each business gets its own SQLite database so that data is fully isolated
+// between the Laundry and Cleaning operations. Both databases share the same
+// schema — they register identical migrations — so switching between them at
+// runtime gives the user an independent tenant with the same feature set.
+const LAUNDRY_DB_URL: &str = "sqlite:business-ledger.db";
+const CLEANING_DB_URL: &str = "sqlite:business-ledger-cleaning.db";
 
-pub fn builder() -> Builder {
-  let migrations = vec![
+fn build_migrations() -> Vec<Migration> {
+  vec![
     Migration {
       version: 1,
       description: "create_core_tables",
@@ -665,7 +670,11 @@ pub fn builder() -> Builder {
       "#,
       kind: MigrationKind::Up,
     },
-  ];
+  ]
+}
 
-  Builder::default().add_migrations(DB_URL, migrations)
+pub fn builder() -> Builder {
+  Builder::default()
+    .add_migrations(LAUNDRY_DB_URL, build_migrations())
+    .add_migrations(CLEANING_DB_URL, build_migrations())
 }

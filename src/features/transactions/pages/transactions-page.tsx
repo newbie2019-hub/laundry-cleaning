@@ -78,8 +78,10 @@ const emptyState: LoadState = {
   transactionTypes: [],
 }
 
-const TX_TABLE_GRID =
+const TX_TABLE_GRID_WITH_LOADS =
   'sm:grid sm:grid-cols-[150px_120px_140px_72px_minmax(0,120px)_minmax(0,1fr)_96px_128px_80px] sm:items-center sm:gap-3'
+const TX_TABLE_GRID_NO_LOADS =
+  'sm:grid sm:grid-cols-[150px_120px_140px_minmax(0,120px)_minmax(0,1fr)_96px_128px_80px] sm:items-center sm:gap-3'
 
 function formatLoadsCell(transaction: LedgerTransaction) {
   if (transaction.isLoyaltyReward) {
@@ -240,7 +242,9 @@ const modalSelectClass =
 type FilterPeriodMode = 'dateRange' | 'month'
 
 export function TransactionsPage() {
-  const { hasPermission, user } = useAuth()
+  const { activeBusiness, hasPermission, user } = useAuth()
+  const isCleaningBusiness = activeBusiness === 'cleaning'
+  const TX_TABLE_GRID = isCleaningBusiness ? TX_TABLE_GRID_NO_LOADS : TX_TABLE_GRID_WITH_LOADS
   const navigate = useNavigate()
   const [searchParams, setSearchParams] = useSearchParams()
   const customerPrefillConsumed = useRef<string | null>(null)
@@ -334,7 +338,9 @@ export function TransactionsPage() {
     () => state.categories.find((c) => String(c.id) === formCategoryId),
     [formCategoryId, state.categories],
   )
-  const showLoadFields = Boolean(isSaleType && selectedFormCategory?.isLoadable)
+  const showLoadFields = Boolean(
+    !isCleaningBusiness && isSaleType && selectedFormCategory?.isLoadable,
+  )
   const isCashAdvanceCategory = Boolean(
     isExpenseType &&
       selectedFormCategory &&
@@ -1198,14 +1204,16 @@ export function TransactionsPage() {
             onSort={handleColumnSort}
             sortKey="category"
           />
-          <SortableColumnHeader
-            activeKey={tableSortKey}
-            align="right"
-            dir={tableSortDir}
-            label="Loads"
-            onSort={handleColumnSort}
-            sortKey="loads"
-          />
+          {!isCleaningBusiness && (
+            <SortableColumnHeader
+              activeKey={tableSortKey}
+              align="right"
+              dir={tableSortDir}
+              label="Loads"
+              onSort={handleColumnSort}
+              sortKey="loads"
+            />
+          )}
           <SortableColumnHeader
             activeKey={tableSortKey}
             dir={tableSortDir}
@@ -1284,9 +1292,11 @@ export function TransactionsPage() {
                         <span className={typeBadgeClass(transaction.transactionTypeCode)}>
                           {transaction.transactionTypeCode}
                         </span>
-                        <span className="text-xs text-[var(--muted)] tabular-nums">
-                          Loads: {formatLoadsCell(transaction)}
-                        </span>
+                        {!isCleaningBusiness && (
+                          <span className="text-xs text-[var(--muted)] tabular-nums">
+                            Loads: {formatLoadsCell(transaction)}
+                          </span>
+                        )}
                         <span className="text-xs text-[var(--muted)] tabular-nums">
                           Staff: {transaction.staffCount ?? '—'}
                         </span>
@@ -1342,7 +1352,9 @@ export function TransactionsPage() {
                       </span>
                     </div>
                     <span className="truncate text-sm text-[var(--foreground)]">{transaction.categoryLabel}</span>
-                    <span className="text-right text-xs">{formatLoadsCell(transaction)}</span>
+                    {!isCleaningBusiness && (
+                      <span className="text-right text-xs">{formatLoadsCell(transaction)}</span>
+                    )}
                     <span className="truncate text-sm text-[var(--muted)]" title={transaction.customerName ?? undefined}>
                       {transaction.customerName ?? '—'}
                     </span>

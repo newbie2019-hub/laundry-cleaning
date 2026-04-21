@@ -18,7 +18,8 @@ type PageState = {
 }
 
 export function CategoriesPage() {
-  const { hasPermission } = useAuth()
+  const { activeBusiness, hasPermission } = useAuth()
+  const isCleaningBusiness = activeBusiness === 'cleaning'
   const canManage = hasPermission('manage_master_data')
 
   const [state, setState] = useState<PageState>({ categories: [], transactionTypes: [] })
@@ -228,7 +229,7 @@ export function CategoriesPage() {
                                 <p className="text-sm font-medium">{category.label}</p>
                               )}
                             </div>
-                            {type.code === 'SALE' && (
+                            {type.code === 'SALE' && !isCleaningBusiness && (
                               <label className="flex shrink-0 cursor-pointer items-center gap-2 text-xs text-[var(--muted)]">
                                 <input
                                   checked={category.isLoadable}
@@ -374,7 +375,7 @@ export function CategoriesPage() {
                 />
               </div>
 
-              {categoryModalType?.code === 'SALE' ? (
+              {categoryModalType?.code === 'SALE' && !isCleaningBusiness ? (
                 <label className="flex cursor-pointer items-center gap-2 text-sm text-[var(--foreground)]">
                   <input
                     checked={categoryModalLoadable}

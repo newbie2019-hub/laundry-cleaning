@@ -1,4 +1,5 @@
 import ExcelJS from 'exceljs'
+import { getActiveBusinessId } from '../../lib/db/business'
 import { toastBrowserExportFailed, toastBrowserExportSuccess } from '../../lib/export-toast'
 import { saveBytesAsDownload } from '../../lib/save-file-download'
 import type { DashboardData, IncidentReport, LedgerTransaction } from '../../lib/db/repository'
@@ -146,15 +147,23 @@ export async function exportFilteredTransactions(
   const workbook = new ExcelJS.Workbook()
   const worksheet = workbook.addWorksheet('Transactions')
 
+  // The Loads / Kg / Loyalty reward columns are laundry-specific and are
+  // omitted entirely for the Cleaning business so exports stay clean.
+  const includeLoadColumns = getActiveBusinessId() !== 'cleaning'
+
   worksheet.columns = [
     { header: 'Date', key: 'entryDate', width: 14 },
     { header: 'Type', key: 'transactionType', width: 14 },
     { header: 'Category', key: 'category', width: 22 },
     { header: 'Customer', key: 'customerName', width: 20 },
     { header: 'Description', key: 'description', width: 28 },
-    { header: 'Loads', key: 'loads', width: 12 },
-    { header: 'Kg', key: 'kg', width: 10 },
-    { header: 'Loyalty reward', key: 'loyaltyReward', width: 14 },
+    ...(includeLoadColumns
+      ? [
+          { header: 'Loads', key: 'loads', width: 12 },
+          { header: 'Kg', key: 'kg', width: 10 },
+          { header: 'Loyalty reward', key: 'loyaltyReward', width: 14 },
+        ]
+      : []),
     { header: 'Number of Staff', key: 'staffCount', width: 18 },
     { header: 'Amount', key: 'amount', width: 16 },
   ]
@@ -170,9 +179,13 @@ export async function exportFilteredTransactions(
       category: transaction.categoryLabel,
       customerName: transaction.customerName ?? '',
       description,
-      loads: transaction.loads ?? '',
-      kg: transaction.kg ?? '',
-      loyaltyReward: transaction.isLoyaltyReward ? 'Yes' : '',
+      ...(includeLoadColumns
+        ? {
+            loads: transaction.loads ?? '',
+            kg: transaction.kg ?? '',
+            loyaltyReward: transaction.isLoyaltyReward ? 'Yes' : '',
+          }
+        : {}),
       staffCount: transaction.staffCount ?? '',
       amount: transaction.amount,
     })
@@ -182,8 +195,8 @@ export async function exportFilteredTransactions(
   applyFrozenHeaderAndFilter(worksheet, worksheet.columns?.length ?? 6)
 
   const dateCol = 1
-  const staffCol = 9
-  const amountCol = 10
+  const staffCol = includeLoadColumns ? 9 : 6
+  const amountCol = includeLoadColumns ? 10 : 7
   worksheet.eachRow((row, rowNumber) => {
     if (rowNumber === 1) return
     row.getCell(dateCol).numFmt = DATE_FMT

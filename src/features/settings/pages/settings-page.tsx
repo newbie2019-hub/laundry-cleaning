@@ -56,7 +56,8 @@ const WEEKDAY_OPTIONS = [
 ] as const
 
 export function SettingsPage() {
-  const { hasPermission, signOut, user, refreshSession } = useAuth()
+  const { activeBusiness, hasPermission, signOut, user, refreshSession } = useAuth()
+  const isCleaningBusiness = activeBusiness === 'cleaning'
   const navigate = useNavigate()
   const canManagePayrollSettings = hasPermission("manage_staff")
   const canManageMasterData = hasPermission("manage_master_data")
@@ -627,8 +628,8 @@ export function SettingsPage() {
           </div>
         )}
 
-        {/* Loyalty (loads) */}
-        {canManageMasterData && (
+        {/* Loyalty (loads) — laundry only */}
+        {canManageMasterData && !isCleaningBusiness && (
           <div className="grid grid-cols-1 gap-x-10 gap-y-4 border-t border-[var(--border)] py-8 md:grid-cols-[280px_1fr]">
             <div>
               <div className="flex items-center gap-2">

@@ -28,7 +28,8 @@ function formatTxDate(entryDate: string) {
 export function CustomerDetailPage() {
   const { id } = useParams<{ id: string }>()
   const customerId = Number(id)
-  const { hasPermission, user } = useAuth()
+  const { activeBusiness, hasPermission, user } = useAuth()
+  const isCleaningBusiness = activeBusiness === 'cleaning'
   const canManage = hasPermission('manage_master_data')
 
   const [customer, setCustomer] = useState<Customer | null>(null)
@@ -184,7 +185,7 @@ export function CustomerDetailPage() {
         ) : null}
       </div>
 
-      {loyalty ? (
+      {loyalty && !isCleaningBusiness ? (
         <div className="rounded-xl border border-[var(--border)] bg-[var(--panel)] p-5">
           <div className="flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between">
             <div>
@@ -309,7 +310,7 @@ export function CustomerDetailPage() {
                     <th className="px-3 py-2.5">Date</th>
                     <th className="px-3 py-2.5">Type</th>
                     <th className="px-3 py-2.5">Category</th>
-                    <th className="px-3 py-2.5 text-right">Loads</th>
+                    {!isCleaningBusiness && <th className="px-3 py-2.5 text-right">Loads</th>}
                     <th className="px-3 py-2.5 text-right">Amount</th>
                     <th className="px-3 py-2.5">Description</th>
                   </tr>
@@ -326,18 +327,20 @@ export function CustomerDetailPage() {
                         </span>
                       </td>
                       <td className="px-3 py-2.5">{t.categoryLabel}</td>
-                      <td className="px-3 py-2.5 text-right tabular-nums">
-                        {t.isLoyaltyReward ? (
-                          <span className="text-violet-600 font-medium">Free</span>
-                        ) : t.loads != null ? (
-                          <>
-                            {t.loads}
-                            {t.kg != null ? <span className="text-[var(--muted)]"> ({t.kg} kg)</span> : null}
-                          </>
-                        ) : (
-                          '—'
-                        )}
-                      </td>
+                      {!isCleaningBusiness && (
+                        <td className="px-3 py-2.5 text-right tabular-nums">
+                          {t.isLoyaltyReward ? (
+                            <span className="text-violet-600 font-medium">Free</span>
+                          ) : t.loads != null ? (
+                            <>
+                              {t.loads}
+                              {t.kg != null ? <span className="text-[var(--muted)]"> ({t.kg} kg)</span> : null}
+                            </>
+                          ) : (
+                            '—'
+                          )}
+                        </td>
+                      )}
                       <td className="px-3 py-2.5 text-right font-medium tabular-nums">{formatCurrency(t.amount)}</td>
                       <td className="px-3 py-2.5 max-w-[14rem] truncate text-[var(--muted)]">
                         {t.description.trim() || '—'}
@@ -425,20 +428,22 @@ export function CustomerDetailPage() {
                   value={formPhone}
                 />
               </div>
-              <label className="flex items-start gap-2.5 rounded-md border border-[var(--border)] bg-[var(--background)] p-3">
-                <input
-                  checked={formLoyaltyEnabled}
-                  className="mt-0.5 h-4 w-4 rounded border-[var(--border)] text-[var(--accent)] focus:ring-[var(--accent)]"
-                  onChange={(e) => setFormLoyaltyEnabled(e.target.checked)}
-                  type="checkbox"
-                />
-                <span className="flex-1">
-                  <span className="block text-sm font-medium">Enable loyalty card</span>
-                  <span className="block text-xs text-[var(--muted)]">
-                    Loyalty is not given to first-time customers. Turn this on once they qualify.
+              {!isCleaningBusiness && (
+                <label className="flex items-start gap-2.5 rounded-md border border-[var(--border)] bg-[var(--background)] p-3">
+                  <input
+                    checked={formLoyaltyEnabled}
+                    className="mt-0.5 h-4 w-4 rounded border-[var(--border)] text-[var(--accent)] focus:ring-[var(--accent)]"
+                    onChange={(e) => setFormLoyaltyEnabled(e.target.checked)}
+                    type="checkbox"
+                  />
+                  <span className="flex-1">
+                    <span className="block text-sm font-medium">Enable loyalty card</span>
+                    <span className="block text-xs text-[var(--muted)]">
+                      Loyalty is not given to first-time customers. Turn this on once they qualify.
+                    </span>
                   </span>
-                </span>
-              </label>
+                </label>
+              )}
               <div className="flex justify-end gap-2 pt-2">
                 <button
                   className="h-9 rounded-md border border-[var(--border)] px-4 text-sm font-medium transition hover:bg-[var(--background)]"

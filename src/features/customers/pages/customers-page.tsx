@@ -87,7 +87,8 @@ function LoyaltyCell({
 }
 
 export function CustomersPage() {
-  const { hasPermission, user } = useAuth()
+  const { activeBusiness, hasPermission, user } = useAuth()
+  const isCleaningBusiness = activeBusiness === 'cleaning'
   const navigate = useNavigate()
   const canManage = hasPermission('manage_master_data')
 
@@ -261,7 +262,7 @@ export function CustomersPage() {
                 <th className="px-4 py-3">Company</th>
                 <th className="px-4 py-3">Contact</th>
                 <th className="px-4 py-3">Last transaction</th>
-                <th className="px-4 py-3">Loyalty</th>
+                {!isCleaningBusiness && <th className="px-4 py-3">Loyalty</th>}
                 <th className="w-32 px-4 py-3 text-right">Actions</th>
               </tr>
             </thead>
@@ -298,15 +299,17 @@ export function CustomersPage() {
                       <span className="text-xs text-[var(--muted)]">No transactions</span>
                     )}
                   </td>
-                  <td className="px-4 py-3">
-                    <LoyaltyCell
-                      canManage={canManage}
-                      customer={c}
-                      onToggle={(customer, next) => {
-                        void handleToggleLoyalty(customer, next)
-                      }}
-                    />
-                  </td>
+                  {!isCleaningBusiness && (
+                    <td className="px-4 py-3">
+                      <LoyaltyCell
+                        canManage={canManage}
+                        customer={c}
+                        onToggle={(customer, next) => {
+                          void handleToggleLoyalty(customer, next)
+                        }}
+                      />
+                    </td>
+                  )}
                   <td className="px-4 py-3 text-right" onClick={(e) => e.stopPropagation()}>
                     {canManage ? (
                       <div className="flex flex-wrap items-center justify-end gap-1">
@@ -415,20 +418,22 @@ export function CustomersPage() {
                 />
               </div>
 
-              <label className="flex items-start gap-2.5 rounded-md border border-[var(--border)] bg-[var(--background)] p-3">
-                <input
-                  checked={formLoyaltyEnabled}
-                  className="mt-0.5 h-4 w-4 rounded border-[var(--border)] text-[var(--accent)] focus:ring-[var(--accent)]"
-                  onChange={(e) => setFormLoyaltyEnabled(e.target.checked)}
-                  type="checkbox"
-                />
-                <span className="flex-1">
-                  <span className="block text-sm font-medium">Enable loyalty card</span>
-                  <span className="block text-xs text-[var(--muted)]">
-                    Loyalty is not given to first-time customers. Turn this on once they qualify.
+              {!isCleaningBusiness && (
+                <label className="flex items-start gap-2.5 rounded-md border border-[var(--border)] bg-[var(--background)] p-3">
+                  <input
+                    checked={formLoyaltyEnabled}
+                    className="mt-0.5 h-4 w-4 rounded border-[var(--border)] text-[var(--accent)] focus:ring-[var(--accent)]"
+                    onChange={(e) => setFormLoyaltyEnabled(e.target.checked)}
+                    type="checkbox"
+                  />
+                  <span className="flex-1">
+                    <span className="block text-sm font-medium">Enable loyalty card</span>
+                    <span className="block text-xs text-[var(--muted)]">
+                      Loyalty is not given to first-time customers. Turn this on once they qualify.
+                    </span>
                   </span>
-                </span>
-              </label>
+                </label>
+              )}
 
               <div className="flex justify-end gap-2 pt-2">
                 <button

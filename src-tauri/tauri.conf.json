@@ -25,7 +25,10 @@
   },
   "plugins": {
     "sql": {
-      "preload": ["sqlite:business-ledger.db"]
+      "preload": [
+        "sqlite:business-ledger.db",
+        "sqlite:business-ledger-cleaning.db"
+      ]
     }
   },
   "bundle": {

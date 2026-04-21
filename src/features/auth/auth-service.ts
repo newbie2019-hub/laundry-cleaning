@@ -113,3 +113,40 @@ export async function getUserSession(userId: number) {
 
   return session
 }
+
+// Used when switching active businesses (databases). Since each business has
+// its own users table, a given user's numeric id may differ between databases
+// — but seeded accounts share the same username, so we can re-resolve the
+// session by username in the newly active database.
+export async function getUserSessionByUsername(username: string) {
+  const database = await getDatabase()
+  const rows = await database.select<SessionRow[]>(
+    `
+      SELECT
+        users.id AS id,
+        users.username AS username,
+        users.display_name AS displayName,
+        users.is_active AS isActive,
+        roles.name AS roleName,
+        permissions.key AS permissionKey
+      FROM users
+      LEFT JOIN user_roles ON user_roles.user_id = users.id
+      LEFT JOIN roles ON roles.id = user_roles.role_id
+      LEFT JOIN role_permissions
+        ON role_permissions.role_id = roles.id
+       AND role_permissions.allowed = 1
+      LEFT JOIN permissions ON permissions.id = role_permissions.permission_id
+      WHERE users.username = $1
+      ORDER BY roles.name, permissions.key
+    `,
+    [username],
+  )
+
+  const session = buildUser(rows)
+
+  if (!session?.isActive) {
+    return null
+  }
+
+  return session
+}

@@ -1,6 +1,12 @@
-import { createHashRouter, Navigate, RouterProvider } from 'react-router-dom'
-import { RedirectIfAuthenticated, RequireAuth } from '../features/auth/auth-provider'
+import { createHashRouter, Navigate, Outlet, RouterProvider } from 'react-router-dom'
+import {
+  RedirectIfAuthenticated,
+  RequireAuth,
+  RequireBusinessSelected,
+} from '../features/auth/auth-provider'
 import { LoginPage } from '../features/auth/pages/login-page'
+import { SelectBusinessPage } from '../features/auth/pages/select-business-page'
+import { TourProvider } from '../features/onboarding/tour-provider'
 import { CategoriesPage } from '../features/categories/pages/categories-page'
 import { CustomerDetailPage } from '../features/customers/pages/customer-detail-page'
 import { CustomersPage } from '../features/customers/pages/customers-page'
@@ -20,86 +26,110 @@ import { TransactionsSummaryPage } from '../features/transactions/pages/transact
 import { UsersPage } from '../features/users/pages/users-page'
 import { AppShell } from './shell/app-shell'
 
+// Wraps every authenticated route so the onboarding tour provider has access
+// to both the auth context and the react-router location/navigation hooks.
+function AuthenticatedLayout() {
+  return (
+    <TourProvider>
+      <Outlet />
+    </TourProvider>
+  )
+}
+
 const router = createHashRouter([
   {
     path: '/',
     element: <RequireAuth />,
     children: [
       {
+        element: <AuthenticatedLayout />,
+        children: [
+      {
         index: true,
         element: <Navigate replace to="/dashboard" />,
       },
       {
-        element: <AppShell />,
+        path: '/select-business',
+        element: <SelectBusinessPage />,
+      },
+      {
+        element: <RequireBusinessSelected />,
         children: [
           {
-            path: '/dashboard',
-            element: <DashboardPage />,
+            element: <AppShell />,
+            children: [
+              {
+                path: '/dashboard',
+                element: <DashboardPage />,
+              },
+              {
+                path: '/transactions',
+                element: <TransactionsPage />,
+              },
+              {
+                path: '/transactions-summary',
+                element: <TransactionsSummaryPage />,
+              },
+              {
+                path: '/transactions/:id',
+                element: <TransactionDetailPage />,
+              },
+              {
+                path: '/customers',
+                element: <CustomersPage />,
+              },
+              {
+                path: '/customers/:id',
+                element: <CustomerDetailPage />,
+              },
+              {
+                path: '/staff',
+                element: <StaffPage />,
+              },
+              {
+                path: '/staff/:id',
+                element: <StaffDetailPage />,
+              },
+              {
+                path: '/incident-reports',
+                element: <IncidentReportsPage />,
+              },
+              {
+                path: '/inventory',
+                element: <InventoryPage />,
+              },
+              {
+                path: '/inventory-movements',
+                element: <InventoryMovementsPage />,
+              },
+              {
+                path: '/inventory-summary',
+                element: <InventorySummaryPage />,
+              },
+              {
+                path: '/inventory-templates',
+                element: <InventoryTemplatesPage />,
+              },
+              {
+                path: '/categories',
+                element: <CategoriesPage />,
+              },
+              {
+                path: '/income-share',
+                element: <IncomeSharePage />,
+              },
+              {
+                path: '/users',
+                element: <UsersPage />,
+              },
+              {
+                path: '/settings',
+                element: <SettingsPage />,
+              },
+            ],
           },
-          {
-            path: '/transactions',
-            element: <TransactionsPage />,
-          },
-          {
-            path: '/transactions-summary',
-            element: <TransactionsSummaryPage />,
-          },
-          {
-            path: '/transactions/:id',
-            element: <TransactionDetailPage />,
-          },
-          {
-            path: '/customers',
-            element: <CustomersPage />,
-          },
-          {
-            path: '/customers/:id',
-            element: <CustomerDetailPage />,
-          },
-          {
-            path: '/staff',
-            element: <StaffPage />,
-          },
-          {
-            path: '/staff/:id',
-            element: <StaffDetailPage />,
-          },
-          {
-            path: '/incident-reports',
-            element: <IncidentReportsPage />,
-          },
-          {
-            path: '/inventory',
-            element: <InventoryPage />,
-          },
-          {
-            path: '/inventory-movements',
-            element: <InventoryMovementsPage />,
-          },
-          {
-            path: '/inventory-summary',
-            element: <InventorySummaryPage />,
-          },
-          {
-            path: '/inventory-templates',
-            element: <InventoryTemplatesPage />,
-          },
-          {
-            path: '/categories',
-            element: <CategoriesPage />,
-          },
-          {
-            path: '/income-share',
-            element: <IncomeSharePage />,
-          },
-          {
-            path: '/users',
-            element: <UsersPage />,
-          },
-          {
-            path: '/settings',
-            element: <SettingsPage />,
-          },
+        ],
+      },
         ],
       },
     ],

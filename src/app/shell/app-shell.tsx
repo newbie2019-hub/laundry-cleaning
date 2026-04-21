@@ -3,7 +3,9 @@ import {
   AlertTriangle,
   ArrowLeftRight,
   BarChart3,
+  Building2,
   ChevronDown,
+  HelpCircle,
   LayoutDashboard,
   LayoutTemplate,
   LogOut,
@@ -19,7 +21,9 @@ import {
 import { useCallback, useEffect, useState } from "react"
 import { NavLink, Outlet, useLocation, useNavigate } from "react-router-dom"
 import { loadAppSettings, type AppSettings } from "../../lib/app-settings"
+import { BUSINESSES } from "../../lib/db/business"
 import { useAuth } from "../../features/auth/use-auth"
+import { useTour } from "../../features/onboarding/use-tour"
 
 const SIDEBAR_COLLAPSED_KEY = "sidebar-collapsed"
 
@@ -224,8 +228,15 @@ function NavItemEntry({
 }
 
 export function AppShell() {
-  const { signOut, user } = useAuth()
+  const { activeBusiness, signOut, user } = useAuth()
+  const { restart: restartTour } = useTour()
   const navigate = useNavigate()
+  const currentBusiness = BUSINESSES[activeBusiness]
+  const canSwitchBusiness = user?.roles.includes("admin") ?? false
+
+  function handleSwitchBusiness() {
+    navigate("/select-business")
+  }
   const [appSettings, setAppSettings] = useState<AppSettings>(loadAppSettings)
   const [collapsed, setCollapsed] = useState(
     () => localStorage.getItem(SIDEBAR_COLLAPSED_KEY) === "true",
@@ -291,7 +302,10 @@ export function AppShell() {
         </div>
 
         {/* Nav */}
-        <nav className="flex-1 overflow-y-auto px-2 py-4">
+        <nav
+          className="flex-1 overflow-y-auto px-2 py-4"
+          data-tour="sidebar-nav"
+        >
           <div className="space-y-0.5">
             {navigationItems.map((item) => (
               <NavItemEntry
@@ -305,10 +319,68 @@ export function AppShell() {
 
         {/* Bottom section */}
         <div className="shrink-0 border-t border-[var(--border)] p-2 space-y-1">
+          {/* Active business badge */}
+          {collapsed ? (
+            <button
+              aria-label={`Active business: ${currentBusiness.name}${canSwitchBusiness ? ". Click to switch." : ""}`}
+              className="flex w-full items-center justify-center rounded-md py-2 text-[var(--muted)] transition hover:bg-[var(--background)] hover:text-[var(--foreground)] disabled:cursor-default disabled:hover:bg-transparent disabled:hover:text-[var(--muted)]"
+              data-tour="business-switcher"
+              disabled={!canSwitchBusiness}
+              onClick={canSwitchBusiness ? handleSwitchBusiness : undefined}
+              title={`${currentBusiness.name}${canSwitchBusiness ? " (click to switch)" : ""}`}
+              type="button"
+            >
+              <div
+                className="flex h-7 w-7 items-center justify-center rounded-md text-white"
+                style={{ backgroundColor: currentBusiness.accent }}
+              >
+                <Building2 className="h-3.5 w-3.5" />
+              </div>
+            </button>
+          ) : (
+            <div
+              className="flex items-center gap-2 rounded-md border border-[var(--border)] bg-[var(--background)] px-2.5 py-2"
+              data-tour="business-switcher"
+            >
+              <div
+                className="flex h-7 w-7 shrink-0 items-center justify-center rounded-md text-white"
+                style={{ backgroundColor: currentBusiness.accent }}
+              >
+                <Building2 className="h-3.5 w-3.5" />
+              </div>
+              <div className="min-w-0 flex-1">
+                <p className="truncate text-[10px] font-medium uppercase tracking-wide text-[var(--muted)] leading-tight">
+                  Active business
+                </p>
+                <p className="truncate text-xs font-semibold leading-tight mt-0.5">
+                  {currentBusiness.shortName}
+                </p>
+              </div>
+              {canSwitchBusiness && (
+                <button
+                  className="shrink-0 rounded-md border border-[var(--border)] px-2 py-1 text-[10px] font-medium text-[var(--muted)] transition hover:border-[var(--accent)] hover:text-[var(--accent-strong)]"
+                  onClick={handleSwitchBusiness}
+                  type="button"
+                >
+                  Switch
+                </button>
+              )}
+            </div>
+          )}
+
           {/* User info */}
           {collapsed ? (
             <div className="flex flex-col items-center gap-2 py-2">
               <UserAvatar name={displayName} />
+              <button
+                aria-label="Replay tutorial"
+                className="rounded p-1.5 text-[var(--muted)] transition hover:bg-[var(--accent-soft)] hover:text-[var(--accent-strong)]"
+                onClick={restartTour}
+                title="Replay tutorial"
+                type="button"
+              >
+                <HelpCircle className="h-4 w-4" />
+              </button>
               <button
                 aria-label="Sign out"
                 className="rounded p-1.5 text-[var(--muted)] transition hover:bg-red-500/10 hover:text-red-400"
@@ -330,6 +402,15 @@ export function AppShell() {
                   {roleLabel}
                 </p>
               </div>
+              <button
+                aria-label="Replay tutorial"
+                className="shrink-0 rounded p-1.5 text-[var(--muted)] transition hover:bg-[var(--accent-soft)] hover:text-[var(--accent-strong)]"
+                onClick={restartTour}
+                title="Replay tutorial"
+                type="button"
+              >
+                <HelpCircle className="h-4 w-4" />
+              </button>
               <button
                 aria-label="Sign out"
                 className="shrink-0 rounded p-1.5 text-[var(--muted)] transition hover:bg-red-500/10 hover:text-red-400"
