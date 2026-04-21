@@ -12,16 +12,18 @@ import {
   Trash2,
   X,
 } from 'lucide-react'
-import { formatCurrency } from '../../../lib/format'
+import { formatCurrency, formatDateTime, formatTimeOfDay } from '../../../lib/format'
 import {
   deleteInventoryMovement,
   getTransactionById,
   listInventoryItems,
   listInventoryMovementsByTransaction,
+  listTransactionLineItems,
   saveInventoryMovement,
   type InventoryItem,
   type InventoryMovement,
   type LedgerTransaction,
+  type TransactionLineItem,
 } from '../../../lib/db/repository'
 import { useAuth } from '../../auth/use-auth'
 
@@ -92,6 +94,7 @@ export function TransactionDetailPage() {
   const [transaction, setTransaction] = useState<LedgerTransaction | null>(null)
   const [items, setItems] = useState<InventoryItem[]>([])
   const [movements, setMovements] = useState<InventoryMovement[]>([])
+  const [lineItems, setLineItems] = useState<TransactionLineItem[]>([])
   const [loading, setLoading] = useState(true)
 
   const [addOpen, setAddOpen] = useState(false)
@@ -113,14 +116,16 @@ export function TransactionDetailPage() {
     }
     setLoading(true)
     try {
-      const [tx, invItems, movs] = await Promise.all([
+      const [tx, invItems, movs, txLineItems] = await Promise.all([
         getTransactionById(transactionId),
         listInventoryItems({ includeInactive: true }),
         listInventoryMovementsByTransaction(transactionId),
+        listTransactionLineItems(transactionId),
       ])
       setTransaction(tx)
       setItems(invItems)
       setMovements(movs)
+      setLineItems(txLineItems)
     } finally {
       setLoading(false)
     }
@@ -138,6 +143,17 @@ export function TransactionDetailPage() {
     }
     return sum
   }, [movements])
+
+  const lineItemsTotal = useMemo(
+    () => lineItems.reduce((acc, li) => acc + (Number.isFinite(li.price) ? li.price : 0), 0),
+    [lineItems],
+  )
+
+  const baseAmount = useMemo(() => {
+    if (!transaction) return 0
+    const base = transaction.amount - lineItemsTotal
+    return base > 0 ? base : 0
+  }, [transaction, lineItemsTotal])
 
   const selectedItem = items.find((i) => String(i.id) === formItemId)
 
@@ -226,93 +242,145 @@ export function TransactionDetailPage() {
     )
   }
 
-  const displayDescription = transaction.description.trim()
-    ? transaction.description
-    : transaction.categoryLabel
+  const trimmedDescription = transaction.description.trim()
+  const hasLineItems = lineItems.length > 0
+  const loadsSummary = transaction.isLoyaltyReward
+    ? 'Loyalty reward (free load)'
+    : transaction.loads != null
+      ? `${transaction.loads} load${transaction.loads === 1 ? '' : 's'}${
+          transaction.kg != null ? ` · ${transaction.kg} kg` : ''
+        }`
+      : null
+
+  const detailRows: Array<{ label: string; value: ReactNode }> = [
+    { label: 'Category', value: transaction.categoryLabel },
+    { label: 'Customer', value: transaction.customerName ?? '—' },
+  ]
+  if (transaction.staffCount != null) {
+    detailRows.push({ label: 'Staff', value: <span className="tabular-nums">{transaction.staffCount}</span> })
+  }
+  if (loadsSummary) {
+    detailRows.push({
+      label: 'Loads',
+      value: transaction.isLoyaltyReward ? (
+        <span className="font-medium text-violet-600">Loyalty reward (free load)</span>
+      ) : (
+        <span className="tabular-nums">{loadsSummary}</span>
+      ),
+    })
+  }
+  if (trimmedDescription) {
+    detailRows.push({ label: 'Description', value: trimmedDescription })
+  }
 
   return (
-    <section className="space-y-6">
-      <div>
-        <Link
-          className="mb-2 inline-flex items-center gap-1 text-sm text-[var(--accent-strong)] hover:underline"
-          to="/transactions"
-        >
-          <ArrowLeft className="h-4 w-4" />
-          Transactions
-        </Link>
-        <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
-          <div className="min-w-0 flex-1">
-            <div className="flex flex-wrap items-center gap-2">
-              <h1 className="text-xl font-semibold tracking-tight">Transaction #{transaction.id}</h1>
-              <span className={typeBadgeClass(transaction.transactionTypeCode)}>{transaction.transactionTypeCode}</span>
-            </div>
-            <p className="mt-1 text-sm text-[var(--muted)]">{formatTransactionDisplayDate(transaction.entryDate)}</p>
-            <p className="mt-2 text-sm font-medium text-[var(--foreground)]">{displayDescription}</p>
-            <dl className="mt-4 grid gap-3 text-sm sm:grid-cols-2 lg:grid-cols-3">
-              <div>
-                <dt className="text-xs font-medium uppercase tracking-wide text-[var(--muted)]">Category</dt>
-                <dd className="mt-0.5">{transaction.categoryLabel}</dd>
-              </div>
-              <div>
-                <dt className="text-xs font-medium uppercase tracking-wide text-[var(--muted)]">Customer</dt>
-                <dd className="mt-0.5">{transaction.customerName ?? '—'}</dd>
-              </div>
-              <div>
-                <dt className="text-xs font-medium uppercase tracking-wide text-[var(--muted)]">Staff count</dt>
-                <dd className="mt-0.5 tabular-nums">{transaction.staffCount ?? '—'}</dd>
-              </div>
-              <div>
-                <dt className="text-xs font-medium uppercase tracking-wide text-[var(--muted)]">Loads / kg</dt>
-                <dd className="mt-0.5 tabular-nums">
-                  {transaction.isLoyaltyReward ? (
-                    <span className="font-medium text-violet-600">Loyalty reward (free load)</span>
-                  ) : transaction.loads != null ? (
-                    <>
-                      {transaction.loads} load{transaction.loads === 1 ? '' : 's'}
-                      {transaction.kg != null ? <span className="text-[var(--muted)]"> ({transaction.kg} kg)</span> : null}
-                    </>
-                  ) : (
-                    '—'
-                  )}
-                </dd>
-              </div>
-              <div>
-                <dt className="text-xs font-medium uppercase tracking-wide text-[var(--muted)]">Amount</dt>
-                <dd className="mt-0.5 text-lg font-semibold tabular-nums">{formatCurrency(transaction.amount)}</dd>
-              </div>
-              <div className="sm:col-span-2">
-                <dt className="text-xs font-medium uppercase tracking-wide text-[var(--muted)]">Movements total</dt>
-                <dd className="mt-0.5 font-medium tabular-nums text-[var(--muted)]">
-                  {formatCurrency(movementsTotal)}{' '}
-                  <span className="text-xs font-normal">(informational: IN − OUT by qty × unit cost)</span>
-                </dd>
-              </div>
-            </dl>
-          </div>
-          {canEditTransaction ? (
-            <Link
-              className="inline-flex shrink-0 items-center gap-2 rounded-md border border-[var(--border)] bg-[var(--panel)] px-3.5 py-2 text-sm font-medium text-[var(--foreground)] hover:bg-[var(--background)] transition"
-              to="/transactions"
-              title="Use the list page to edit this transaction"
-            >
-              <Pencil className="h-4 w-4" />
-              Edit on list
-            </Link>
+    <section className="mx-auto max-w-3xl space-y-10 pb-12">
+      <Link
+        className="inline-flex items-center gap-1.5 text-sm text-[var(--muted)] transition hover:text-[var(--foreground)]"
+        to="/transactions"
+      >
+        <ArrowLeft className="h-4 w-4" />
+        Transactions
+      </Link>
+
+      <header className="flex flex-col gap-6 sm:flex-row sm:items-start sm:justify-between">
+        <div className="min-w-0 space-y-3">
+          <span className={typeBadgeClass(transaction.transactionTypeCode)}>
+            {transaction.transactionTypeCode}
+          </span>
+          <h1 className="text-3xl font-semibold tracking-tight text-[var(--foreground)]">
+            {formatCurrency(transaction.amount)}
+          </h1>
+          <p className="text-sm text-[var(--muted)]">
+            {formatTransactionDisplayDate(transaction.entryDate)} · #{transaction.id}
+          </p>
+          {transaction.createdAt ? (
+            <p className="text-xs text-[var(--muted)]">
+              Recorded {formatDateTime(transaction.createdAt)}
+              {transaction.createdByName ? ` by ${transaction.createdByName}` : ''}
+              {transaction.updatedAt && transaction.updatedAt !== transaction.createdAt ? (
+                <>
+                  {' '}
+                  · Updated {formatDateTime(transaction.updatedAt)}
+                  {transaction.updatedByName ? ` by ${transaction.updatedByName}` : ''}
+                </>
+              ) : null}
+            </p>
           ) : null}
         </div>
+        {canEditTransaction ? (
+          <Link
+            className="inline-flex shrink-0 items-center gap-2 rounded-lg border border-[var(--border)] bg-[var(--panel)] px-4 py-2 text-sm font-medium text-[var(--foreground)] transition hover:bg-[var(--background)]"
+            to="/transactions"
+            title="Use the list page to edit this transaction"
+          >
+            <Pencil className="h-4 w-4" />
+            Edit on list
+          </Link>
+        ) : null}
+      </header>
+
+      <div className="divide-y divide-[var(--border)] border-y border-[var(--border)]">
+        {detailRows.map((row) => (
+          <div
+            className="flex items-start justify-between gap-6 py-4"
+            key={row.label}
+          >
+            <dt className="text-xs font-medium uppercase tracking-wider text-[var(--muted)]">
+              {row.label}
+            </dt>
+            <dd className="text-right text-sm text-[var(--foreground)]">{row.value}</dd>
+          </div>
+        ))}
       </div>
 
-      <div className="rounded-xl border border-[var(--border)] bg-[var(--panel)] p-4 sm:p-5">
-        <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+      <section className="space-y-5">
+        <h2 className="text-xs font-medium uppercase tracking-wider text-[var(--muted)]">
+          Breakdown
+        </h2>
+        <div className="space-y-3 text-sm">
+          <div className="flex items-center justify-between gap-6">
+            <span className="text-[var(--foreground)]">Base amount</span>
+            <span className="tabular-nums text-[var(--foreground)]">
+              {formatCurrency(baseAmount)}
+            </span>
+          </div>
+          {hasLineItems ? (
+            <div className="space-y-2 pl-3">
+              {lineItems.map((li) => (
+                <div
+                  className="flex items-center justify-between gap-6 text-[var(--muted)]"
+                  key={li.id}
+                >
+                  <span className="truncate">{li.label}</span>
+                  <span className="tabular-nums">{formatCurrency(li.price)}</span>
+                </div>
+              ))}
+            </div>
+          ) : null}
+          <div className="flex items-center justify-between gap-6 border-t border-[var(--border)] pt-4 text-base font-semibold">
+            <span>Total</span>
+            <span className="tabular-nums">{formatCurrency(transaction.amount)}</span>
+          </div>
+        </div>
+      </section>
+
+      <section className="space-y-5">
+        <div className="flex flex-col gap-3 sm:flex-row sm:items-end sm:justify-between">
           <div>
-            <h2 className="text-base font-semibold text-[var(--foreground)]">Linked inventory movements</h2>
-            <p className="mt-0.5 text-xs text-[var(--muted)]">
-              Stock ins and outs recorded for this transaction only. Standalone movements stay on the Movements page.
+            <h2 className="text-xs font-medium uppercase tracking-wider text-[var(--muted)]">
+              Linked inventory movements
+            </h2>
+            <p className="mt-2 text-sm text-[var(--muted)]">
+              Stock in/out recorded for this transaction. Movements total:{' '}
+              <span className="tabular-nums text-[var(--foreground)]">
+                {formatCurrency(movementsTotal)}
+              </span>
             </p>
           </div>
           {canManageInventory ? (
             <button
-              className="inline-flex items-center justify-center gap-2 rounded-md bg-[var(--accent)] px-3.5 py-2 text-sm font-medium text-white shadow-sm hover:opacity-90 transition"
+              className="inline-flex items-center justify-center gap-2 rounded-lg bg-[var(--accent)] px-4 py-2 text-sm font-medium text-white shadow-sm transition hover:opacity-90"
               onClick={openAddMovement}
               type="button"
             >
@@ -323,27 +391,34 @@ export function TransactionDetailPage() {
         </div>
 
         {movements.length === 0 ? (
-          <p className="mt-6 text-sm text-[var(--muted)]">No inventory movements linked yet.</p>
+          <p className="text-sm text-[var(--muted)]">No inventory movements linked yet.</p>
         ) : (
-          <div className="mt-4 overflow-x-auto rounded-lg border border-[var(--border)]">
+          <div className="overflow-x-auto rounded-xl border border-[var(--border)]">
             <table className="w-full min-w-[640px] text-sm">
               <thead>
                 <tr className="border-b border-[var(--border)] bg-[var(--background)] text-left text-xs font-semibold uppercase tracking-wide text-[var(--muted)]">
-                  <th className="px-3 py-2.5">Date</th>
-                  <th className="px-3 py-2.5">Item</th>
-                  <th className="px-3 py-2.5">Type</th>
-                  <th className="px-3 py-2.5 text-right">Qty</th>
-                  <th className="px-3 py-2.5 text-right">Unit cost</th>
-                  <th className="px-3 py-2.5 text-right">Line total</th>
-                  <th className="px-3 py-2.5">Notes</th>
-                  <th className="w-0 px-3 py-2.5" />
+                  <th className="px-4 py-3">Date</th>
+                  <th className="px-4 py-3">Item</th>
+                  <th className="px-4 py-3">Type</th>
+                  <th className="px-4 py-3 text-right">Qty</th>
+                  <th className="px-4 py-3 text-right">Unit cost</th>
+                  <th className="px-4 py-3 text-right">Line total</th>
+                  <th className="px-4 py-3">Notes</th>
+                  <th className="w-0 px-4 py-3" />
                 </tr>
               </thead>
               <tbody className="divide-y divide-[var(--border)]">
                 {movements.map((mov) => (
                   <tr key={mov.id}>
-                    <td className="px-3 py-2.5 tabular-nums text-[var(--muted)] whitespace-nowrap">{mov.movementDate}</td>
-                    <td className="px-3 py-2.5 font-medium max-w-[12rem]">
+                    <td className="whitespace-nowrap px-4 py-3 text-[var(--muted)]">
+                      <div className="tabular-nums">{mov.movementDate}</div>
+                      {mov.createdAt ? (
+                        <div className="text-[10px] text-[var(--muted)]">
+                          Recorded {formatTimeOfDay(mov.createdAt)}
+                        </div>
+                      ) : null}
+                    </td>
+                    <td className="max-w-[12rem] px-4 py-3 font-medium">
                       <div className="flex flex-wrap items-center gap-1.5">
                         <span className="truncate">{mov.itemName}</span>
                         {mov.templateId != null ? (
@@ -357,16 +432,21 @@ export function TransactionDetailPage() {
                         ) : null}
                       </div>
                     </td>
-                    <td className="px-3 py-2.5">{movBadge(mov.movementType)}</td>
-                    <td className="px-3 py-2.5 text-right tabular-nums whitespace-nowrap">
-                      {formatQty(mov.quantity)} <span className="text-[var(--muted)]">{mov.unitLabel}</span>
+                    <td className="px-4 py-3">{movBadge(mov.movementType)}</td>
+                    <td className="whitespace-nowrap px-4 py-3 text-right tabular-nums">
+                      {formatQty(mov.quantity)}{' '}
+                      <span className="text-[var(--muted)]">{mov.unitLabel}</span>
                     </td>
-                    <td className="px-3 py-2.5 text-right tabular-nums text-[var(--muted)]">{formatCurrency(mov.unitCost)}</td>
-                    <td className="px-3 py-2.5 text-right tabular-nums font-medium">
+                    <td className="px-4 py-3 text-right tabular-nums text-[var(--muted)]">
+                      {formatCurrency(mov.unitCost)}
+                    </td>
+                    <td className="px-4 py-3 text-right tabular-nums font-medium">
                       {formatCurrency(mov.quantity * mov.unitCost)}
                     </td>
-                    <td className="px-3 py-2.5 text-[var(--muted)] max-w-[12rem] truncate">{mov.notes || '—'}</td>
-                    <td className="px-3 py-2.5">
+                    <td className="max-w-[12rem] truncate px-4 py-3 text-[var(--muted)]">
+                      {mov.notes || '—'}
+                    </td>
+                    <td className="px-4 py-3">
                       {canDeleteInventory ? (
                         <button
                           aria-label="Delete movement"
@@ -384,7 +464,7 @@ export function TransactionDetailPage() {
             </table>
           </div>
         )}
-      </div>
+      </section>
 
       {addOpen && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4">

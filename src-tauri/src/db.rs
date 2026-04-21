@@ -614,6 +614,57 @@ pub fn builder() -> Builder {
       "#,
       kind: MigrationKind::Up,
     },
+    Migration {
+      version: 17,
+      description: "app_state_demo_seeded_flag",
+      sql: r#"
+        CREATE TABLE IF NOT EXISTS app_state (
+          id INTEGER PRIMARY KEY CHECK (id = 1),
+          demo_seeded INTEGER NOT NULL DEFAULT 0
+        );
+
+        INSERT OR IGNORE INTO app_state (id, demo_seeded)
+        SELECT 1, CASE
+          WHEN EXISTS (SELECT 1 FROM transactions LIMIT 1) THEN 1
+          ELSE 0
+        END;
+      "#,
+      kind: MigrationKind::Up,
+    },
+    Migration {
+      version: 18,
+      description: "transaction_line_items",
+      sql: r#"
+        CREATE TABLE IF NOT EXISTS transaction_line_items (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          transaction_id INTEGER NOT NULL REFERENCES transactions(id) ON DELETE CASCADE,
+          inventory_item_id INTEGER REFERENCES inventory_items(id) ON DELETE SET NULL,
+          label TEXT NOT NULL,
+          price REAL NOT NULL CHECK (price >= 0),
+          sort_order INTEGER NOT NULL DEFAULT 0,
+          created_at TEXT NOT NULL DEFAULT (datetime('now'))
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_transaction_line_items_transaction
+          ON transaction_line_items(transaction_id);
+
+        CREATE INDEX IF NOT EXISTS idx_transaction_line_items_inventory_item
+          ON transaction_line_items(inventory_item_id);
+      "#,
+      kind: MigrationKind::Up,
+    },
+    Migration {
+      version: 19,
+      description: "link_inventory_movements_to_line_items",
+      sql: r#"
+        ALTER TABLE inventory_movements ADD COLUMN line_item_id INTEGER
+          REFERENCES transaction_line_items(id) ON DELETE CASCADE;
+
+        CREATE INDEX IF NOT EXISTS idx_inventory_movements_line_item_id
+          ON inventory_movements(line_item_id);
+      "#,
+      kind: MigrationKind::Up,
+    },
   ];
 
   Builder::default().add_migrations(DB_URL, migrations)

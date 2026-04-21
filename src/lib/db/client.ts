@@ -913,13 +913,42 @@ async function ensureDemoMaintenanceRecords(database: Database) {
   }
 }
 
+type SeededFlagRow = { demo_seeded: number }
+
+async function isDemoSeeded(database: Database) {
+  try {
+    const rows = await database.select<SeededFlagRow[]>(
+      'SELECT demo_seeded FROM app_state WHERE id = 1',
+    )
+    return Number(rows[0]?.demo_seeded ?? 0) === 1
+  } catch {
+    // Table may not exist yet on very first migration run; treat as not seeded.
+    return false
+  }
+}
+
+async function markDemoSeeded(database: Database) {
+  await database.execute(
+    `
+      INSERT INTO app_state (id, demo_seeded) VALUES (1, 1)
+      ON CONFLICT(id) DO UPDATE SET demo_seeded = 1
+    `,
+  )
+}
+
 async function ensureSeedData(database: Database) {
+  if (await isDemoSeeded(database)) {
+    return
+  }
+
   await ensureDemoUsers(database)
   await ensureDemoShareVersions(database)
   await ensureDemoTransactions(database)
   await ensureDemoInventory(database)
   await ensureDemoIncidents(database)
   await ensureDemoMaintenanceRecords(database)
+
+  await markDemoSeeded(database)
 }
 
 // The tauri-plugin-sql crate creates SQLite databases with the default journal

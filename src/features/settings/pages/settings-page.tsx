@@ -2,6 +2,7 @@ import type { ChangeEvent, FormEvent } from "react"
 import { useEffect, useRef, useState } from "react"
 import { format } from "date-fns"
 import {
+  AlertTriangle,
   Check,
   Database,
   Gift,
@@ -10,11 +11,13 @@ import {
   Moon,
   Save,
   Sun,
+  Trash2,
   User,
   Wallet,
   X,
 } from "lucide-react"
 import { downloadDir } from "@tauri-apps/api/path"
+import { useNavigate } from "react-router-dom"
 import { useTheme } from "next-themes"
 import { toast } from "sonner"
 import { useAuth } from "../../auth/use-auth"
@@ -26,6 +29,7 @@ import {
 import {
   getLoyaltySettings,
   getPayrollSettings,
+  resetAllData,
   saveLoyaltySettings,
   savePayrollSettings,
   updateUserProfile,
@@ -52,10 +56,16 @@ const WEEKDAY_OPTIONS = [
 ] as const
 
 export function SettingsPage() {
-  const { hasPermission, user, refreshSession } = useAuth()
+  const { hasPermission, signOut, user, refreshSession } = useAuth()
+  const navigate = useNavigate()
   const canManagePayrollSettings = hasPermission("manage_staff")
   const canManageMasterData = hasPermission("manage_master_data")
+  const isAdmin = user?.roles.includes("admin") ?? false
   const { theme, setTheme } = useTheme()
+
+  const [resetDialogOpen, setResetDialogOpen] = useState(false)
+  const [resetConfirmText, setResetConfirmText] = useState("")
+  const [isResetting, setIsResetting] = useState(false)
 
   const [appSettings, setAppSettings] = useState<AppSettings>(loadAppSettings)
   const [appSaved, setAppSaved] = useState(false)
@@ -217,6 +227,37 @@ export function SettingsPage() {
       toast.error(err instanceof Error ? err.message : "Unable to save loyalty settings.")
     } finally {
       setLoyaltySettingsSaving(false)
+    }
+  }
+
+  function openResetDialog() {
+    setResetConfirmText("")
+    setResetDialogOpen(true)
+  }
+
+  function closeResetDialog() {
+    if (isResetting) return
+    setResetDialogOpen(false)
+    setResetConfirmText("")
+  }
+
+  async function handleResetAllData() {
+    if (resetConfirmText.trim() !== "RESET") return
+    setIsResetting(true)
+    try {
+      await resetAllData()
+      toast.success("All data reset", {
+        description: "Every record has been cleared. Only your admin account remains.",
+      })
+      setResetDialogOpen(false)
+      setResetConfirmText("")
+      signOut()
+      navigate("/login", { replace: true })
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : "Unable to reset data."
+      toast.error("Reset failed", { description: msg })
+    } finally {
+      setIsResetting(false)
     }
   }
 
@@ -595,10 +636,10 @@ export function SettingsPage() {
                 <h2 className="text-sm font-semibold">Loyalty</h2>
               </div>
               <p className="mt-1 text-xs leading-relaxed text-[var(--muted)]">
-                Customize the loyalty card: kilograms per load converts optional kg on a sale
-                into load units, and the free-load threshold controls how many paid loads a
-                customer needs before they earn a free one. Loyalty must be enabled per customer
-                on the Customers page.
+                Customize the loyalty card. By default, 1 load equals 8 kg — adjust this to
+                match how you charge. The free-load threshold controls how many paid loads
+                a customer needs before earning a free one. Loyalty must be enabled per
+                customer on the Customers page.
               </p>
             </div>
             {loyaltySettingsLoading ? (
@@ -620,6 +661,9 @@ export function SettingsPage() {
                     type="number"
                     value={loyaltyKgPerLoad}
                   />
+                  <span className="block text-xs text-[var(--muted)]">
+                    Default: 1 load = 8 kg. Change this to match your pricing.
+                  </span>
                 </label>
                 <label className="block space-y-1.5">
                   <span className="text-xs font-medium text-[var(--muted)] uppercase tracking-wider">
@@ -684,7 +728,113 @@ export function SettingsPage() {
             </button>
           </div>
         </div>
+
+        {/* Danger zone (admin only) */}
+        {isAdmin && (
+          <div className="grid grid-cols-1 gap-x-10 gap-y-4 py-8 md:grid-cols-[280px_1fr]">
+            <div>
+              <div className="flex items-center gap-2">
+                <AlertTriangle className="h-4 w-4 text-red-500" />
+                <h2 className="text-sm font-semibold text-red-500">Danger zone</h2>
+              </div>
+              <p className="mt-1 text-xs leading-relaxed text-[var(--muted)]">
+                Permanently delete every transaction, customer, staff member,
+                inventory item, incident report, and non-admin user. Your admin
+                account and the app's master data will be kept. This cannot be
+                undone — export a backup first.
+              </p>
+            </div>
+            <div className="w-full max-w-[480px] md:justify-self-end">
+              <div className="rounded-lg border border-red-500/30 bg-red-500/5 p-4">
+                <p className="text-sm font-medium text-red-500">
+                  Reset all data
+                </p>
+                <p className="mt-1 text-xs leading-relaxed text-[var(--muted)]">
+                  You'll be signed out after the reset and sent back to the
+                  login screen.
+                </p>
+                <button
+                  className="mt-3 inline-flex items-center gap-2 rounded-lg border border-red-500/40 bg-red-500/10 px-4 py-2 text-sm font-medium text-red-500 transition hover:bg-red-500/20 disabled:opacity-50"
+                  onClick={openResetDialog}
+                  type="button"
+                >
+                  <Trash2 className="h-4 w-4" />
+                  Reset data…
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
       </div>
+
+      {resetDialogOpen && (
+        <div
+          aria-labelledby="reset-dialog-title"
+          aria-modal="true"
+          className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4"
+          onClick={closeResetDialog}
+          role="dialog"
+        >
+          <div
+            className="w-full max-w-md rounded-xl border border-[var(--border)] bg-[var(--panel)] p-6 shadow-xl"
+            onClick={(event) => event.stopPropagation()}
+          >
+            <div className="flex items-start gap-3">
+              <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-red-500/10 text-red-500">
+                <AlertTriangle className="h-5 w-5" />
+              </div>
+              <div className="flex-1">
+                <h3 className="text-base font-semibold" id="reset-dialog-title">
+                  Reset all data?
+                </h3>
+                <p className="mt-1 text-xs leading-relaxed text-[var(--muted)]">
+                  This permanently deletes every transaction, customer, staff
+                  member, attendance record, payroll, cash advance, inventory
+                  item, movement, incident report, and non-admin user. Your
+                  admin account and app settings are preserved. This cannot be
+                  undone.
+                </p>
+              </div>
+            </div>
+
+            <label className="mt-5 block space-y-1.5">
+              <span className="text-xs font-medium text-[var(--muted)] uppercase tracking-wider">
+                Type <span className="font-mono text-red-500">RESET</span> to confirm
+              </span>
+              <input
+                autoFocus
+                className={inputClass}
+                disabled={isResetting}
+                onChange={(event) => setResetConfirmText(event.target.value)}
+                placeholder="RESET"
+                value={resetConfirmText}
+              />
+            </label>
+
+            <div className="mt-5 flex items-center justify-end gap-2">
+              <button
+                className="inline-flex items-center rounded-lg border border-[var(--border)] bg-[var(--background)] px-4 py-2 text-sm font-medium text-[var(--foreground)] transition hover:border-[var(--accent)]/50 disabled:opacity-50"
+                disabled={isResetting}
+                onClick={closeResetDialog}
+                type="button"
+              >
+                Cancel
+              </button>
+              <button
+                className="inline-flex items-center gap-1.5 rounded-lg bg-red-500 px-4 py-2 text-sm font-medium text-white transition hover:bg-red-600 disabled:cursor-not-allowed disabled:opacity-50"
+                disabled={isResetting || resetConfirmText.trim() !== "RESET"}
+                onClick={() => {
+                  void handleResetAllData()
+                }}
+                type="button"
+              >
+                <Trash2 className="h-3.5 w-3.5" />
+                {isResetting ? "Resetting…" : "Permanently reset"}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </section>
   )
 }

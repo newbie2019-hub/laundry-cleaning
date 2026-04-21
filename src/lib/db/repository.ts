@@ -32,6 +32,7 @@ export type LedgerTransaction = {
   amount: number
   categoryId: number
   categoryLabel: string
+  createdAt: string
   createdByName: string | null
   customerId: number | null
   customerName: string | null
@@ -45,6 +46,7 @@ export type LedgerTransaction = {
   transactionTypeCode: string
   transactionTypeId: number
   transactionTypeLabel: string
+  updatedAt: string
   updatedByName: string | null
 }
 
@@ -58,14 +60,35 @@ export type TransactionFilters = {
   transactionTypeId?: number | null
 }
 
+export type TransactionLineItem = {
+  id: number
+  inventoryItemId: number | null
+  label: string
+  price: number
+  sortOrder: number
+}
+
+export type TransactionLineItemDraft = {
+  inventoryItemId: number | null
+  label: string
+  price: number
+}
+
 export type TransactionDraft = {
   amount: number
+  /**
+   * When the category is "Cash Advance" (EXPENSE), bind the transaction to a
+   * staff member so a `staff_cash_advances` record is upserted alongside it.
+   */
+  cashAdvanceStaffId?: number | null
   categoryId: number
   customerId: number | null
   description: string
   entryDate: string
   isLoyaltyReward: boolean
   kg: number | null
+  /** Additional charges (e.g. detergent, softener) added on top of the base amount. */
+  lineItems?: TransactionLineItemDraft[] | null
   loads: number | null
   staffCount: number | null
   /** When set with non-empty templateItems, OUT movements are created for a SALE. */
@@ -472,6 +495,7 @@ type LedgerTransactionSelectRow = {
   amount: number
   categoryId: number
   categoryLabel: string
+  createdAt: string
   createdByName: string | null
   customerId: number | null
   customerName: string | null
@@ -485,6 +509,7 @@ type LedgerTransactionSelectRow = {
   transactionTypeCode: string
   transactionTypeId: number
   transactionTypeLabel: string
+  updatedAt: string
   updatedByName: string | null
 }
 
@@ -548,6 +573,8 @@ export async function listTransactions(filters: TransactionFilters = {}) {
         transaction_types.id AS transactionTypeId,
         transaction_types.code AS transactionTypeCode,
         transaction_types.label AS transactionTypeLabel,
+        transactions.created_at AS createdAt,
+        transactions.updated_at AS updatedAt,
         created_by_user.display_name AS createdByName,
         updated_by_user.display_name AS updatedByName
       FROM transactions
@@ -568,6 +595,7 @@ function mapLedgerTransactionRow(row: LedgerTransactionSelectRow): LedgerTransac
     amount: toNumber(row.amount),
     categoryId: row.categoryId,
     categoryLabel: row.categoryLabel,
+    createdAt: row.createdAt ?? '',
     createdByName: row.createdByName,
     customerId: row.customerId,
     customerName: row.customerName,
@@ -581,6 +609,7 @@ function mapLedgerTransactionRow(row: LedgerTransactionSelectRow): LedgerTransac
     transactionTypeCode: row.transactionTypeCode,
     transactionTypeId: row.transactionTypeId,
     transactionTypeLabel: row.transactionTypeLabel,
+    updatedAt: row.updatedAt ?? '',
     updatedByName: row.updatedByName,
   }
 }
@@ -605,6 +634,8 @@ export async function getTransactionById(id: number): Promise<LedgerTransaction 
         transaction_types.id AS transactionTypeId,
         transaction_types.code AS transactionTypeCode,
         transaction_types.label AS transactionTypeLabel,
+        transactions.created_at AS createdAt,
+        transactions.updated_at AS updatedAt,
         created_by_user.display_name AS createdByName,
         updated_by_user.display_name AS updatedByName
       FROM transactions
@@ -710,9 +741,14 @@ async function syncSaleTemplateMovementsForTransaction(
 export async function saveTransaction(input: TransactionDraft, userId: number, transactionId?: number): Promise<number> {
   const database = await getDatabase()
 
-  const metaRows = await database.select<Array<{ code: string; isLoadable: number }>>(
+  const metaRows = await database.select<
+    Array<{ code: string; isLoadable: number; label: string }>
+  >(
     `
-      SELECT transaction_types.code AS code, categories.is_loadable AS isLoadable
+      SELECT
+        transaction_types.code AS code,
+        categories.is_loadable AS isLoadable,
+        categories.label AS label
       FROM categories
       JOIN transaction_types ON transaction_types.id = categories.transaction_type_id
       WHERE categories.id = $1
@@ -727,6 +763,15 @@ export async function saveTransaction(input: TransactionDraft, userId: number, t
   const isSale = meta.code === 'SALE'
   const categoryLoadable = Boolean(meta.isLoadable)
   const isLoyaltyReward = Boolean(input.isLoyaltyReward)
+  const isCashAdvanceCategory =
+    meta.code === 'EXPENSE' && meta.label.trim().toLowerCase() === 'cash advance'
+  const cashAdvanceStaffId =
+    isCashAdvanceCategory && input.cashAdvanceStaffId != null && Number.isFinite(Number(input.cashAdvanceStaffId))
+      ? Number(input.cashAdvanceStaffId)
+      : null
+  if (isCashAdvanceCategory && cashAdvanceStaffId == null) {
+    throw new Error('Select the staff member who received this cash advance.')
+  }
 
   if (isLoyaltyReward) {
     if (!isSale || !categoryLoadable) {
@@ -858,7 +903,188 @@ export async function saveTransaction(input: TransactionDraft, userId: number, t
     userId,
   })
 
+  if (input.lineItems !== undefined) {
+    // Deleting the line items cascades to any inventory_movements rows
+    // that were linked via line_item_id, so we always start from a clean slate.
+    await database.execute('DELETE FROM transaction_line_items WHERE transaction_id = $1', [finalTransactionId])
+    const rawItems = Array.isArray(input.lineItems) ? input.lineItems : []
+    const normalized = rawItems
+      .map((item) => ({
+        inventoryItemId:
+          item.inventoryItemId != null && Number.isFinite(Number(item.inventoryItemId))
+            ? Number(item.inventoryItemId)
+            : null,
+        label: typeof item.label === 'string' ? item.label.trim() : '',
+        price: Number(item.price),
+      }))
+      .filter((item) => item.label !== '' && Number.isFinite(item.price) && item.price >= 0)
+
+    const inventoryLinkedIds = [
+      ...new Set(
+        normalized
+          .map((item) => item.inventoryItemId)
+          .filter((id): id is number => id != null && id > 0),
+      ),
+    ]
+    const costByInventoryId = new Map<number, number>()
+    if (isSale && inventoryLinkedIds.length > 0) {
+      const placeholders = inventoryLinkedIds.map((_, idx) => `$${idx + 1}`).join(', ')
+      const costRows = await database.select<Array<{ cost_per_unit: number; id: number }>>(
+        `SELECT id, cost_per_unit FROM inventory_items WHERE id IN (${placeholders})`,
+        inventoryLinkedIds,
+      )
+      for (const row of costRows) {
+        costByInventoryId.set(Number(row.id), toNumber(row.cost_per_unit))
+      }
+    }
+
+    for (let i = 0; i < normalized.length; i += 1) {
+      const item = normalized[i]!
+      const insertResult = await database.execute(
+        `
+          INSERT INTO transaction_line_items (transaction_id, inventory_item_id, label, price, sort_order)
+          VALUES ($1, $2, $3, $4, $5)
+        `,
+        [finalTransactionId, item.inventoryItemId, item.label, item.price, i],
+      )
+
+      if (isSale && item.inventoryItemId != null) {
+        const rawId = insertResult.lastInsertId
+        const lineItemId = typeof rawId === 'number' ? rawId : Number(rawId)
+        if (Number.isFinite(lineItemId) && lineItemId > 0) {
+          const unitCost = costByInventoryId.get(item.inventoryItemId) ?? 0
+          await database.execute(
+            `
+              INSERT INTO inventory_movements (
+                item_id, movement_type, quantity, unit_cost, notes, movement_date,
+                created_by, transaction_id, template_id, line_item_id
+              )
+              VALUES ($1, 'OUT', 1, $2, $3, $4, $5, $6, NULL, $7)
+            `,
+            [
+              item.inventoryItemId,
+              unitCost,
+              `Sold: ${item.label}`,
+              input.entryDate,
+              userId,
+              finalTransactionId,
+              lineItemId,
+            ],
+          )
+        }
+      }
+    }
+  }
+
+  if (isCashAdvanceCategory && cashAdvanceStaffId != null) {
+    const existingRows = await database.select<
+      Array<{ id: number; status: CashAdvanceStatus }>
+    >(
+      `SELECT id, status FROM staff_cash_advances WHERE transaction_id = $1 LIMIT 1`,
+      [finalTransactionId],
+    )
+    const existing = existingRows[0]
+    const normalizedNotes = (input.description ?? '').trim()
+
+    if (existing) {
+      if (existing.status === 'void') {
+        await database.execute(
+          `
+            UPDATE staff_cash_advances
+            SET
+              staff_id = $1,
+              advance_date = $2,
+              amount = $3,
+              notes = $4,
+              status = 'outstanding',
+              updated_by = $5,
+              updated_at = CURRENT_TIMESTAMP
+            WHERE id = $6
+          `,
+          [cashAdvanceStaffId, input.entryDate, input.amount, normalizedNotes, userId, existing.id],
+        )
+      } else {
+        await database.execute(
+          `
+            UPDATE staff_cash_advances
+            SET
+              staff_id = $1,
+              advance_date = $2,
+              amount = $3,
+              notes = $4,
+              updated_by = $5,
+              updated_at = CURRENT_TIMESTAMP
+            WHERE id = $6
+          `,
+          [cashAdvanceStaffId, input.entryDate, input.amount, normalizedNotes, userId, existing.id],
+        )
+      }
+    } else {
+      await database.execute(
+        `
+          INSERT INTO staff_cash_advances (
+            staff_id, advance_date, amount, notes, status,
+            transaction_id, created_by, updated_by
+          ) VALUES ($1, $2, $3, $4, 'outstanding', $5, $6, $6)
+        `,
+        [
+          cashAdvanceStaffId,
+          input.entryDate,
+          input.amount,
+          normalizedNotes,
+          finalTransactionId,
+          userId,
+        ],
+      )
+    }
+  } else if (transactionId) {
+    // Category was changed away from "Cash Advance" on edit — clear any
+    // outstanding binding so we don't leave a stale staff advance pointing at
+    // a transaction that no longer represents one. Settled advances are left
+    // alone because they already flowed through payroll.
+    await database.execute(
+      `
+        DELETE FROM staff_cash_advances
+        WHERE transaction_id = $1 AND status = 'outstanding'
+      `,
+      [finalTransactionId],
+    )
+  }
+
   return finalTransactionId
+}
+
+export async function listTransactionLineItems(transactionId: number): Promise<TransactionLineItem[]> {
+  const database = await getDatabase()
+  const rows = await database.select<
+    Array<{
+      id: number
+      inventoryItemId: number | null
+      label: string
+      price: number
+      sortOrder: number
+    }>
+  >(
+    `
+      SELECT
+        id,
+        inventory_item_id AS inventoryItemId,
+        label,
+        price,
+        sort_order AS sortOrder
+      FROM transaction_line_items
+      WHERE transaction_id = $1
+      ORDER BY sort_order ASC, id ASC
+    `,
+    [transactionId],
+  )
+  return rows.map((r) => ({
+    id: Number(r.id),
+    inventoryItemId: r.inventoryItemId != null ? Number(r.inventoryItemId) : null,
+    label: String(r.label ?? ''),
+    price: Number(r.price ?? 0),
+    sortOrder: Number(r.sortOrder ?? 0),
+  }))
 }
 
 export async function deleteTransaction(transactionId: number) {
@@ -4122,6 +4348,8 @@ export async function getRecentTransactions(limit = 5): Promise<LedgerTransactio
         transaction_types.id AS transactionTypeId,
         transaction_types.code AS transactionTypeCode,
         transaction_types.label AS transactionTypeLabel,
+        transactions.created_at AS createdAt,
+        transactions.updated_at AS updatedAt,
         created_by_user.display_name AS createdByName,
         updated_by_user.display_name AS updatedByName
       FROM transactions
@@ -5284,6 +5512,33 @@ export async function listCashAdvances(
   return rows.map(cashAdvanceRowToModel)
 }
 
+export async function getCashAdvanceByTransactionId(
+  transactionId: number,
+): Promise<CashAdvance | null> {
+  const database = await getDatabase()
+  const rows = await database.select<CashAdvanceRow[]>(
+    `
+      SELECT
+        id,
+        staff_id AS staffId,
+        advance_date AS advanceDate,
+        amount,
+        notes,
+        status,
+        transaction_id AS transactionId,
+        settled_payroll_id AS settledPayrollId,
+        settled_at AS settledAt
+      FROM staff_cash_advances
+      WHERE transaction_id = $1
+      ORDER BY id DESC
+      LIMIT 1
+    `,
+    [transactionId],
+  )
+  const row = rows[0]
+  return row ? cashAdvanceRowToModel(row) : null
+}
+
 export async function getOutstandingCashAdvanceTotal(staffId: number): Promise<number> {
   const database = await getDatabase()
   const rows = await database.select<Array<{ total: number | null }>>(
@@ -5412,4 +5667,104 @@ export async function vacuumInto(targetPath: string): Promise<void> {
   // VACUUM INTO does not support parameter binding in SQLite —
   // the path is constructed by us (not user input) so this is safe.
   await database.execute(`VACUUM INTO '${targetPath.replaceAll("'", "''")}'`)
+}
+
+// ─── Reset All Data ──────────────────────────────────────────────────────────
+
+/**
+ * Wipes every business/operational row from the database while preserving:
+ *   - users with the `admin` role (and their role assignments)
+ *   - seeded master data (roles, permissions, role_permissions,
+ *     transaction_types, seeded categories, income_share_rules)
+ *   - payroll_settings and loyalty_settings singleton rows
+ *   - the app_state seed flag (so demo data does NOT re-seed on next launch)
+ *
+ * Intended for use from the Settings "Reset data" action.
+ */
+export async function resetAllData(): Promise<void> {
+  const database = await getDatabase()
+
+  // SQLite does not support deferrable FKs, and there are several cycles in
+  // our schema (transactions <-> staff_payrolls <-> staff_cash_advances).
+  // Disable FK checks for the duration of the wipe and re-enable after.
+  await database.execute('PRAGMA foreign_keys = OFF')
+
+  try {
+    // Staff / payroll chain
+    await database.execute('DELETE FROM staff_cash_advances')
+    await database.execute('DELETE FROM staff_payroll_adjustments')
+    await database.execute('DELETE FROM staff_payroll_items')
+    await database.execute('DELETE FROM staff_payrolls')
+    await database.execute('DELETE FROM staff_attendance')
+    await database.execute('DELETE FROM staff')
+
+    // Inventory chain
+    await database.execute('DELETE FROM inventory_movements')
+    await database.execute('DELETE FROM inventory_maintenance_records')
+    await database.execute('DELETE FROM transaction_template_items')
+    await database.execute('DELETE FROM transaction_templates')
+    await database.execute('DELETE FROM inventory_items')
+
+    // Transactions + customers + incidents
+    await database.execute('DELETE FROM transactions')
+    await database.execute('DELETE FROM customers')
+    await database.execute('DELETE FROM incident_reports')
+
+    // Income share history (keep the rules themselves)
+    await database.execute('DELETE FROM income_share_snapshots')
+    await database.execute('DELETE FROM income_share_monthly_versions')
+
+    // User-created categories (keep seeded master categories)
+    await database.execute('DELETE FROM categories WHERE is_seeded = 0')
+
+    // Remove every user that is NOT an admin, along with their role links.
+    await database.execute(`
+      DELETE FROM user_roles
+      WHERE user_id NOT IN (
+        SELECT ur.user_id FROM user_roles ur
+        JOIN roles r ON r.id = ur.role_id
+        WHERE r.name = 'admin'
+      )
+    `)
+    await database.execute(`
+      DELETE FROM users
+      WHERE id NOT IN (
+        SELECT ur.user_id FROM user_roles ur
+        JOIN roles r ON r.id = ur.role_id
+        WHERE r.name = 'admin'
+      )
+    `)
+
+    // Reset AUTOINCREMENT counters for cleared tables so new rows start at 1.
+    await database.execute(`
+      DELETE FROM sqlite_sequence
+      WHERE name IN (
+        'staff_cash_advances',
+        'staff_payroll_adjustments',
+        'staff_payroll_items',
+        'staff_payrolls',
+        'staff_attendance',
+        'staff',
+        'inventory_movements',
+        'inventory_maintenance_records',
+        'transaction_template_items',
+        'transaction_templates',
+        'inventory_items',
+        'transactions',
+        'customers',
+        'incident_reports',
+        'income_share_snapshots',
+        'income_share_monthly_versions'
+      )
+    `)
+
+    // Make absolutely sure the demo-seed flag stays set so the next app
+    // launch does not silently repopulate demo data.
+    await database.execute(`
+      INSERT INTO app_state (id, demo_seeded) VALUES (1, 1)
+      ON CONFLICT(id) DO UPDATE SET demo_seeded = 1
+    `)
+  } finally {
+    await database.execute('PRAGMA foreign_keys = ON')
+  }
 }

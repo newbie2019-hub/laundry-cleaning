@@ -1,5 +1,5 @@
-import type { FormEvent, ReactNode } from 'react'
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import type { FormEvent, KeyboardEvent as ReactKeyboardEvent, ReactNode } from 'react'
+import { useCallback, useEffect, useId, useMemo, useRef, useState } from 'react'
 import { endOfMonth, format, subDays } from 'date-fns'
 import {
   ArrowDown,
@@ -8,9 +8,7 @@ import {
   Banknote,
   Building2,
   CreditCard,
-  AlertTriangle,
   Download,
-  Eye,
   Pencil,
   Plus,
   Search,
@@ -21,12 +19,13 @@ import {
   WalletCards,
   X,
 } from 'lucide-react'
-import { Link, useSearchParams } from 'react-router-dom'
+import { useNavigate, useSearchParams } from 'react-router-dom'
 import { exportFilteredTransactions } from '../../exports/export-service'
 import { MonthPicker } from '../../../components/month-picker'
-import { formatCurrency } from '../../../lib/format'
+import { formatCurrency, formatDateTime } from '../../../lib/format'
 import {
   deleteTransaction,
+  getCashAdvanceByTransactionId,
   getCustomerLoyaltyStatus,
   getLoyaltySettings,
   listAvailableMonthKeys,
@@ -34,6 +33,8 @@ import {
   listCustomers,
   listInventoryItems,
   listInventoryMovementsByTransaction,
+  listStaff,
+  listTransactionLineItems,
   listTransactionTypes,
   listTransactionTemplates,
   listTransactions,
@@ -44,6 +45,7 @@ import {
   type InventoryItem,
   type LedgerTransaction,
   type LoyaltySettings,
+  type Staff,
   type TransactionTemplateSummary,
   type TransactionType,
 } from '../../../lib/db/repository'
@@ -62,6 +64,7 @@ type LoadState = {
   loyaltySettings: LoyaltySettings
   months: string[]
   previousDaySummary: DaySummary | null
+  staff: Staff[]
   transactions: LedgerTransaction[]
   transactionTypes: TransactionType[]
 }
@@ -72,12 +75,13 @@ const emptyState: LoadState = {
   loyaltySettings: { freeAfterLoads: 9, kgPerLoad: 8 },
   months: [],
   previousDaySummary: null,
+  staff: [],
   transactions: [],
   transactionTypes: [],
 }
 
 const TX_TABLE_GRID =
-  'sm:grid sm:grid-cols-[110px_120px_140px_72px_minmax(0,120px)_minmax(0,1fr)_96px_128px_80px] sm:items-center sm:gap-3'
+  'sm:grid sm:grid-cols-[150px_120px_140px_72px_minmax(0,120px)_minmax(0,1fr)_96px_128px_80px] sm:items-center sm:gap-3'
 
 function formatLoadsCell(transaction: LedgerTransaction) {
   if (transaction.isLoyaltyReward) {
@@ -130,9 +134,12 @@ function compareTransactionsForSort(
   const sign = dir === 'asc' ? 1 : -1
   let cmp = 0
   switch (key) {
-    case 'date':
-      cmp = a.entryDate.localeCompare(b.entryDate)
+    case 'date': {
+      const aKey = a.createdAt || a.entryDate
+      const bKey = b.createdAt || b.entryDate
+      cmp = aKey.localeCompare(bKey)
       break
+    }
     case 'type':
       cmp = a.transactionTypeCode.localeCompare(b.transactionTypeCode)
       break
@@ -206,10 +213,12 @@ function ModalField({
   label,
   required,
   children,
+  help,
 }: {
   label: string
   required?: boolean
   children: ReactNode
+  help?: ReactNode
 }) {
   return (
     <div className="flex flex-col gap-1.5">
@@ -218,6 +227,7 @@ function ModalField({
         {required && <span className="ml-0.5 text-red-500">*</span>}
       </label>
       {children}
+      {help ? <p className="text-[11px] text-gray-500">{help}</p> : null}
     </div>
   )
 }
@@ -233,6 +243,7 @@ type FilterPeriodMode = 'dateRange' | 'month'
 
 export function TransactionsPage() {
   const { hasPermission, user } = useAuth()
+  const navigate = useNavigate()
   const [searchParams, setSearchParams] = useSearchParams()
   const customerPrefillConsumed = useRef<string | null>(null)
   const today = format(new Date(), 'yyyy-MM-dd')
@@ -264,7 +275,9 @@ export function TransactionsPage() {
   const [formCustomerId, setFormCustomerId] = useState('')
   const [formKg, setFormKg] = useState('')
   const [formLoads, setFormLoads] = useState('')
+  const [showKgInput, setShowKgInput] = useState(false)
   const [formRedeemReward, setFormRedeemReward] = useState(false)
+  const [formCashAdvanceStaffId, setFormCashAdvanceStaffId] = useState('')
   const [loyaltyStatus, setLoyaltyStatus] = useState<CustomerLoyaltyStatus | null>(null)
   const [state, setState] = useState<LoadState>(emptyState)
   const [error, setError] = useState<string | null>(null)
@@ -281,7 +294,17 @@ export function TransactionsPage() {
   const templateLoadGenRef = useRef(0)
   const [formTransactionTemplates, setFormTransactionTemplates] = useState<TransactionTemplateSummary[]>([])
   const [formInventoryForTemplates, setFormInventoryForTemplates] = useState<InventoryItem[]>([])
+  const [formInventoryOptions, setFormInventoryOptions] = useState<InventoryItem[]>([])
   const [formTemplatePickerId, setFormTemplatePickerId] = useState('')
+  const [formLineItems, setFormLineItems] = useState<
+    Array<{
+      key: string
+      inventoryItemId: number | null
+      label: string
+      priceStr: string
+    }>
+  >([])
+  const lineItemListId = useId()
   const [formTemplatePreviewLines, setFormTemplatePreviewLines] = useState<
     Array<{
       inventoryItemId: number
@@ -316,6 +339,15 @@ export function TransactionsPage() {
     [formCategoryId, state.categories],
   )
   const showLoadFields = Boolean(isSaleType && selectedFormCategory?.isLoadable)
+  const isCashAdvanceCategory = Boolean(
+    isExpenseType &&
+      selectedFormCategory &&
+      selectedFormCategory.label.trim().toLowerCase() === 'cash advance',
+  )
+  const activeStaffForForm = useMemo(
+    () => state.staff.filter((s) => !s.isArchived),
+    [state.staff],
+  )
 
   const templatesForPicker = useMemo(() => {
     const pick = formTemplatePickerId ? Number(formTemplatePickerId) : Number.NaN
@@ -352,7 +384,10 @@ export function TransactionsPage() {
       setFormRedeemReward(false)
       setFormKg('')
       setFormLoads('')
+      setShowKgInput(false)
+      return
     }
+    setFormLoads((prev) => (prev.trim() === '' ? '1' : prev))
   }, [showLoadFields])
 
   function handleKgChange(value: string) {
@@ -452,12 +487,13 @@ export function TransactionsPage() {
     const isSingleDay =
       useDateRange && filterDateFrom && filterDateTo && filterDateFrom === filterDateTo
 
-    const [transactionTypes, categories, customers, loyaltySettings, transactions, previousDayTransactions] =
+    const [transactionTypes, categories, customers, loyaltySettings, staff, transactions, previousDayTransactions] =
       await Promise.all([
       listTransactionTypes(),
       listCategories(),
       listCustomers({ includeArchived: true }),
       getLoyaltySettings(),
+      listStaff({ includeArchived: true }),
       listTransactions({
         categoryId: filterCategoryId ? Number(filterCategoryId) : null,
         customerId: filterCustomerId ? Number(filterCustomerId) : null,
@@ -504,6 +540,7 @@ export function TransactionsPage() {
       loyaltySettings,
       months: Array.from(new Set([monthToUse, ...months])).sort().reverse(),
       previousDaySummary,
+      staff,
       transactions,
       transactionTypes,
     })
@@ -547,10 +584,80 @@ export function TransactionsPage() {
     }
   }, [showCustomerField])
 
+  useEffect(() => {
+    if (!isCashAdvanceCategory) {
+      setFormCashAdvanceStaffId('')
+    }
+  }, [isCashAdvanceCategory])
+
   const clearTemplateSection = useCallback(() => {
     setFormTemplatePickerId('')
     setFormTemplatePreviewLines([])
   }, [])
+
+  const makeLineItemKey = useCallback(
+    () => `li-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`,
+    [],
+  )
+
+  const addLineItem = useCallback(() => {
+    setFormLineItems((prev) => [
+      ...prev,
+      { key: makeLineItemKey(), inventoryItemId: null, label: '', priceStr: '' },
+    ])
+  }, [makeLineItemKey])
+
+  const removeLineItem = useCallback((key: string) => {
+    setFormLineItems((prev) => prev.filter((l) => l.key !== key))
+  }, [])
+
+  const updateLineItemLabel = useCallback(
+    (key: string, label: string) => {
+      setFormLineItems((prev) =>
+        prev.map((l) => {
+          if (l.key !== key) return l
+          const match = formInventoryOptions.find(
+            (inv) => inv.name.toLowerCase() === label.trim().toLowerCase(),
+          )
+          let nextPriceStr = l.priceStr
+          if (match && (l.priceStr.trim() === '' || l.inventoryItemId !== match.id)) {
+            nextPriceStr =
+              Number.isFinite(match.costPerUnit) && match.costPerUnit > 0
+                ? String(match.costPerUnit)
+                : nextPriceStr
+          }
+          return {
+            ...l,
+            label,
+            inventoryItemId: match ? match.id : null,
+            priceStr: nextPriceStr,
+          }
+        }),
+      )
+    },
+    [formInventoryOptions],
+  )
+
+  const updateLineItemPrice = useCallback((key: string, priceStr: string) => {
+    setFormLineItems((prev) => prev.map((l) => (l.key === key ? { ...l, priceStr } : l)))
+  }, [])
+
+  const lineItemsTotal = useMemo(() => {
+    return formLineItems.reduce((sum, li) => {
+      const p = Number(li.priceStr)
+      return sum + (Number.isFinite(p) && p > 0 && li.label.trim() !== '' ? p : 0)
+    }, 0)
+  }, [formLineItems])
+
+  const baseAmountNum = useMemo(() => {
+    const n = Number(amount)
+    return Number.isFinite(n) && n >= 0 ? n : 0
+  }, [amount])
+
+  const grandTotal = useMemo(
+    () => baseAmountNum + lineItemsTotal,
+    [baseAmountNum, lineItemsTotal],
+  )
 
   useEffect(() => {
     if (!isModalOpen || !canManageInventory) return
@@ -572,6 +679,22 @@ export function TransactionsPage() {
   }, [canManageInventory, isModalOpen])
 
   useEffect(() => {
+    if (!isModalOpen) return
+    let cancelled = false
+    void (async () => {
+      try {
+        const items = await listInventoryItems()
+        if (!cancelled) setFormInventoryOptions(items)
+      } catch {
+        /* ignore */
+      }
+    })()
+    return () => {
+      cancelled = true
+    }
+  }, [isModalOpen])
+
+  useEffect(() => {
     if (!isSaleType) {
       clearTemplateSection()
     }
@@ -588,9 +711,12 @@ export function TransactionsPage() {
     setFormCustomerId('')
     setFormKg('')
     setFormLoads('')
+    setShowKgInput(false)
     setFormRedeemReward(false)
+    setFormCashAdvanceStaffId('')
     setLoyaltyStatus(null)
     setError(null)
+    setFormLineItems([])
     clearTemplateSection()
   }
 
@@ -690,6 +816,11 @@ export function TransactionsPage() {
       return
     }
 
+    if (isCashAdvanceCategory && !formCashAdvanceStaffId) {
+      setError('Select the staff member who received this cash advance.')
+      return
+    }
+
     if (showLoadFields && !redeem) {
       const loadsNum = Number(formLoads.trim())
       if (!Number.isFinite(loadsNum) || loadsNum <= 0) {
@@ -698,11 +829,35 @@ export function TransactionsPage() {
       }
     }
 
-    const amountNum = redeem ? 0 : Number(amount)
-    if (!redeem && (!Number.isFinite(amountNum) || amountNum < 0)) {
+    const baseAmount = redeem ? 0 : Number(amount)
+    if (!redeem && (!Number.isFinite(baseAmount) || baseAmount < 0)) {
       setError('Amount must be a valid non-negative number.')
       return
     }
+
+    const normalizedLineItems: Array<{
+      inventoryItemId: number | null
+      label: string
+      price: number
+    }> = []
+    for (const li of formLineItems) {
+      const label = li.label.trim()
+      const priceTrim = li.priceStr.trim()
+      if (label === '' && priceTrim === '') continue
+      if (label === '') {
+        setError('Additional item name is required.')
+        return
+      }
+      const price = Number(priceTrim)
+      if (!Number.isFinite(price) || price < 0) {
+        setError(`Enter a valid price for "${label}".`)
+        return
+      }
+      normalizedLineItems.push({ inventoryItemId: li.inventoryItemId, label, price })
+    }
+
+    const lineItemsSum = normalizedLineItems.reduce((acc, li) => acc + li.price, 0)
+    const amountNum = redeem ? 0 : baseAmount + lineItemsSum
 
     let resolvedStaffCount: number | null = null
     if (showStaffCountField) {
@@ -743,12 +898,16 @@ export function TransactionsPage() {
     try {
       const baseDraft = {
         amount: amountNum,
+        cashAdvanceStaffId: isCashAdvanceCategory && formCashAdvanceStaffId
+          ? Number(formCashAdvanceStaffId)
+          : null,
         categoryId: Number(formCategoryId),
         customerId: showCustomerField && formCustomerId ? Number(formCustomerId) : null,
         description: description.trim(),
         entryDate: formEntryDate,
         isLoyaltyReward: redeem,
         kg: showLoadFields ? resolvedKg : null,
+        lineItems: redeem ? [] : normalizedLineItems,
         loads: showLoadFields ? resolvedLoads : null,
         staffCount: showStaffCountField ? resolvedStaffCount : null,
         transactionTypeId: Number(formTypeId),
@@ -806,6 +965,7 @@ export function TransactionsPage() {
     templateLoadGenRef.current += 1
     const gen = templateLoadGenRef.current
     clearTemplateSection()
+    setFormLineItems([])
     setFormTransactionId(transaction.id)
     setFormEntryDate(transaction.entryDate)
     setFormTypeId(String(transaction.transactionTypeId))
@@ -818,8 +978,48 @@ export function TransactionsPage() {
     )
     setFormKg(transaction.kg != null ? String(transaction.kg) : '')
     setFormLoads(transaction.loads != null ? String(transaction.loads) : '')
+    setShowKgInput(transaction.kg != null)
     setFormRedeemReward(transaction.isLoyaltyReward)
+    setFormCashAdvanceStaffId('')
     setIsModalOpen(true)
+
+    if (
+      transaction.transactionTypeCode === 'EXPENSE' &&
+      transaction.categoryLabel.trim().toLowerCase() === 'cash advance'
+    ) {
+      void (async () => {
+        try {
+          const advance = await getCashAdvanceByTransactionId(transaction.id)
+          if (gen !== templateLoadGenRef.current) return
+          if (advance && advance.status !== 'void') {
+            setFormCashAdvanceStaffId(String(advance.staffId))
+          }
+        } catch {
+          /* ignore */
+        }
+      })()
+    }
+
+    void (async () => {
+      try {
+        const items = await listTransactionLineItems(transaction.id)
+        if (gen !== templateLoadGenRef.current) return
+        if (items.length === 0) return
+        const sum = items.reduce((acc, li) => acc + (Number.isFinite(li.price) ? li.price : 0), 0)
+        const base = Math.max(0, transaction.amount - sum)
+        setAmount(String(Math.round(base * 100) / 100))
+        setFormLineItems(
+          items.map((li) => ({
+            key: `edit-li-${li.id}-${Math.random().toString(36).slice(2, 7)}`,
+            inventoryItemId: li.inventoryItemId,
+            label: li.label,
+            priceStr: String(li.price),
+          })),
+        )
+      } catch {
+        /* ignore */
+      }
+    })()
 
     if (transaction.transactionTypeCode === 'SALE' && canManageInventory) {
       void (async () => {
@@ -1064,7 +1264,7 @@ export function TransactionsPage() {
           <SortableColumnHeader
             activeKey={tableSortKey}
             dir={tableSortDir}
-            label="Date"
+            label="Created At"
             onSort={handleColumnSort}
             sortKey="date"
           />
@@ -1129,10 +1329,25 @@ export function TransactionsPage() {
               const displayDescription = transaction.description.trim()
                 ? transaction.description
                 : transaction.categoryLabel
+              const goToDetail = () => {
+                navigate(`/transactions/${transaction.id}`)
+              }
+              const handleRowKeyDown = (event: ReactKeyboardEvent<HTMLDivElement>) => {
+                if (event.key === 'Enter' || event.key === ' ') {
+                  event.preventDefault()
+                  goToDetail()
+                }
+              }
               return (
                 <div key={transaction.id}>
                   {/* Mobile: stacked card */}
-                  <div className="flex flex-col gap-2 px-4 py-3 transition hover:bg-[var(--background)]/50 sm:hidden">
+                  <div
+                    className="flex cursor-pointer flex-col gap-2 px-4 py-3 transition hover:bg-[var(--background)]/50 sm:hidden"
+                    onClick={goToDetail}
+                    onKeyDown={handleRowKeyDown}
+                    role="button"
+                    tabIndex={0}
+                  >
                     <div className="flex items-start justify-between gap-2">
                       <div className="min-w-0 flex-1">
                         <p className="truncate text-sm font-medium leading-tight">{displayDescription}</p>
@@ -1143,8 +1358,10 @@ export function TransactionsPage() {
                           </p>
                         ) : null}
                       </div>
-                      <span className="shrink-0 text-xs tabular-nums text-[var(--muted)]">
-                        {formatTransactionDisplayDate(transaction.entryDate)}
+                      <span className="shrink-0 text-right text-xs tabular-nums text-[var(--muted)]">
+                        {transaction.createdAt
+                          ? formatDateTime(transaction.createdAt)
+                          : formatTransactionDisplayDate(transaction.entryDate)}
                       </span>
                     </div>
                     <div className="flex flex-wrap items-center justify-between gap-2">
@@ -1162,18 +1379,14 @@ export function TransactionsPage() {
                       <div className="flex items-center gap-2">
                         <p className="text-sm font-semibold tabular-nums">{formatCurrency(transaction.amount)}</p>
                         <div className="flex shrink-0 items-center justify-end gap-0.5">
-                          <Link
-                            aria-label="View"
-                            className="rounded p-1.5 text-[var(--muted)] transition hover:bg-[var(--accent-soft)] hover:text-[var(--accent-strong)]"
-                            to={`/transactions/${transaction.id}`}
-                          >
-                            <Eye className="h-3.5 w-3.5" />
-                          </Link>
                           <button
                             aria-label="Edit"
                             className="rounded p-1.5 text-[var(--muted)] transition hover:bg-[var(--accent-soft)] hover:text-[var(--accent-strong)] disabled:opacity-30"
                             disabled={!canEdit}
-                            onClick={() => handleEdit(transaction)}
+                            onClick={(event) => {
+                              event.stopPropagation()
+                              handleEdit(transaction)
+                            }}
                             type="button"
                           >
                             <Pencil className="h-3.5 w-3.5" />
@@ -1182,7 +1395,8 @@ export function TransactionsPage() {
                             aria-label="Delete"
                             className="rounded p-1.5 text-[var(--muted)] transition hover:bg-red-500/10 hover:text-red-500 disabled:opacity-30"
                             disabled={!canDelete}
-                            onClick={() => {
+                            onClick={(event) => {
+                              event.stopPropagation()
                               void handleDelete(transaction.id)
                             }}
                             type="button"
@@ -1195,9 +1409,17 @@ export function TransactionsPage() {
                   </div>
 
                   {/* Desktop: table row */}
-                  <div className={`hidden ${TX_TABLE_GRID} sm:px-4 sm:py-3 sm:transition sm:hover:bg-[var(--background)]/50`}>
-                    <span className="text-xs tabular-nums text-[var(--foreground)]">
-                      {formatTransactionDisplayDate(transaction.entryDate)}
+                  <div
+                    className={`hidden ${TX_TABLE_GRID} sm:cursor-pointer sm:px-4 sm:py-3 sm:transition sm:hover:bg-[var(--background)]/50`}
+                    onClick={goToDetail}
+                    onKeyDown={handleRowKeyDown}
+                    role="button"
+                    tabIndex={0}
+                  >
+                    <span className="whitespace-nowrap text-xs tabular-nums text-[var(--foreground)]">
+                      {transaction.createdAt
+                        ? formatDateTime(transaction.createdAt)
+                        : formatTransactionDisplayDate(transaction.entryDate)}
                     </span>
                     <div className="flex justify-center">
                       <span className={typeBadgeClass(transaction.transactionTypeCode)}>
@@ -1217,18 +1439,14 @@ export function TransactionsPage() {
                       {formatCurrency(transaction.amount)}
                     </p>
                     <div className="flex shrink-0 items-center justify-end gap-0.5">
-                      <Link
-                        aria-label="View"
-                        className="rounded p-1.5 text-[var(--muted)] transition hover:bg-[var(--accent-soft)] hover:text-[var(--accent-strong)]"
-                        to={`/transactions/${transaction.id}`}
-                      >
-                        <Eye className="h-3.5 w-3.5" />
-                      </Link>
                       <button
                         aria-label="Edit"
                         className="rounded p-1.5 text-[var(--muted)] transition hover:bg-[var(--accent-soft)] hover:text-[var(--accent-strong)] disabled:opacity-30"
                         disabled={!canEdit}
-                        onClick={() => handleEdit(transaction)}
+                        onClick={(event) => {
+                          event.stopPropagation()
+                          handleEdit(transaction)
+                        }}
                         type="button"
                       >
                         <Pencil className="h-3.5 w-3.5" />
@@ -1237,7 +1455,8 @@ export function TransactionsPage() {
                         aria-label="Delete"
                         className="rounded p-1.5 text-[var(--muted)] transition hover:bg-red-500/10 hover:text-red-500 disabled:opacity-30"
                         disabled={!canDelete}
-                        onClick={() => {
+                        onClick={(event) => {
+                          event.stopPropagation()
                           void handleDelete(transaction.id)
                         }}
                         type="button"
@@ -1500,101 +1719,36 @@ export function TransactionsPage() {
                   </select>
                 </ModalField>
 
-                {isSaleType && canManageInventory ? (
-                  <div className="space-y-2 rounded-lg border border-gray-200 bg-gray-50/80 p-3">
-                    <div className="flex flex-wrap items-end justify-between gap-2">
-                      <ModalField label="Inventory template (optional)">
-                        <select
-                          className={modalSelectClass}
-                          onChange={(event) => handleTemplatePickerChange(event.target.value)}
-                          value={formTemplatePickerId}
-                        >
-                          <option value="">None</option>
-                          {templatesForPicker.map((t) => (
-                            <option key={t.id} value={t.id}>
-                              {t.name}
-                              {!t.isActive ? ' (inactive)' : ''}
-                            </option>
-                          ))}
-                        </select>
-                      </ModalField>
-                      {formTemplatePreviewLines.length > 0 ? (
-                        <button
-                          className="mb-0.5 shrink-0 text-xs font-medium text-gray-600 underline decoration-gray-400 hover:text-gray-900"
-                          onClick={() => {
-                            clearTemplateSection()
-                          }}
-                          type="button"
-                        >
-                          Clear template
-                        </button>
-                      ) : null}
-                    </div>
-                    <p className="text-xs text-gray-500">
-                      Applies stock-out movements when you save. Manage templates under{' '}
-                      <span className="font-medium text-gray-700">Inventory → Sale templates</span>.
-                    </p>
-                    {formTemplatePreviewLines.length > 0 ? (
-                      <div className="mt-2 overflow-x-auto rounded-md border border-gray-200 bg-white">
-                        <table className="w-full min-w-[280px] text-xs">
-                          <thead>
-                            <tr className="border-b border-gray-200 bg-gray-50 text-left text-[10px] font-semibold uppercase tracking-wide text-gray-500">
-                              <th className="px-2 py-1.5">Item</th>
-                              <th className="px-2 py-1.5 text-right">Stock</th>
-                              <th className="px-2 py-1.5 text-right">Qty out</th>
-                            </tr>
-                          </thead>
-                          <tbody className="divide-y divide-gray-100">
-                            {formTemplatePreviewLines.map((line) => {
-                              const q = Number(line.quantityStr.trim())
-                              const projected = Number.isFinite(q) ? line.currentStock - q : line.currentStock
-                              const lowWarn =
-                                !line.missingItem &&
-                                Number.isFinite(q) &&
-                                q > 0 &&
-                                (projected < 0 || projected <= line.lowStockThreshold)
-                              return (
-                                <tr key={line.key}>
-                                  <td className="px-2 py-1.5">
-                                    <div className="font-medium text-gray-900">{line.itemName}</div>
-                                    <div className="text-[10px] text-gray-500">{line.unitLabel}</div>
-                                    {line.missingItem ? (
-                                      <div className="mt-0.5 flex items-center gap-1 text-amber-700">
-                                        <AlertTriangle className="h-3 w-3 shrink-0" />
-                                        Item missing — skipped on save
-                                      </div>
-                                    ) : !line.isItemActive ? (
-                                      <div className="mt-0.5 flex items-center gap-1 text-amber-700">
-                                        <AlertTriangle className="h-3 w-3 shrink-0" />
-                                        Inactive item
-                                      </div>
-                                    ) : null}
-                                  </td>
-                                  <td className="px-2 py-1.5 text-right tabular-nums text-gray-600">
-                                    {line.missingItem ? '—' : line.currentStock}
-                                  </td>
-                                  <td className="px-2 py-1.5 text-right">
-                                    <input
-                                      className="w-20 rounded border border-gray-300 bg-white px-1.5 py-1 text-right tabular-nums text-gray-900 outline-none focus:border-blue-500"
-                                      disabled={line.missingItem}
-                                      min="0"
-                                      onChange={(e) => updateTemplatePreviewQuantity(line.key, e.target.value)}
-                                      step="any"
-                                      type="number"
-                                      value={line.quantityStr}
-                                    />
-                                    {lowWarn ? (
-                                      <div className="mt-0.5 text-[10px] font-medium text-amber-700">Low / over stock</div>
-                                    ) : null}
-                                  </td>
-                                </tr>
-                              )
-                            })}
-                          </tbody>
-                        </table>
-                      </div>
-                    ) : null}
-                  </div>
+                {isCashAdvanceCategory ? (
+                  <ModalField
+                    label="Staff (cash advance)"
+                    required
+                    help="The expense will be linked to this staff member as an outstanding cash advance, so it can be deducted from their next payroll."
+                  >
+                    <select
+                      className={modalSelectClass}
+                      onChange={(event) => setFormCashAdvanceStaffId(event.target.value)}
+                      value={formCashAdvanceStaffId}
+                    >
+                      <option value="">Select a staff member</option>
+                      {formCashAdvanceStaffId &&
+                      !activeStaffForForm.some((s) => String(s.id) === formCashAdvanceStaffId)
+                        ? state.staff
+                            .filter((s) => String(s.id) === formCashAdvanceStaffId)
+                            .map((s) => (
+                              <option key={s.id} value={s.id}>
+                                {s.displayName}
+                                {s.isArchived ? ' (archived)' : ''}
+                              </option>
+                            ))
+                        : null}
+                      {activeStaffForForm.map((s) => (
+                        <option key={s.id} value={s.id}>
+                          {s.displayName}
+                        </option>
+                      ))}
+                    </select>
+                  </ModalField>
                 ) : null}
 
                 {showCustomerField ? (
@@ -1626,29 +1780,46 @@ export function TransactionsPage() {
                 ) : null}
 
                 {showLoadFields ? (
-                  <div className="grid grid-cols-2 gap-3">
-                    <ModalField label="Kilograms (optional)">
-                      <input
-                        className={modalInputClass}
-                        min="0"
-                        onChange={(event) => handleKgChange(event.target.value)}
-                        placeholder="e.g. 8"
-                        step="0.01"
-                        type="number"
-                        value={formKg}
-                      />
-                    </ModalField>
-                    <ModalField label="Loads" required={!formRedeemReward}>
-                      <input
-                        className={modalInputClass}
-                        min="0"
-                        onChange={(event) => setFormLoads(event.target.value)}
-                        placeholder="e.g. 1"
-                        step="0.01"
-                        type="number"
-                        value={formLoads}
-                      />
-                    </ModalField>
+                  <div className="space-y-2">
+                    <div className={showKgInput ? 'grid grid-cols-2 gap-3' : ''}>
+                      <ModalField label="Loads" required={!formRedeemReward}>
+                        <input
+                          className={modalInputClass}
+                          min="0"
+                          onChange={(event) => setFormLoads(event.target.value)}
+                          placeholder="e.g. 1"
+                          step="0.01"
+                          type="number"
+                          value={formLoads}
+                        />
+                      </ModalField>
+                      {showKgInput ? (
+                        <ModalField label="Kilograms (optional)">
+                          <input
+                            className={modalInputClass}
+                            min="0"
+                            onChange={(event) => handleKgChange(event.target.value)}
+                            placeholder={`e.g. ${state.loyaltySettings.kgPerLoad}`}
+                            step="0.01"
+                            type="number"
+                            value={formKg}
+                          />
+                        </ModalField>
+                      ) : null}
+                    </div>
+                    <button
+                      className="text-xs font-medium text-[var(--accent)] underline decoration-[var(--accent)]/40 hover:decoration-[var(--accent)]"
+                      onClick={() => {
+                        setShowKgInput((prev) => {
+                          const next = !prev
+                          if (!next) setFormKg('')
+                          return next
+                        })
+                      }}
+                      type="button"
+                    >
+                      {showKgInput ? 'Hide kilograms' : 'Specify kilograms'}
+                    </button>
                   </div>
                 ) : null}
 
@@ -1700,6 +1871,83 @@ export function TransactionsPage() {
                     value={amount}
                   />
                 </ModalField>
+
+                {!(showLoadFields && formRedeemReward) ? (
+                  <div className="space-y-2 rounded-lg border border-gray-200 bg-gray-50/80 p-3">
+                    <div className="flex items-center justify-between gap-2">
+                      <div>
+                        <p className="text-sm font-medium text-gray-700">Additional items (optional)</p>
+                        <p className="text-xs text-gray-500">
+                          Pick from inventory or type a custom name. Prices add to the total.
+                        </p>
+                      </div>
+                      <button
+                        className="inline-flex items-center gap-1 rounded-md border border-gray-300 bg-white px-2.5 py-1.5 text-xs font-medium text-gray-700 hover:border-gray-400 hover:bg-gray-50"
+                        onClick={addLineItem}
+                        type="button"
+                      >
+                        <Plus className="h-3.5 w-3.5" />
+                        Add item
+                      </button>
+                    </div>
+
+                    {formLineItems.length > 0 ? (
+                      <>
+                        <datalist id={lineItemListId}>
+                          {formInventoryOptions.map((inv) => (
+                            <option key={inv.id} value={inv.name} />
+                          ))}
+                        </datalist>
+                        <div className="space-y-2">
+                          {formLineItems.map((li) => (
+                            <div className="flex items-start gap-2" key={li.key}>
+                              <div className="flex-1 min-w-0">
+                                <input
+                                  className={modalInputClass}
+                                  list={lineItemListId}
+                                  onChange={(event) => updateLineItemLabel(li.key, event.target.value)}
+                                  placeholder="Item name"
+                                  type="text"
+                                  value={li.label}
+                                />
+                              </div>
+                              <div className="w-28 shrink-0">
+                                <input
+                                  className={`${modalInputClass} text-right`}
+                                  min="0"
+                                  onChange={(event) => updateLineItemPrice(li.key, event.target.value)}
+                                  placeholder="0.00"
+                                  step="0.01"
+                                  type="number"
+                                  value={li.priceStr}
+                                />
+                              </div>
+                              <button
+                                aria-label="Remove item"
+                                className="mt-1 rounded-md p-1.5 text-gray-500 hover:bg-red-50 hover:text-red-600"
+                                onClick={() => removeLineItem(li.key)}
+                                type="button"
+                              >
+                                <Trash2 className="h-4 w-4" />
+                              </button>
+                            </div>
+                          ))}
+                        </div>
+                      </>
+                    ) : null}
+
+                    {formLineItems.length > 0 ? (
+                      <div className="flex items-center justify-between border-t border-gray-200 pt-2 text-xs">
+                        <span className="text-gray-600">
+                          Base {formatCurrency(baseAmountNum)} + Items {formatCurrency(lineItemsTotal)}
+                        </span>
+                        <span className="font-semibold text-gray-900">
+                          Total: {formatCurrency(grandTotal)}
+                        </span>
+                      </div>
+                    ) : null}
+                  </div>
+                ) : null}
 
                 <ModalField label="Description">
                   <textarea

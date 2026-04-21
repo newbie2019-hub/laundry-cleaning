@@ -13,7 +13,7 @@ import {
   X,
 } from 'lucide-react'
 import { MonthPicker } from '../../../components/month-picker'
-import { formatCurrency } from '../../../lib/format'
+import { formatCurrency, formatTimeOfDay } from '../../../lib/format'
 import {
   deleteInventoryMovement,
   listInventoryItems,
@@ -478,7 +478,12 @@ export function InventoryMovementsPage() {
                   {displayed.map((mov) => (
                     <tr key={mov.id}>
                       {columns.date && (
-                        <td className="px-4 py-3 tabular-nums text-[var(--muted)] whitespace-nowrap">{mov.movementDate}</td>
+                        <td className="px-4 py-3 text-[var(--muted)] whitespace-nowrap">
+                          <div className="tabular-nums">{mov.movementDate}</div>
+                          {mov.createdAt ? (
+                            <div className="text-[10px]">Recorded {formatTimeOfDay(mov.createdAt)}</div>
+                          ) : null}
+                        </td>
                       )}
                       {columns.item && (
                         <td className="px-4 py-3 font-medium max-w-[12rem] truncate">{mov.itemName}</td>
