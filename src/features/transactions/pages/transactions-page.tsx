@@ -2,6 +2,7 @@ import type { FormEvent, KeyboardEvent as ReactKeyboardEvent, ReactNode } from '
 import { useCallback, useEffect, useId, useMemo, useRef, useState } from 'react'
 import { endOfMonth, format, subDays } from 'date-fns'
 import {
+  AlertTriangle,
   ArrowDown,
   ArrowUp,
   ArrowUpDown,
@@ -35,6 +36,7 @@ import {
   listInventoryMovementsByTransaction,
   listStaff,
   listTransactionLineItems,
+  listTransactionTemplates,
   listTransactionTypes,
   listTransactions,
   saveTransaction,
@@ -45,6 +47,7 @@ import {
   type LedgerTransaction,
   type LoyaltySettings,
   type Staff,
+  type TransactionTemplateSummary,
   type TransactionType,
 } from '../../../lib/db/repository'
 import { useAuth } from '../../auth/use-auth'
@@ -294,6 +297,8 @@ export function TransactionsPage() {
   const canManageInventory = hasPermission('manage_inventory')
 
   const templateLoadGenRef = useRef(0)
+  const [formTransactionTemplates, setFormTransactionTemplates] = useState<TransactionTemplateSummary[]>([])
+  const [formInventoryForTemplates, setFormInventoryForTemplates] = useState<InventoryItem[]>([])
   const [formInventoryOptions, setFormInventoryOptions] = useState<InventoryItem[]>([])
   const [formTemplatePickerId, setFormTemplatePickerId] = useState('')
   const [formLineItems, setFormLineItems] = useState<
@@ -315,9 +320,15 @@ export function TransactionsPage() {
       missingItem?: boolean
       quantityStr: string
       unitLabel: string
+      unitPrice: number
       currentStock: number
     }>
   >([])
+
+  const templatesForPicker = useMemo(() => {
+    const pick = formTemplatePickerId ? Number(formTemplatePickerId) : Number.NaN
+    return formTransactionTemplates.filter((t) => t.isActive || t.id === pick)
+  }, [formTransactionTemplates, formTemplatePickerId])
 
   const filteredCategories = useMemo(
     () =>
@@ -673,6 +684,28 @@ export function TransactionsPage() {
   }, [isModalOpen])
 
   useEffect(() => {
+    if (!isModalOpen || !canManageInventory) return
+    let cancelled = false
+    void (async () => {
+      try {
+        const [tpls, inv] = await Promise.all([
+          listTransactionTemplates(),
+          listInventoryItems({ includeInactive: true }),
+        ])
+        if (!cancelled) {
+          setFormTransactionTemplates(tpls)
+          setFormInventoryForTemplates(inv)
+        }
+      } catch {
+        /* ignore */
+      }
+    })()
+    return () => {
+      cancelled = true
+    }
+  }, [canManageInventory, isModalOpen])
+
+  useEffect(() => {
     if (!isSaleType) {
       clearTemplateSection()
     }
@@ -708,6 +741,68 @@ export function TransactionsPage() {
     templateLoadGenRef.current += 1
     setIsModalOpen(false)
     resetForm()
+  }
+
+  function handleTemplatePickerChange(value: string) {
+    setFormTemplatePickerId(value)
+    if (!value) {
+      setFormTemplatePreviewLines([])
+      return
+    }
+    const tid = Number(value)
+    const tpl = formTransactionTemplates.find((t) => t.id === tid)
+    if (!tpl) return
+    const stockById = new Map(formInventoryForTemplates.map((i) => [i.id, i]))
+    const lines: Array<{
+      inventoryItemId: number
+      isItemActive: boolean
+      itemName: string
+      key: string
+      lowStockThreshold: number
+      missingItem?: boolean
+      quantityStr: string
+      unitLabel: string
+      unitPrice: number
+      currentStock: number
+    }> = []
+    for (const it of tpl.items) {
+      const inv = stockById.get(it.inventoryItemId)
+      const key = `${tpl.id}-${it.inventoryItemId}-${Math.random().toString(36).slice(2, 9)}`
+      if (!inv) {
+        lines.push({
+          currentStock: 0,
+          inventoryItemId: it.inventoryItemId,
+          isItemActive: false,
+          itemName: it.itemName,
+          key,
+          lowStockThreshold: 0,
+          missingItem: true,
+          quantityStr: String(it.quantity),
+          unitLabel: it.unitLabel,
+          unitPrice: 0,
+        })
+        continue
+      }
+      lines.push({
+        currentStock: inv.currentStock,
+        inventoryItemId: it.inventoryItemId,
+        isItemActive: inv.isActive,
+        itemName: inv.name,
+        key,
+        lowStockThreshold: inv.lowStockThreshold,
+        missingItem: false,
+        quantityStr: String(it.quantity),
+        unitLabel: inv.unitLabel,
+        unitPrice: Number.isFinite(inv.costPerUnit) && inv.costPerUnit > 0 ? inv.costPerUnit : 0,
+      })
+    }
+    setFormTemplatePreviewLines(lines)
+  }
+
+  function updateTemplatePreviewQuantity(key: string, quantityStr: string) {
+    setFormTemplatePreviewLines((prev) =>
+      prev.map((l) => (l.key === key ? { ...l, quantityStr } : l)),
+    )
   }
 
   async function handleSubmit(event: FormEvent<HTMLFormElement>) {
@@ -923,59 +1018,68 @@ export function TransactionsPage() {
 
     void (async () => {
       try {
-        const items = await listTransactionLineItems(transaction.id)
+        const isSale = transaction.transactionTypeCode === 'SALE'
+        const [items, tmplResult] = await Promise.all([
+          listTransactionLineItems(transaction.id),
+          isSale && canManageInventory
+            ? Promise.all([
+                listInventoryMovementsByTransaction(transaction.id),
+                listInventoryItems({ includeInactive: true }),
+              ])
+            : Promise.resolve(null as null | [Awaited<ReturnType<typeof listInventoryMovementsByTransaction>>, InventoryItem[]]),
+        ])
         if (gen !== templateLoadGenRef.current) return
-        if (items.length === 0) return
-        const sum = items.reduce((acc, li) => acc + (Number.isFinite(li.price) ? li.price : 0), 0)
-        const base = Math.max(0, transaction.amount - sum)
-        setAmount(String(Math.round(base * 100) / 100))
-        setFormLineItems(
-          items.map((li) => ({
-            key: `edit-li-${li.id}-${Math.random().toString(36).slice(2, 7)}`,
-            inventoryItemId: li.inventoryItemId,
-            label: li.label,
-            priceStr: String(li.price),
-          })),
-        )
+
+        if (items.length > 0) {
+          const sum = items.reduce(
+            (acc, li) => acc + (Number.isFinite(li.price) ? li.price : 0),
+            0,
+          )
+          const base = Math.max(0, transaction.amount - sum)
+          setAmount(String(Math.round(base * 100) / 100))
+          setFormLineItems(
+            items.map((li) => ({
+              key: `edit-li-${li.id}-${Math.random().toString(36).slice(2, 7)}`,
+              inventoryItemId: li.inventoryItemId,
+              label: li.label,
+              priceStr: String(li.price),
+            })),
+          )
+        }
+
+        if (tmplResult) {
+          const [movs, invItems] = tmplResult
+          const tmplMovs = movs.filter((m) => m.movementType === 'OUT' && m.templateId != null)
+          if (tmplMovs.length > 0) {
+            const tid = tmplMovs[0]!.templateId ?? null
+            if (tid != null) setFormTemplatePickerId(String(tid))
+            const itemById = new Map(invItems.map((i) => [i.id, i]))
+            setFormTemplatePreviewLines(
+              tmplMovs.map((m) => {
+                const inv = itemById.get(m.itemId)
+                const price = inv && Number.isFinite(inv.costPerUnit) && inv.costPerUnit > 0
+                  ? inv.costPerUnit
+                  : 0
+                return {
+                  currentStock: inv?.currentStock ?? 0,
+                  inventoryItemId: m.itemId,
+                  isItemActive: inv?.isActive ?? false,
+                  itemName: inv?.name ?? m.itemName,
+                  key: `edit-${m.id}-${Math.random().toString(36).slice(2, 9)}`,
+                  lowStockThreshold: inv?.lowStockThreshold ?? 0,
+                  missingItem: inv == null,
+                  quantityStr: String(m.quantity),
+                  unitLabel: inv?.unitLabel ?? m.unitLabel,
+                  unitPrice: price,
+                }
+              }),
+            )
+          }
+        }
       } catch {
         /* ignore */
       }
     })()
-
-    if (transaction.transactionTypeCode === 'SALE' && canManageInventory) {
-      void (async () => {
-        try {
-          const [movs, items] = await Promise.all([
-            listInventoryMovementsByTransaction(transaction.id),
-            listInventoryItems({ includeInactive: true }),
-          ])
-          if (gen !== templateLoadGenRef.current) return
-          const tmplMovs = movs.filter((m) => m.movementType === 'OUT' && m.templateId != null)
-          if (tmplMovs.length === 0) return
-          const tid = tmplMovs[0]!.templateId
-          if (tid != null) setFormTemplatePickerId(String(tid))
-          const itemById = new Map(items.map((i) => [i.id, i]))
-          setFormTemplatePreviewLines(
-            tmplMovs.map((m) => {
-              const inv = itemById.get(m.itemId)
-              return {
-                currentStock: inv?.currentStock ?? 0,
-                inventoryItemId: m.itemId,
-                isItemActive: inv?.isActive ?? false,
-                itemName: inv?.name ?? m.itemName,
-                key: `edit-${m.id}-${Math.random().toString(36).slice(2, 9)}`,
-                lowStockThreshold: inv?.lowStockThreshold ?? 0,
-                missingItem: inv == null,
-                quantityStr: String(m.quantity),
-                unitLabel: inv?.unitLabel ?? m.unitLabel,
-              }
-            }),
-          )
-        } catch {
-          /* ignore */
-        }
-      })()
-    }
   }
 
   function openFilter() {
@@ -1676,6 +1780,104 @@ export function TransactionsPage() {
                       ))}
                     </select>
                   </ModalField>
+                ) : null}
+
+                {isSaleType && canManageInventory ? (
+                  <div className="space-y-2 rounded-lg border border-gray-200 bg-gray-50/80 p-3">
+                    <div className="flex flex-wrap items-end justify-between gap-2">
+                      <ModalField label="Sale template (optional)">
+                        <select
+                          className={modalSelectClass}
+                          onChange={(event) => handleTemplatePickerChange(event.target.value)}
+                          value={formTemplatePickerId}
+                        >
+                          <option value="">None</option>
+                          {templatesForPicker.map((t) => (
+                            <option key={t.id} value={t.id}>
+                              {t.name}
+                              {!t.isActive ? ' (inactive)' : ''}
+                            </option>
+                          ))}
+                        </select>
+                      </ModalField>
+                      {formTemplatePreviewLines.length > 0 ? (
+                        <button
+                          className="mb-0.5 shrink-0 text-xs font-medium text-gray-600 underline decoration-gray-400 hover:text-gray-900"
+                          onClick={() => {
+                            clearTemplateSection()
+                          }}
+                          type="button"
+                        >
+                          Clear template
+                        </button>
+                      ) : null}
+                    </div>
+                    <p className="text-xs text-gray-500">
+                      Applies stock-out movements when you save. Template items do not change the
+                      transaction amount. Manage templates under{' '}
+                      <span className="font-medium text-gray-700">Inventory → Sale templates</span>.
+                    </p>
+                    {formTemplatePreviewLines.length > 0 ? (
+                      <div className="mt-2 overflow-x-auto rounded-md border border-gray-200 bg-white">
+                        <table className="w-full min-w-[280px] text-xs">
+                          <thead>
+                            <tr className="border-b border-gray-200 bg-gray-50 text-left text-[10px] font-semibold uppercase tracking-wide text-gray-500">
+                              <th className="px-2 py-1.5">Item</th>
+                              <th className="px-2 py-1.5 text-right">Stock</th>
+                              <th className="px-2 py-1.5 text-right">Qty out</th>
+                            </tr>
+                          </thead>
+                          <tbody className="divide-y divide-gray-100">
+                            {formTemplatePreviewLines.map((line) => {
+                              const q = Number(line.quantityStr.trim())
+                              const projected = Number.isFinite(q) ? line.currentStock - q : line.currentStock
+                              const lowWarn =
+                                !line.missingItem &&
+                                Number.isFinite(q) &&
+                                q > 0 &&
+                                (projected < 0 || projected <= line.lowStockThreshold)
+                              return (
+                                <tr key={line.key}>
+                                  <td className="px-2 py-1.5">
+                                    <div className="font-medium text-gray-900">{line.itemName}</div>
+                                    <div className="text-[10px] text-gray-500">{line.unitLabel}</div>
+                                    {line.missingItem ? (
+                                      <div className="mt-0.5 flex items-center gap-1 text-amber-700">
+                                        <AlertTriangle className="h-3 w-3 shrink-0" />
+                                        Item missing — skipped on save
+                                      </div>
+                                    ) : !line.isItemActive ? (
+                                      <div className="mt-0.5 flex items-center gap-1 text-amber-700">
+                                        <AlertTriangle className="h-3 w-3 shrink-0" />
+                                        Inactive item
+                                      </div>
+                                    ) : null}
+                                  </td>
+                                  <td className="px-2 py-1.5 text-right tabular-nums text-gray-600">
+                                    {line.missingItem ? '—' : line.currentStock}
+                                  </td>
+                                  <td className="px-2 py-1.5 text-right">
+                                    <input
+                                      className="w-20 rounded border border-gray-300 bg-white px-1.5 py-1 text-right tabular-nums text-gray-900 outline-none focus:border-blue-500"
+                                      disabled={line.missingItem}
+                                      min="0"
+                                      onChange={(e) => updateTemplatePreviewQuantity(line.key, e.target.value)}
+                                      step="any"
+                                      type="number"
+                                      value={line.quantityStr}
+                                    />
+                                    {lowWarn ? (
+                                      <div className="mt-0.5 text-[10px] font-medium text-amber-700">Low / over stock</div>
+                                    ) : null}
+                                  </td>
+                                </tr>
+                              )
+                            })}
+                          </tbody>
+                        </table>
+                      </div>
+                    ) : null}
+                  </div>
                 ) : null}
 
                 {showCustomerField ? (
