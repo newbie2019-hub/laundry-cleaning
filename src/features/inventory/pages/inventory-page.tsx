@@ -22,27 +22,16 @@ import {
 } from 'lucide-react'
 import { formatCurrency } from '../../../lib/format'
 import {
+  listInventoryCategories,
   listInventoryItems,
   saveInventoryItem,
   saveInventoryMovement,
+  type InventoryCategory,
   type InventoryItem,
 } from '../../../lib/db/repository'
 import { useAuth } from '../../auth/use-auth'
 import { MaintenanceModal } from '../components/maintenance-modal'
 import { QuickMovementModal } from '../components/quick-movement-modal'
-
-const ITEM_CATEGORIES = [
-  { value: 'consumable', label: 'Consumable' },
-  { value: 'detergent_chemicals', label: 'Detergent & Chemicals' },
-  { value: 'packaging', label: 'Packaging' },
-  { value: 'cleaning_materials', label: 'Cleaning Materials' },
-  { value: 'equipment', label: 'Equipment' },
-  { value: 'other', label: 'Other' },
-] as const
-
-const CATEGORY_LABELS: Record<string, string> = Object.fromEntries(
-  ITEM_CATEGORIES.map((c) => [c.value, c.label]),
-)
 
 const CATEGORY_COLORS: Record<string, string> = {
   consumable: 'bg-blue-500/15 text-blue-600',
@@ -147,15 +136,15 @@ function formatQty(qty: number, unitLabel?: string) {
   return unitLabel ? `${formatted} ${unitLabel}` : formatted
 }
 
-function categoryBadge(category: string) {
+function categoryBadge(categoryCode: string, categoryLabel: string) {
   return (
     <span
       className={[
         'inline-flex items-center rounded-md px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide whitespace-nowrap',
-        CATEGORY_COLORS[category] ?? 'bg-gray-500/15 text-gray-600',
+        CATEGORY_COLORS[categoryCode] ?? 'bg-gray-500/15 text-gray-600',
       ].join(' ')}
     >
-      {CATEGORY_LABELS[category] ?? category}
+      {categoryLabel}
     </span>
   )
 }
@@ -180,6 +169,7 @@ export function InventoryPage() {
   const navigate = useNavigate()
 
   const [items, setItems] = useState<InventoryItem[]>([])
+  const [categories, setCategories] = useState<InventoryCategory[]>([])
   const [loading, setLoading] = useState(false)
   const [search, setSearch] = useState('')
   const [categoryFilter, setCategoryFilter] = useState('')
@@ -197,6 +187,7 @@ export function InventoryPage() {
   const [editingId, setEditingId] = useState<number | null>(null)
   const [formName, setFormName] = useState('')
   const [formDescription, setFormDescription] = useState('')
+  const [formCategoryId, setFormCategoryId] = useState<number | null>(null)
   const [formCategory, setFormCategory] = useState('consumable')
   const [formUnitType, setFormUnitType] = useState('per_pc')
   const [formUnitLabel, setFormUnitLabel] = useState('pcs')
@@ -212,6 +203,15 @@ export function InventoryPage() {
 
   const [quickMov, setQuickMov] = useState<{ item: InventoryItem; type: 'IN' | 'OUT' } | null>(null)
   const [serviceItem, setServiceItem] = useState<InventoryItem | null>(null)
+
+  const loadCategories = useCallback(async () => {
+    try {
+      const data = await listInventoryCategories(true)
+      setCategories(data)
+    } catch {
+      setCategories([])
+    }
+  }, [])
 
   const loadItems = useCallback(async () => {
     setLoading(true)
@@ -230,8 +230,16 @@ export function InventoryPage() {
   }, [categoryFilter, showInactive, stockFilter])
 
   useEffect(() => {
+    void loadCategories()
+  }, [loadCategories])
+
+  useEffect(() => {
     loadItems()
   }, [loadItems])
+
+  const categoryByCode = useMemo(() => new Map(categories.map((category) => [category.code, category])), [categories])
+  const activeCategories = useMemo(() => categories.filter((category) => category.isActive), [categories])
+  const defaultCategory = activeCategories[0] ?? categoryByCode.get('other') ?? categories[0] ?? null
 
   const displayed = useMemo(() => {
     const q = search.trim().toLowerCase()
@@ -249,7 +257,7 @@ export function InventoryPage() {
         case 'name':
           return item.name.toLowerCase()
         case 'category':
-          return (CATEGORY_LABELS[item.category] ?? item.category).toLowerCase()
+          return item.categoryLabel.toLowerCase()
         case 'currentStock':
           return item.currentStock
         case 'costPerUnit':
@@ -257,7 +265,7 @@ export function InventoryPage() {
         case 'supplier':
           return (item.supplier || '').toLowerCase()
         case 'lastRestocked': {
-          const raw = item.category === 'equipment' ? item.lastMaintenanceDate : item.lastRestockedDate
+          const raw = item.categoryCode === 'equipment' ? item.lastMaintenanceDate : item.lastRestockedDate
           return raw || ''
         }
         default:
@@ -286,7 +294,7 @@ export function InventoryPage() {
   const totalItems = items.length
   const lowStockCount = useMemo(() => items.filter((i) => i.isLowStock).length, [items])
   const totalValue = useMemo(() => items.reduce((s, i) => s + i.stockValue, 0), [items])
-  const equipmentItems = useMemo(() => items.filter((i) => i.category === 'equipment'), [items])
+  const equipmentItems = useMemo(() => items.filter((i) => i.categoryCode === 'equipment'), [items])
   const equipmentOperationalCount = useMemo(
     () => equipmentItems.filter((i) => i.status === 'operational' || !i.status).length,
     [equipmentItems],
@@ -300,7 +308,8 @@ export function InventoryPage() {
     setEditingId(null)
     setFormName('')
     setFormDescription('')
-    setFormCategory('consumable')
+    setFormCategory(defaultCategory?.code ?? 'other')
+    setFormCategoryId(defaultCategory?.id ?? null)
     setFormUnitType('per_pc')
     setFormUnitLabel('pcs')
     setFormCostPerUnit('')
@@ -318,7 +327,8 @@ export function InventoryPage() {
     setEditingId(item.id)
     setFormName(item.name)
     setFormDescription(item.description)
-    setFormCategory(item.category)
+    setFormCategory(item.categoryCode)
+    setFormCategoryId(item.categoryId)
     setFormUnitType(item.unitType)
     setFormUnitLabel(item.unitLabel)
     setFormCostPerUnit(String(item.costPerUnit))
@@ -339,6 +349,7 @@ export function InventoryPage() {
 
   function handleCategoryChange(value: string) {
     setFormCategory(value)
+    setFormCategoryId(categoryByCode.get(value)?.id ?? null)
     if (value === 'equipment') {
       setFormUnitType('per_pc')
       setFormUnitLabel('pcs')
@@ -361,6 +372,7 @@ export function InventoryPage() {
       const itemId = await saveInventoryItem(
         {
           category: formCategory,
+          categoryId: formCategoryId,
           costPerUnit: cost,
           description: formDescription.trim(),
           isActive: formIsActive,
@@ -616,7 +628,7 @@ export function InventoryPage() {
                       <td className="px-4 py-3">
                         <div className="flex items-center gap-2">
                           <span className="font-medium">{item.name}</span>
-                          {item.category === 'equipment' && item.status && statusBadge(item.status)}
+                          {item.categoryCode === 'equipment' && item.status && statusBadge(item.status)}
                         </div>
                         {item.description && (
                           <p className="mt-0.5 text-xs text-[var(--muted)] truncate max-w-xs">{item.description}</p>
@@ -625,7 +637,9 @@ export function InventoryPage() {
                           <span className="mt-0.5 inline-block text-[10px] text-[var(--muted)]">Inactive</span>
                         )}
                       </td>
-                      {columns.category && <td className="px-4 py-3">{categoryBadge(item.category)}</td>}
+                      {columns.category && (
+                        <td className="px-4 py-3">{categoryBadge(item.categoryCode, item.categoryLabel)}</td>
+                      )}
                       {columns.stock && (
                         <td className="px-4 py-3 text-right">
                           <div className={['tabular-nums font-medium whitespace-nowrap', item.isLowStock ? 'text-red-500' : ''].join(' ')}>
@@ -654,7 +668,7 @@ export function InventoryPage() {
                       )}
                       {columns.lastRestocked && (
                         <td className="px-4 py-3 text-[var(--muted)] tabular-nums">
-                          {item.category === 'equipment'
+                          {item.categoryCode === 'equipment'
                             ? item.lastMaintenanceDate || '—'
                             : item.lastRestockedDate || '—'}
                         </td>
@@ -663,7 +677,7 @@ export function InventoryPage() {
                         <div className="flex items-center gap-1 justify-end">
                           {canManage && (
                             <>
-                              {item.category === 'equipment' ? (
+                              {item.categoryCode === 'equipment' ? (
                                 <button
                                   aria-label="Service"
                                   className="rounded p-1.5 text-purple-500 transition hover:bg-purple-500/10"
@@ -744,9 +758,14 @@ export function InventoryPage() {
                 </ModalField>
                 <ModalField label="Category" required>
                   <select className={selectClass} onChange={(e) => handleCategoryChange(e.target.value)} value={formCategory}>
-                    {ITEM_CATEGORIES.map((c) => (
-                      <option key={c.value} value={c.value}>{c.label}</option>
-                    ))}
+                    {categories
+                      .filter((category) => category.code === formCategory || category.isActive)
+                      .map((category) => (
+                        <option key={category.id} value={category.code}>
+                          {category.label}
+                          {!category.isActive ? ' (inactive)' : ''}
+                        </option>
+                      ))}
                   </select>
                 </ModalField>
               </div>
@@ -880,8 +899,10 @@ export function InventoryPage() {
                   value={categoryFilter}
                 >
                   <option value="">All Categories</option>
-                  {ITEM_CATEGORIES.map((c) => (
-                    <option key={c.value} value={c.value}>{c.label}</option>
+                  {activeCategories.map((category) => (
+                    <option key={category.id} value={category.code}>
+                      {category.label}
+                    </option>
                   ))}
                 </select>
               </div>

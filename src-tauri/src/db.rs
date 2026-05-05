@@ -670,6 +670,56 @@ fn build_migrations() -> Vec<Migration> {
       "#,
       kind: MigrationKind::Up,
     },
+    Migration {
+      version: 20,
+      description: "inventory_categories_master_and_item_category_id",
+      sql: r#"
+        CREATE TABLE IF NOT EXISTS inventory_categories (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          code TEXT NOT NULL UNIQUE,
+          label TEXT NOT NULL,
+          is_system INTEGER NOT NULL DEFAULT 0,
+          is_active INTEGER NOT NULL DEFAULT 1,
+          sort_order INTEGER NOT NULL DEFAULT 0,
+          created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+          updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+        );
+
+        INSERT OR IGNORE INTO inventory_categories (code, label, is_system, is_active, sort_order)
+        VALUES
+          ('consumable', 'Consumable', 1, 1, 0),
+          ('detergent_chemicals', 'Detergent & Chemicals', 1, 1, 1),
+          ('packaging', 'Packaging', 1, 1, 2),
+          ('cleaning_materials', 'Cleaning Materials', 1, 1, 3),
+          ('equipment', 'Equipment', 1, 1, 4),
+          ('other', 'Other', 1, 1, 99);
+
+        ALTER TABLE inventory_items
+          ADD COLUMN category_id INTEGER REFERENCES inventory_categories(id);
+
+        CREATE INDEX IF NOT EXISTS idx_inventory_items_category_id
+          ON inventory_items(category_id);
+
+        UPDATE inventory_items
+        SET category_id = (
+          SELECT c.id
+          FROM inventory_categories c
+          WHERE c.code = inventory_items.category
+          LIMIT 1
+        )
+        WHERE category_id IS NULL;
+
+        UPDATE inventory_items
+        SET category_id = (
+          SELECT c.id
+          FROM inventory_categories c
+          WHERE c.code = 'other'
+          LIMIT 1
+        )
+        WHERE category_id IS NULL;
+      "#,
+      kind: MigrationKind::Up,
+    },
   ]
 }
 

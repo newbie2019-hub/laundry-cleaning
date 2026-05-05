@@ -1,11 +1,10 @@
 import type Database from '@tauri-apps/plugin-sql'
-import { differenceInCalendarDays, format, subDays, subMonths } from 'date-fns'
+import { differenceInCalendarDays, format, isValid, parseISO, subDays, subMonths } from 'date-fns'
 import {
   type AttendanceStatus,
   computeDayPay,
   defaultMultiplierForStatus,
   isCutoffDay,
-  periodStartForWeekEnding,
   roundMoney,
 } from '../../features/staff/lib/attendance'
 import { hashPassword } from '../security/password'
@@ -24,6 +23,7 @@ export type Category = {
   isLoadable: boolean
   isSeeded: boolean
   label: string
+  relatedRecordsCount: number
   transactionTypeCode: string
   transactionTypeId: number
 }
@@ -246,6 +246,15 @@ function toNumber(value: unknown) {
   return Number(value ?? 0)
 }
 
+function normalizeInventoryCategoryCode(value: string) {
+  const normalized = value
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '_')
+    .replace(/^_+|_+$/g, '')
+  return normalized || 'other'
+}
+
 function getPreviousMonthKey(monthKey: string) {
   return format(subMonths(new Date(`${monthKey}-01T00:00:00`), 1), 'yyyy-MM')
 }
@@ -461,6 +470,7 @@ export async function listCategories(includeArchived = false) {
       isLoadable: number
       isSeeded: number
       label: string
+      relatedRecordsCount: number
       transactionTypeCode: string
       transactionTypeId: number
     }>
@@ -473,10 +483,15 @@ export async function listCategories(includeArchived = false) {
         categories.is_seeded AS isSeeded,
         categories.is_archived AS isArchived,
         categories.is_loadable AS isLoadable,
+        COUNT(transactions.id) AS relatedRecordsCount,
         transaction_types.code AS transactionTypeCode
       FROM categories
       JOIN transaction_types ON transaction_types.id = categories.transaction_type_id
+      LEFT JOIN transactions
+        ON transactions.category_id = categories.id
+       AND transactions.transaction_type_id = categories.transaction_type_id
       ${includeArchived ? '' : 'WHERE categories.is_archived = 0'}
+      GROUP BY categories.id, transaction_types.code
       ORDER BY transaction_types.id, categories.label
     `,
   )
@@ -486,6 +501,7 @@ export async function listCategories(includeArchived = false) {
     isLoadable: Boolean(row.isLoadable),
     isSeeded: Boolean(row.isSeeded),
     label: row.label,
+    relatedRecordsCount: toNumber(row.relatedRecordsCount),
     transactionTypeCode: row.transactionTypeCode,
     transactionTypeId: row.transactionTypeId,
   }))
@@ -1758,6 +1774,96 @@ export async function saveCategory(input: {
   )
 }
 
+export async function deleteCategory(id: number, transferToCategoryId?: number): Promise<void> {
+  const database = await getDatabase()
+  const sourceRows = await database.select<
+    Array<{ id: number; isSeeded: number; transactionTypeId: number }>
+  >(
+    `
+      SELECT
+        id,
+        is_seeded AS isSeeded,
+        transaction_type_id AS transactionTypeId
+      FROM categories
+      WHERE id = $1
+      LIMIT 1
+    `,
+    [id],
+  )
+  const source = sourceRows[0]
+  if (!source) {
+    throw new Error('Category not found.')
+  }
+
+  const usageRows = await database.select<CountRow[]>(
+    `
+      SELECT COUNT(*) AS count
+      FROM transactions
+      WHERE category_id = $1
+    `,
+    [id],
+  )
+  const usageCount = toNumber(usageRows[0]?.count)
+
+  if (usageCount > 0 && transferToCategoryId == null) {
+    throw new Error('This category has related transactions. Select a category to transfer data.')
+  }
+
+  if (transferToCategoryId != null) {
+    if (transferToCategoryId === id) {
+      throw new Error('Transfer category must be different from the category being deleted.')
+    }
+    const targetRows = await database.select<Array<{ id: number; transactionTypeId: number }>>(
+      `
+        SELECT
+          id,
+          transaction_type_id AS transactionTypeId
+        FROM categories
+        WHERE id = $1
+          AND is_archived = 0
+        LIMIT 1
+      `,
+      [transferToCategoryId],
+    )
+    const target = targetRows[0]
+    if (!target) {
+      throw new Error('Transfer category not found.')
+    }
+    if (target.transactionTypeId !== source.transactionTypeId) {
+      throw new Error('Transfer category must belong to the same transaction type.')
+    }
+    await database.execute(
+      `
+        UPDATE transactions
+        SET category_id = $1
+        WHERE category_id = $2
+      `,
+      [transferToCategoryId, id],
+    )
+  }
+
+  if (Boolean(source.isSeeded)) {
+    await database.execute(
+      `
+        UPDATE categories
+        SET is_archived = 1
+        WHERE id = $1
+      `,
+      [id],
+    )
+    return
+  }
+
+  await database.execute(
+    `
+      DELETE FROM categories
+      WHERE id = $1
+        AND is_seeded = 0
+    `,
+    [id],
+  )
+}
+
 export async function listIncomeShareMonth(monthKey: string) {
   const database = await getDatabase()
   await ensureIncomeShareMonth(database, monthKey)
@@ -3001,7 +3107,27 @@ export async function deleteTransactionTemplate(id: number): Promise<void> {
 
 // ─── Inventory ────────────────────────────────────────────────────────────────
 
+export type InventoryCategory = {
+  id: number
+  code: string
+  isActive: boolean
+  isSystem: boolean
+  label: string
+  relatedRecordsCount: number
+  sortOrder: number
+}
+
+export type InventoryCategoryDraft = {
+  code: string
+  isActive: boolean
+  label: string
+  sortOrder: number
+}
+
 export type InventoryItem = {
+  categoryCode: string
+  categoryId: number | null
+  categoryLabel: string
   category: string
   costPerUnit: number
   currentStock: number
@@ -3022,6 +3148,7 @@ export type InventoryItem = {
 
 export type InventoryItemDraft = {
   category: string
+  categoryId?: number | null
   costPerUnit: number
   description: string
   isActive: boolean
@@ -3063,7 +3190,9 @@ export type InventoryMovementDraft = {
 }
 
 type InventoryItemRow = {
-  category: string
+  categoryCode: string
+  categoryId: number | null
+  categoryLabel: string
   costPerUnit: number
   currentStock: number
   description: string
@@ -3077,6 +3206,215 @@ type InventoryItemRow = {
   supplier: string
   unitLabel: string
   unitType: string
+}
+
+type InventoryCategoryRow = {
+  code: string
+  id: number
+  isActive: number
+  isSystem: number
+  label: string
+  relatedRecordsCount: number
+  sortOrder: number
+}
+
+async function resolveInventoryCategory(
+  database: Database,
+  categoryId?: number | null,
+  categoryCode?: string,
+): Promise<{ code: string; id: number | null }> {
+  if (categoryId != null) {
+    const byId = await database.select<Array<{ code: string; id: number }>>(
+      `
+        SELECT id, code
+        FROM inventory_categories
+        WHERE id = $1
+        LIMIT 1
+      `,
+      [categoryId],
+    )
+    if (byId[0]) {
+      return { code: byId[0].code, id: byId[0].id }
+    }
+  }
+
+  const normalizedCode = normalizeInventoryCategoryCode(categoryCode ?? '')
+  const byCode = await database.select<Array<{ code: string; id: number }>>(
+    `
+      SELECT id, code
+      FROM inventory_categories
+      WHERE code = $1
+      LIMIT 1
+    `,
+    [normalizedCode],
+  )
+  if (byCode[0]) {
+    return { code: byCode[0].code, id: byCode[0].id }
+  }
+
+  const other = await database.select<Array<{ code: string; id: number }>>(
+    `
+      SELECT id, code
+      FROM inventory_categories
+      WHERE code = 'other'
+      LIMIT 1
+    `,
+  )
+  if (other[0]) {
+    return { code: other[0].code, id: other[0].id }
+  }
+
+  return { code: normalizedCode || 'other', id: categoryId ?? null }
+}
+
+export async function listInventoryCategories(includeInactive = false): Promise<InventoryCategory[]> {
+  const database = await getDatabase()
+  const rows = await database.select<InventoryCategoryRow[]>(
+    `
+      SELECT
+        c.id,
+        c.code,
+        c.label,
+        c.is_system AS isSystem,
+        c.is_active AS isActive,
+        c.sort_order AS sortOrder,
+        COUNT(i.id) AS relatedRecordsCount
+      FROM inventory_categories c
+      LEFT JOIN inventory_items i
+        ON i.category_id = c.id
+        OR (i.category_id IS NULL AND i.category = c.code)
+      ${includeInactive ? '' : 'WHERE c.is_active = 1'}
+      GROUP BY c.id
+      ORDER BY c.sort_order, c.label
+    `,
+  )
+  return rows.map((row) => ({
+    id: row.id,
+    code: row.code,
+    isActive: Boolean(row.isActive),
+    isSystem: Boolean(row.isSystem),
+    label: row.label,
+    relatedRecordsCount: toNumber(row.relatedRecordsCount),
+    sortOrder: toNumber(row.sortOrder),
+  }))
+}
+
+export async function saveInventoryCategory(input: InventoryCategoryDraft, id?: number): Promise<number> {
+  const database = await getDatabase()
+  const code = normalizeInventoryCategoryCode(input.code)
+  const label = input.label.trim()
+  const sortOrder = Math.max(0, Math.floor(toNumber(input.sortOrder)))
+  const isActive = input.isActive ? 1 : 0
+
+  if (id) {
+    await database.execute(
+      `
+        UPDATE inventory_categories
+        SET code = $1,
+            label = $2,
+            is_active = $3,
+            sort_order = $4,
+            updated_at = CURRENT_TIMESTAMP
+        WHERE id = $5
+      `,
+      [code, label, isActive, sortOrder, id],
+    )
+    return id
+  }
+
+  const result = await database.execute(
+    `
+      INSERT INTO inventory_categories (code, label, is_system, is_active, sort_order)
+      VALUES ($1, $2, 0, $3, $4)
+    `,
+    [code, label, isActive, sortOrder],
+  )
+  return Number(result.lastInsertId)
+}
+
+export async function deleteInventoryCategory(id: number, transferToCategoryId?: number): Promise<void> {
+  const database = await getDatabase()
+  const sourceRows = await database.select<Array<{ code: string; isSystem: number }>>(
+    `
+      SELECT code, is_system AS isSystem
+      FROM inventory_categories
+      WHERE id = $1
+      LIMIT 1
+    `,
+    [id],
+  )
+  const source = sourceRows[0]
+  if (!source) {
+    throw new Error('Inventory category not found.')
+  }
+
+  const refs = await database.select<CountRow[]>(
+    `
+      SELECT COUNT(*) AS count
+      FROM inventory_items
+      WHERE category_id = $1
+        OR (
+          category_id IS NULL
+          AND category = (
+            SELECT code
+            FROM inventory_categories
+            WHERE id = $1
+            LIMIT 1
+          )
+        )
+    `,
+    [id],
+  )
+  const hasReferences = toNumber(refs[0]?.count) > 0
+
+  if (hasReferences && transferToCategoryId == null) {
+    throw new Error('This category has related inventory items. Select another category to transfer data.')
+  }
+
+  if (transferToCategoryId != null) {
+    if (transferToCategoryId === id) {
+      throw new Error('Transfer category must be different from the category being deleted.')
+    }
+    const transfer = await resolveInventoryCategory(database, transferToCategoryId)
+    if (transfer.id == null) {
+      throw new Error('Transfer category not found.')
+    }
+    await database.execute(
+      `
+        UPDATE inventory_items
+        SET category_id = $1,
+            category = $2,
+            updated_at = CURRENT_TIMESTAMP
+        WHERE category_id = $3
+           OR (category_id IS NULL AND category = $4)
+      `,
+      [transfer.id, transfer.code, id, source.code],
+    )
+  }
+
+  const isSystem = Boolean(source.isSystem)
+
+  if (isSystem) {
+    await database.execute(
+      `
+        UPDATE inventory_categories
+        SET is_active = 0,
+            updated_at = CURRENT_TIMESTAMP
+        WHERE id = $1
+      `,
+      [id],
+    )
+    return
+  }
+
+  await database.execute(
+    `
+      DELETE FROM inventory_categories
+      WHERE id = $1
+        AND is_system = 0
+    `,
+    [id],
+  )
 }
 
 type InventoryMovementRow = {
@@ -3110,7 +3448,7 @@ export async function listInventoryItems(filters?: {
   }
   if (filters?.category) {
     params.push(filters.category)
-    conditions.push(`i.category = $${params.length}`)
+    conditions.push(`COALESCE(c.code, lc.code, 'other') = $${params.length}`)
   }
 
   const where = conditions.length > 0 ? `WHERE ${conditions.join(' AND ')}` : ''
@@ -3126,7 +3464,9 @@ export async function listInventoryItems(filters?: {
         i.cost_per_unit AS costPerUnit,
         i.is_active AS isActive,
         i.low_stock_threshold AS lowStockThreshold,
-        i.category,
+        i.category_id AS categoryId,
+        COALESCE(c.code, lc.code, 'other') AS categoryCode,
+        COALESCE(c.label, lc.label, 'Other') AS categoryLabel,
         i.supplier,
         i.status,
         i.last_maintenance_date AS lastMaintenanceDate,
@@ -3137,6 +3477,8 @@ export async function listInventoryItems(filters?: {
         ), 0) AS currentStock,
         (SELECT MAX(m2.movement_date) FROM inventory_movements m2 WHERE m2.item_id = i.id AND m2.movement_type = 'IN') AS lastRestockedDate
       FROM inventory_items i
+      LEFT JOIN inventory_categories c ON c.id = i.category_id
+      LEFT JOIN inventory_categories lc ON lc.code = i.category
       LEFT JOIN inventory_movements m ON m.item_id = i.id
       ${where}
       GROUP BY i.id
@@ -3150,7 +3492,10 @@ export async function listInventoryItems(filters?: {
     const costPerUnit = toNumber(row.costPerUnit)
     const lowStockThreshold = toNumber(row.lowStockThreshold)
     return {
-      category: row.category,
+      category: row.categoryCode,
+      categoryCode: row.categoryCode,
+      categoryId: row.categoryId,
+      categoryLabel: row.categoryLabel,
       costPerUnit,
       currentStock,
       description: row.description,
@@ -3182,6 +3527,7 @@ export async function listInventoryItems(filters?: {
 
 export async function saveInventoryItem(draft: InventoryItemDraft, id?: number): Promise<number> {
   const database = await getDatabase()
+  const resolvedCategory = await resolveInventoryCategory(database, draft.categoryId, draft.category)
 
   if (id) {
     await database.execute(
@@ -3194,24 +3540,65 @@ export async function saveInventoryItem(draft: InventoryItemDraft, id?: number):
           cost_per_unit = $5,
           is_active = $6,
           low_stock_threshold = $7,
-          category = $8,
-          supplier = $9,
-          status = $10,
-          last_maintenance_date = $11,
+          category_id = $8,
+          category = $9,
+          supplier = $10,
+          status = $11,
+          last_maintenance_date = $12,
           updated_at = CURRENT_TIMESTAMP
-        WHERE id = $12
+        WHERE id = $13
       `,
-      [draft.name, draft.description, draft.unitType, draft.unitLabel, draft.costPerUnit, draft.isActive ? 1 : 0, draft.lowStockThreshold, draft.category, draft.supplier, draft.status, draft.lastMaintenanceDate, id],
+      [
+        draft.name,
+        draft.description,
+        draft.unitType,
+        draft.unitLabel,
+        draft.costPerUnit,
+        draft.isActive ? 1 : 0,
+        draft.lowStockThreshold,
+        resolvedCategory.id,
+        resolvedCategory.code,
+        draft.supplier,
+        draft.status,
+        draft.lastMaintenanceDate,
+        id,
+      ],
     )
     return id
   }
 
   const result = await database.execute(
     `
-      INSERT INTO inventory_items (name, description, unit_type, unit_label, cost_per_unit, is_active, low_stock_threshold, category, supplier, status, last_maintenance_date)
-      VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+      INSERT INTO inventory_items (
+        name,
+        description,
+        unit_type,
+        unit_label,
+        cost_per_unit,
+        is_active,
+        low_stock_threshold,
+        category_id,
+        category,
+        supplier,
+        status,
+        last_maintenance_date
+      )
+      VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
     `,
-    [draft.name, draft.description, draft.unitType, draft.unitLabel, draft.costPerUnit, draft.isActive ? 1 : 0, draft.lowStockThreshold, draft.category, draft.supplier, draft.status, draft.lastMaintenanceDate],
+    [
+      draft.name,
+      draft.description,
+      draft.unitType,
+      draft.unitLabel,
+      draft.costPerUnit,
+      draft.isActive ? 1 : 0,
+      draft.lowStockThreshold,
+      resolvedCategory.id,
+      resolvedCategory.code,
+      draft.supplier,
+      draft.status,
+      draft.lastMaintenanceDate,
+    ],
   )
   return result.lastInsertId as number
 }
@@ -3431,6 +3818,98 @@ export async function saveInventoryMovement(
     return
   }
 
+  let movementTransactionId = draft.transactionId ?? null
+  if (movementTransactionId == null && draft.movementType === 'IN') {
+    const itemRows = await database.select<Array<{ name: string; unitLabel: string }>>(
+      `
+        SELECT name, unit_label AS unitLabel
+        FROM inventory_items
+        WHERE id = $1
+        LIMIT 1
+      `,
+      [draft.itemId],
+    )
+    const item = itemRows[0]
+    if (!item) {
+      throw new Error('Inventory item not found.')
+    }
+
+    const expenseTypeRows = await database.select<Array<{ id: number }>>(
+      `SELECT id FROM transaction_types WHERE code = 'EXPENSE' LIMIT 1`,
+    )
+    const expenseTypeId = expenseTypeRows[0]?.id
+    if (!expenseTypeId) {
+      throw new Error('Expense transaction type is not configured.')
+    }
+
+    const preferredCategoryRows = await database.select<Array<{ id: number }>>(
+      `
+        SELECT id
+        FROM categories
+        WHERE transaction_type_id = $1
+          AND is_archived = 0
+          AND LOWER(label) IN ('supplies', 'inventory', 'stock', 'other')
+        ORDER BY
+          CASE LOWER(label)
+            WHEN 'supplies' THEN 0
+            WHEN 'inventory' THEN 1
+            WHEN 'stock' THEN 2
+            WHEN 'other' THEN 3
+            ELSE 99
+          END
+        LIMIT 1
+      `,
+      [expenseTypeId],
+    )
+    let expenseCategoryId = preferredCategoryRows[0]?.id
+    if (!expenseCategoryId) {
+      const fallbackRows = await database.select<Array<{ id: number }>>(
+        `
+          SELECT id
+          FROM categories
+          WHERE transaction_type_id = $1
+            AND is_archived = 0
+          ORDER BY id ASC
+          LIMIT 1
+        `,
+        [expenseTypeId],
+      )
+      expenseCategoryId = fallbackRows[0]?.id
+    }
+    if (!expenseCategoryId) {
+      throw new Error('No active expense category found for stock-in.')
+    }
+
+    const totalAmount = roundMoney(draft.quantity * draft.unitCost)
+    const qtyLabel = `${draft.quantity}${item.unitLabel ? ` ${item.unitLabel}` : ''}`
+    const notePart = draft.notes.trim() ? ` · ${draft.notes.trim()}` : ''
+    const description = `Stock-in: ${item.name} (${qtyLabel})${notePart}`
+
+    const transactionResult = await database.execute(
+      `
+        INSERT INTO transactions (
+          entry_date,
+          transaction_type_id,
+          category_id,
+          description,
+          amount,
+          staff_count,
+          customer_id,
+          created_by,
+          updated_by
+        )
+        VALUES ($1, $2, $3, $4, $5, NULL, NULL, $6, $6)
+      `,
+      [draft.movementDate, expenseTypeId, expenseCategoryId, description, totalAmount, userId],
+    )
+    const rawTxnId = transactionResult.lastInsertId
+    const createdTxnId = typeof rawTxnId === 'number' ? rawTxnId : Number(rawTxnId)
+    if (!Number.isFinite(createdTxnId) || createdTxnId <= 0) {
+      throw new Error('Failed to create expense transaction for stock-in.')
+    }
+    movementTransactionId = createdTxnId
+  }
+
   await database.execute(
     `
       INSERT INTO inventory_movements (item_id, movement_type, quantity, unit_cost, notes, movement_date, created_by, transaction_id, template_id)
@@ -3444,7 +3923,7 @@ export async function saveInventoryMovement(
       draft.notes,
       draft.movementDate,
       userId,
-      draft.transactionId ?? null,
+      movementTransactionId,
       draft.templateId !== undefined ? draft.templateId : null,
     ],
   )
@@ -3457,6 +3936,7 @@ export async function deleteInventoryMovement(id: number): Promise<void> {
 
 export type InventoryItemSummary = {
   category: string
+  categoryLabel: string
   currentStock: number
   id: number
   lowStockThreshold: number
@@ -3472,6 +3952,7 @@ export type InventoryItemSummary = {
 
 type InventoryItemSummaryRow = {
   category: string
+  categoryLabel: string
   costPerUnit: number
   currentStock: number
   id: number
@@ -3496,7 +3977,8 @@ export async function getInventoryItemSummaries(monthKey?: string): Promise<Inve
       SELECT
         i.id,
         i.name,
-        i.category,
+        COALESCE(c.code, lc.code, 'other') AS category,
+        COALESCE(c.label, lc.label, 'Other') AS categoryLabel,
         i.low_stock_threshold AS lowStockThreshold,
         i.unit_label AS unitLabel,
         i.cost_per_unit AS costPerUnit,
@@ -3521,6 +4003,8 @@ export async function getInventoryItemSummaries(monthKey?: string): Promise<Inve
             )
         ), 0) AS wastageCostThisMonth
       FROM inventory_items i
+      LEFT JOIN inventory_categories c ON c.id = i.category_id
+      LEFT JOIN inventory_categories lc ON lc.code = i.category
       LEFT JOIN inventory_movements m ON m.item_id = i.id ${monthFilter}
       WHERE i.is_active = 1
       GROUP BY i.id
@@ -3534,6 +4018,7 @@ export async function getInventoryItemSummaries(monthKey?: string): Promise<Inve
     const costPerUnit = toNumber(row.costPerUnit)
     return {
       category: row.category,
+      categoryLabel: row.categoryLabel,
       currentStock,
       id: row.id,
       lowStockThreshold: toNumber(row.lowStockThreshold),
@@ -3708,7 +4193,7 @@ export async function getInventoryActionCounts(usageWindowDays = 30): Promise<In
       WITH item_stock AS (
         SELECT
           i.id,
-          i.category,
+          COALESCE(c.code, lc.code, 'other') AS categoryCode,
           i.status,
           i.low_stock_threshold AS threshold,
           COALESCE((
@@ -3723,14 +4208,16 @@ export async function getInventoryActionCounts(usageWindowDays = 30): Promise<In
               AND m.movement_date >= $1
           ), 0) / $2 AS avg_daily_out
         FROM inventory_items i
+        LEFT JOIN inventory_categories c ON c.id = i.category_id
+        LEFT JOIN inventory_categories lc ON lc.code = i.category
         WHERE i.is_active = 1
       )
       SELECT
         SUM(CASE WHEN current_stock <= 0 THEN 1 ELSE 0 END) AS outOfStock,
         SUM(CASE WHEN current_stock > 0 AND current_stock <= threshold THEN 1 ELSE 0 END) AS lowStock,
-        SUM(CASE WHEN category = 'equipment' AND status IN ('maintenance', 'out_of_service') THEN 1 ELSE 0 END) AS equipmentDown,
+        SUM(CASE WHEN categoryCode = 'equipment' AND status IN ('maintenance', 'out_of_service') THEN 1 ELSE 0 END) AS equipmentDown,
         SUM(CASE
-          WHEN category != 'equipment' AND (
+          WHEN categoryCode != 'equipment' AND (
             current_stock <= threshold
             OR (avg_daily_out > 0 AND (current_stock / avg_daily_out) < 7)
           ) THEN 1
@@ -3796,7 +4283,10 @@ export async function getInventoryCoverage(usageWindowDays = 30): Promise<Invent
             AND m.movement_date >= $1
         ), 0) / $2 AS avgDailyOut
       FROM inventory_items i
-      WHERE i.is_active = 1 AND i.category != 'equipment'
+      LEFT JOIN inventory_categories c ON c.id = i.category_id
+      LEFT JOIN inventory_categories lc ON lc.code = i.category
+      WHERE i.is_active = 1
+        AND COALESCE(c.code, lc.code, 'other') != 'equipment'
       ORDER BY i.name
     `,
     [fromDate, usageWindowDays],
@@ -3914,6 +4404,7 @@ export async function getInventoryWastage(monthKey: string): Promise<InventoryWa
 
 export type InventoryCategoryBreakdownRow = {
   category: string
+  categoryLabel: string
   stockValue: number
   totalIn: number
   totalOut: number
@@ -3924,6 +4415,7 @@ export async function getInventoryCategoryBreakdown(monthKey: string): Promise<I
   const rows = await database.select<
     Array<{
       category: string
+      categoryLabel: string
       stockValue: number
       totalIn: number
       totalOut: number
@@ -3931,7 +4423,8 @@ export async function getInventoryCategoryBreakdown(monthKey: string): Promise<I
   >(
     `
       SELECT
-        i.category,
+        COALESCE(c.code, lc.code, 'other') AS category,
+        COALESCE(c.label, lc.label, 'Other') AS categoryLabel,
         SUM(
           COALESCE((
             SELECT SUM(CASE WHEN m2.movement_type = 'IN' THEN m2.quantity ELSE -m2.quantity END)
@@ -3941,16 +4434,19 @@ export async function getInventoryCategoryBreakdown(monthKey: string): Promise<I
         COALESCE(SUM(CASE WHEN m.movement_type = 'IN' THEN m.quantity ELSE 0 END), 0) AS totalIn,
         COALESCE(SUM(CASE WHEN m.movement_type = 'OUT' THEN m.quantity ELSE 0 END), 0) AS totalOut
       FROM inventory_items i
+      LEFT JOIN inventory_categories c ON c.id = i.category_id
+      LEFT JOIN inventory_categories lc ON lc.code = i.category
       LEFT JOIN inventory_movements m ON m.item_id = i.id AND substr(m.movement_date, 1, 7) = $1
       WHERE i.is_active = 1
-      GROUP BY i.category
-      ORDER BY i.category
+      GROUP BY category, categoryLabel
+      ORDER BY category
     `,
     [monthKey],
   )
 
   return rows.map((row) => ({
     category: row.category,
+    categoryLabel: row.categoryLabel,
     stockValue: toNumber(row.stockValue),
     totalIn: toNumber(row.totalIn),
     totalOut: toNumber(row.totalOut),
@@ -3987,7 +4483,10 @@ export async function getEquipmentStatusSummary(): Promise<EquipmentStatusSummar
         COALESCE(i.status, '') AS status,
         COALESCE(i.last_maintenance_date, '') AS lastMaintenanceDate
       FROM inventory_items i
-      WHERE i.is_active = 1 AND i.category = 'equipment'
+      LEFT JOIN inventory_categories c ON c.id = i.category_id
+      LEFT JOIN inventory_categories lc ON lc.code = i.category
+      WHERE i.is_active = 1
+        AND COALESCE(c.code, lc.code, 'other') = 'equipment'
       ORDER BY i.status, i.name
     `,
   )
@@ -4216,7 +4715,12 @@ async function applyMaintenanceStatusToItem(
         SET status = 'operational',
             last_maintenance_date = $1,
             updated_at = CURRENT_TIMESTAMP
-        WHERE id = $2 AND category = 'equipment'
+        WHERE id = $2
+          AND COALESCE(
+            (SELECT code FROM inventory_categories WHERE id = inventory_items.category_id),
+            NULLIF(TRIM(category), ''),
+            'other'
+          ) = 'equipment'
       `,
       [serviceDate, itemId],
     )
@@ -4226,7 +4730,12 @@ async function applyMaintenanceStatusToItem(
         UPDATE inventory_items
         SET status = 'maintenance',
             updated_at = CURRENT_TIMESTAMP
-        WHERE id = $1 AND category = 'equipment'
+        WHERE id = $1
+          AND COALESCE(
+            (SELECT code FROM inventory_categories WHERE id = inventory_items.category_id),
+            NULLIF(TRIM(category), ''),
+            'other'
+          ) = 'equipment'
       `,
       [itemId],
     )
@@ -4972,16 +5481,26 @@ export async function deleteAttendance(attendanceId: number): Promise<void> {
   await database.execute(`DELETE FROM staff_attendance WHERE id = $1`, [attendanceId])
 }
 
-export async function buildPayrollPreview(staffId: number, periodEnd: string): Promise<PayrollPreview> {
+export async function buildPayrollPreview(
+  staffId: number,
+  periodStart: string,
+  periodEnd: string,
+): Promise<PayrollPreview> {
   const database = await getDatabase()
   const settings = await getPayrollSettings()
+  const parsedStart = parseISO(periodStart)
+  const parsedEnd = parseISO(periodEnd)
+  if (!isValid(parsedStart) || !isValid(parsedEnd)) {
+    throw new Error('Please provide a valid payroll period.')
+  }
+  if (periodStart > periodEnd) {
+    throw new Error('Period start must be on or before period end.')
+  }
   if (!isCutoffDay(periodEnd, settings.cutoffDay)) {
     throw new Error(
       `Period end must fall on the payroll cutoff weekday (currently ${settings.cutoffDay}: 0=Sun … 6=Sat).`,
     )
   }
-
-  const periodStart = periodStartForWeekEnding(periodEnd)
   const staff = await getStaff(staffId)
   if (!staff) throw new Error('Staff not found.')
 
@@ -5043,7 +5562,7 @@ export async function finalizePayroll(input: FinalizePayrollInput, userId: numbe
   transactionId: number
 }> {
   const database = await getDatabase()
-  const preview = await buildPayrollPreview(input.staffId, input.periodEnd)
+  const preview = await buildPayrollPreview(input.staffId, input.periodStart, input.periodEnd)
 
   if (preview.periodStart !== input.periodStart) {
     throw new Error('Invalid payroll period.')

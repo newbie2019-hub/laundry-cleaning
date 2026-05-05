@@ -15,7 +15,7 @@ import {
   type PayrollPreviewItem,
 } from '../../../lib/db/repository'
 import { formatCurrency } from '../../../lib/format'
-import { roundMoney, suggestPeriodEnd } from '../lib/attendance'
+import { periodStartForWeekEnding, roundMoney, suggestPeriodEnd } from '../lib/attendance'
 
 type AdjRow = PayrollAdjustmentDraft & { key: string }
 
@@ -106,6 +106,7 @@ function SortHeaderButton({
 }
 
 export function PayrollDialog({ onClose, onSuccess, open, staffDisplayName, staffId, userId }: Props) {
+  const [periodStart, setPeriodStart] = useState('')
   const [periodEnd, setPeriodEnd] = useState('')
   const [payDate, setPayDate] = useState(() => format(new Date(), 'yyyy-MM-dd'))
   const [notes, setNotes] = useState('')
@@ -122,15 +123,20 @@ export function PayrollDialog({ onClose, onSuccess, open, staffDisplayName, staf
   const [selectedAdvanceIds, setSelectedAdvanceIds] = useState<Set<number>>(new Set())
 
   const loadPreview = useCallback(
-    async (end: string) => {
-      if (!end) {
+    async (start: string, end: string) => {
+      if (!start || !end) {
         setPreview(null)
+        return
+      }
+      if (start > end) {
+        setPreview(null)
+        setPreviewError('Period start must be on or before period end.')
         return
       }
       setLoadingPreview(true)
       setPreviewError(null)
       try {
-        const p = await buildPayrollPreview(staffId, end)
+        const p = await buildPayrollPreview(staffId, start, end)
         setPreview(p)
       } catch (e: unknown) {
         setPreview(null)
@@ -155,6 +161,8 @@ export function PayrollDialog({ onClose, onSuccess, open, staffDisplayName, staf
       const settings = await getPayrollSettings()
       const unpaid = await listUnpaidAttendanceDates(staffId)
       const suggested = suggestPeriodEnd(unpaid, settings.cutoffDay)
+      const suggestedStart = periodStartForWeekEnding(suggested)
+      setPeriodStart(suggestedStart)
       setPeriodEnd(suggested)
       const advances = await listCashAdvances(staffId, { status: 'outstanding' })
       setOutstandingAdvances(advances)
@@ -163,17 +171,17 @@ export function PayrollDialog({ onClose, onSuccess, open, staffDisplayName, staf
           ? new Set(advances.map((a) => a.id))
           : new Set(),
       )
-      await loadPreview(suggested)
+      await loadPreview(suggestedStart, suggested)
     })()
   }, [open, staffId, loadPreview])
 
   useEffect(() => {
-    if (!open || !periodEnd) return
+    if (!open || !periodStart || !periodEnd) return
     const t = setTimeout(() => {
-      void loadPreview(periodEnd)
+      void loadPreview(periodStart, periodEnd)
     }, 200)
     return () => clearTimeout(t)
-  }, [periodEnd, open, loadPreview])
+  }, [periodStart, periodEnd, open, loadPreview])
 
   const sortedItems = useMemo<PayrollPreviewItem[]>(() => {
     if (!preview) return []
@@ -310,7 +318,16 @@ export function PayrollDialog({ onClose, onSuccess, open, staffDisplayName, staf
 
         <form className="divide-y divide-gray-100" onSubmit={handleSubmit}>
           <div className="space-y-5 p-5">
-            <div className="grid gap-4 sm:grid-cols-2">
+            <div className="grid gap-4 sm:grid-cols-3">
+              <ModalField label="Period start" required>
+                <input
+                  className={modalInputClass}
+                  max={periodEnd || undefined}
+                  onChange={(e) => setPeriodStart(e.target.value)}
+                  type="date"
+                  value={periodStart}
+                />
+              </ModalField>
               <ModalField
                 label="Period end"
                 required
@@ -318,6 +335,7 @@ export function PayrollDialog({ onClose, onSuccess, open, staffDisplayName, staf
               >
                 <input
                   className={modalInputClass}
+                  min={periodStart || undefined}
                   onChange={(e) => setPeriodEnd(e.target.value)}
                   type="date"
                   value={periodEnd}

@@ -40,6 +40,7 @@ import { formatCurrency, formatMonthLabel } from '../../../lib/format'
 import {
   getEquipmentStatusSummary,
   getInventoryActionCounts,
+  listInventoryCategories,
   getInventoryCoverage,
   getInventoryDailyTrend,
   getInventoryItemSummaries,
@@ -47,6 +48,7 @@ import {
   getInventoryWastage,
   getRecentInventoryMovements,
   getSlowMovers,
+  type InventoryCategory,
   type EquipmentStatusItem,
   type InventoryCoverageRow,
   type InventoryDailyTrend,
@@ -58,19 +60,6 @@ import {
 } from '../../../lib/db/repository'
 import { useAuth } from '../../auth/use-auth'
 import { QuickMovementModal } from '../components/quick-movement-modal'
-
-const ITEM_CATEGORIES = [
-  { value: 'consumable', label: 'Consumable' },
-  { value: 'detergent_chemicals', label: 'Detergent & Chemicals' },
-  { value: 'packaging', label: 'Packaging' },
-  { value: 'cleaning_materials', label: 'Cleaning Materials' },
-  { value: 'equipment', label: 'Equipment' },
-  { value: 'other', label: 'Other' },
-] as const
-
-const CATEGORY_LABELS: Record<string, string> = Object.fromEntries(
-  ITEM_CATEGORIES.map((c) => [c.value, c.label]),
-)
 
 const STATUS_LABELS: Record<string, string> = {
   operational: 'Operational',
@@ -142,16 +131,13 @@ function scrollToId(anchor: string) {
   document.getElementById(anchor)?.scrollIntoView({ behavior: 'smooth', block: 'start' })
 }
 
-function categoryLabel(cat: string) {
-  return CATEGORY_LABELS[cat] ?? cat
-}
-
 export function InventorySummaryPage() {
   const { hasPermission, user } = useAuth()
   const canManage = hasPermission('manage_inventory')
 
   const [summaryMonth, setSummaryMonth] = useState(format(new Date(), 'yyyy-MM'))
   const [itemSummaries, setItemSummaries] = useState<InventoryItemSummary[]>([])
+  const [categories, setCategories] = useState<InventoryCategory[]>([])
   const [dailyTrend, setDailyTrend] = useState<InventoryDailyTrend[]>([])
   const [monthlyTrend, setMonthlyTrend] = useState<InventoryMonthlyTrend[]>([])
   const [actionCounts, setActionCounts] = useState({
@@ -181,6 +167,7 @@ export function InventorySummaryPage() {
     try {
       const [
         summaries,
+        categoryRows,
         daily,
         monthly,
         counts,
@@ -191,6 +178,7 @@ export function InventorySummaryPage() {
         recent,
       ] = await Promise.all([
         getInventoryItemSummaries(summaryMonth),
+        listInventoryCategories(true),
         getInventoryDailyTrend(summaryMonth),
         getInventoryMonthlyTrend(6),
         getInventoryActionCounts(30),
@@ -201,6 +189,7 @@ export function InventorySummaryPage() {
         getRecentInventoryMovements(10),
       ])
       setItemSummaries(summaries)
+      setCategories(categoryRows)
       setDailyTrend(daily)
       setMonthlyTrend(monthly)
       setActionCounts(counts)
@@ -221,6 +210,13 @@ export function InventorySummaryPage() {
   }, [loadSummary])
 
   const coverageById = useMemo(() => new Map(coverage.map((c) => [c.id, c])), [coverage])
+  const categoryByCode = useMemo(() => new Map(categories.map((category) => [category.code, category])), [categories])
+  const activeCategories = useMemo(() => categories.filter((category) => category.isActive), [categories])
+
+  const categoryLabel = useCallback(
+    (code: string, explicitLabel?: string) => explicitLabel || categoryByCode.get(code)?.label || code,
+    [categoryByCode],
+  )
 
   const totals = useMemo(() => {
     const totalIn = itemSummaries.reduce((s, i) => s + i.totalIn, 0)
@@ -355,7 +351,7 @@ export function InventorySummaryPage() {
       lines.push(
         [
           `"${s.name.replaceAll('"', '""')}"`,
-          `"${categoryLabel(s.category).replaceAll('"', '""')}"`,
+          `"${categoryLabel(s.category, s.categoryLabel).replaceAll('"', '""')}"`,
           s.totalIn,
           s.totalInCost,
           s.totalOut,
@@ -546,7 +542,7 @@ export function InventorySummaryPage() {
                             <div className="min-w-0">
                               <p className="truncate text-sm font-medium text-[var(--foreground)]">{item.name}</p>
                               <p className="text-xs text-[var(--muted)]">
-                                {categoryLabel(item.category)}
+                                {categoryLabel(item.category, item.categoryLabel)}
                               </p>
                             </div>
                           </div>
@@ -843,7 +839,7 @@ export function InventorySummaryPage() {
                       </span>
                       <div className="min-w-0 flex-1">
                         <p className="truncate text-sm font-medium text-[var(--foreground)]">{s.name}</p>
-                        <p className="text-xs text-[var(--muted)]">{categoryLabel(s.category)}</p>
+                        <p className="text-xs text-[var(--muted)]">{categoryLabel(s.category, s.categoryLabel)}</p>
                       </div>
                       <span className="flex-none text-right text-sm font-semibold tabular-nums text-orange-600 dark:text-orange-400">
                         {formatQty(s.totalOut, s.unitLabel)}
@@ -1006,9 +1002,9 @@ export function InventorySummaryPage() {
                 value={tableCategory}
               >
                 <option value="">All categories</option>
-                {ITEM_CATEGORIES.map((c) => (
-                  <option key={c.value} value={c.value}>
-                    {c.label}
+                {activeCategories.map((category) => (
+                  <option key={category.id} value={category.code}>
+                    {category.label}
                   </option>
                 ))}
               </select>
@@ -1051,7 +1047,9 @@ export function InventorySummaryPage() {
                         return (
                           <tr key={s.id}>
                             <td className="px-3 py-3 font-medium">{s.name}</td>
-                            <td className="px-3 py-3 text-xs text-[var(--muted)]">{categoryLabel(s.category)}</td>
+                            <td className="px-3 py-3 text-xs text-[var(--muted)]">
+                              {categoryLabel(s.category, s.categoryLabel)}
+                            </td>
                             <td className="px-3 py-3 text-right tabular-nums text-emerald-600 whitespace-nowrap">
                               {s.totalIn > 0 ? (
                                 <span className="inline-flex items-center justify-end gap-1">

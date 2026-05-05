@@ -57,6 +57,7 @@ const navigationItems: NavItem[] = [
     children: [
       { to: "/inventory-movements", label: "Movements", icon: ArrowLeftRight },
       { to: "/inventory-summary", label: "Summary", icon: BarChart3 },
+      { to: "/inventory-categories", label: "Categories", icon: Tags },
       { to: "/inventory-templates", label: "Sale templates", icon: LayoutTemplate },
     ],
   },

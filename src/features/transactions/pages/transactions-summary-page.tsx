@@ -61,8 +61,6 @@ import {
   type PeriodPreset,
 } from '../lib/period'
 
-type CompareMode = 'auto' | 'manual'
-
 type LoadState =
   | { status: 'loading' }
   | {
@@ -294,11 +292,6 @@ export function TransactionsSummaryPage() {
     return r
   })
   const [compareEnabled, setCompareEnabled] = useState(true)
-  const [compareMode, setCompareMode] = useState<CompareMode>('auto')
-  const [manualCompareRange, setManualCompareRange] = useState<DateRange>(() => {
-    const current = resolveRange('month', new Date())
-    return autoComparisonRange(current, 'month')
-  })
   const [state, setState] = useState<LoadState>({ status: 'loading' })
   const [exporting, setExporting] = useState(false)
 
@@ -307,11 +300,6 @@ export function TransactionsSummaryPage() {
   const [draftAnchor, setDraftAnchor] = useState<string>(format(new Date(), 'yyyy-MM-dd'))
   const [draftCustomRange, setDraftCustomRange] = useState<DateRange>(() => resolveRange('month', new Date()))
   const [draftCompareEnabled, setDraftCompareEnabled] = useState(true)
-  const [draftCompareMode, setDraftCompareMode] = useState<CompareMode>('auto')
-  const [draftManualCompareRange, setDraftManualCompareRange] = useState<DateRange>(() => {
-    const current = resolveRange('month', new Date())
-    return autoComparisonRange(current, 'month')
-  })
 
   const currentRange = useMemo<DateRange>(() => {
     if (preset === 'custom') return customRange
@@ -320,11 +308,8 @@ export function TransactionsSummaryPage() {
 
   const compareRange = useMemo<DateRange | null>(() => {
     if (!compareEnabled) return null
-    if (compareMode === 'manual') {
-      return isValidRange(manualCompareRange) ? manualCompareRange : null
-    }
     return autoComparisonRange(currentRange, preset)
-  }, [compareEnabled, compareMode, manualCompareRange, currentRange, preset])
+  }, [compareEnabled, currentRange, preset])
 
   const shouldLoadMonthlyShares = preset === 'month' && !compareEnabled
   const monthKey = anchorDate.slice(0, 7)
@@ -359,8 +344,6 @@ export function TransactionsSummaryPage() {
     setDraftAnchor(anchorDate)
     setDraftCustomRange(customRange)
     setDraftCompareEnabled(compareEnabled)
-    setDraftCompareMode(compareMode)
-    setDraftManualCompareRange(manualCompareRange)
     setIsPeriodOpen(true)
   }
 
@@ -373,8 +356,6 @@ export function TransactionsSummaryPage() {
       setCustomRange(draftCustomRange)
     }
     setCompareEnabled(draftCompareEnabled)
-    setCompareMode(draftCompareMode)
-    setManualCompareRange(draftManualCompareRange)
     setIsPeriodOpen(false)
   }
 
@@ -385,8 +366,6 @@ export function TransactionsSummaryPage() {
     setDraftAnchor(today)
     setDraftCustomRange(defaultRange)
     setDraftCompareEnabled(true)
-    setDraftCompareMode('auto')
-    setDraftManualCompareRange(autoComparisonRange(defaultRange, 'month'))
   }
 
   const granularity = useMemo(() => bucketGranularity(currentRange), [currentRange])
@@ -581,7 +560,7 @@ export function TransactionsSummaryPage() {
             type="button"
           >
             <SlidersHorizontal className="h-3.5 w-3.5" />
-            Period & compare
+            Period
           </button>
           {canExport && (
             <button
@@ -1216,10 +1195,10 @@ export function TransactionsSummaryPage() {
             <div className="flex items-center justify-between border-b border-[var(--border)] px-5 py-4">
               <div>
                 <h2 className="text-base font-semibold text-[var(--foreground)]">
-                  Period &amp; compare
+                  Period
                 </h2>
                 <p className="mt-0.5 text-xs text-[var(--muted)]">
-                  Select the range to analyze and configure comparison.
+                  Select the date range and optional previous-period comparison.
                 </p>
               </div>
               <button
@@ -1304,61 +1283,14 @@ export function TransactionsSummaryPage() {
                     onChange={(e) => setDraftCompareEnabled(e.target.checked)}
                     type="checkbox"
                   />
-                  Compare against another period
+                  Compare with previous period
                 </label>
 
                 {draftCompareEnabled && (
                   <>
-                    <div className="flex items-center gap-1 rounded-md border border-[var(--border)] bg-[var(--background)] p-0.5">
-                      {(['auto', 'manual'] as const).map((mode) => (
-                        <button
-                          className={`flex-1 rounded px-2.5 py-1.5 text-xs font-medium transition ${
-                            draftCompareMode === mode
-                              ? 'bg-[var(--accent)] text-white'
-                              : 'text-[var(--muted)] hover:text-[var(--foreground)]'
-                          }`}
-                          key={mode}
-                          onClick={() => setDraftCompareMode(mode)}
-                          type="button"
-                        >
-                          {mode === 'auto' ? 'Auto (previous period)' : 'Manual'}
-                        </button>
-                      ))}
-                    </div>
-
-                    {draftCompareMode === 'manual' && (
-                      <div className="grid grid-cols-2 gap-3">
-                        <label className="flex flex-col gap-1 text-xs font-medium text-[var(--muted)]">
-                          Compare from
-                          <input
-                            className="h-9 rounded-md border border-[var(--border)] bg-[var(--background)] px-3 text-sm focus:border-[var(--accent)] focus:outline-none focus:ring-1 focus:ring-[var(--accent)]/30"
-                            max={draftManualCompareRange.to || undefined}
-                            onChange={(e) =>
-                              setDraftManualCompareRange((prev) => ({ ...prev, from: e.target.value }))
-                            }
-                            type="date"
-                            value={draftManualCompareRange.from}
-                          />
-                        </label>
-                        <label className="flex flex-col gap-1 text-xs font-medium text-[var(--muted)]">
-                          Compare to
-                          <input
-                            className="h-9 rounded-md border border-[var(--border)] bg-[var(--background)] px-3 text-sm focus:border-[var(--accent)] focus:outline-none focus:ring-1 focus:ring-[var(--accent)]/30"
-                            min={draftManualCompareRange.from || undefined}
-                            onChange={(e) =>
-                              setDraftManualCompareRange((prev) => ({ ...prev, to: e.target.value }))
-                            }
-                            type="date"
-                            value={draftManualCompareRange.to}
-                          />
-                        </label>
-                      </div>
-                    )}
-
                     <p className="text-xs text-[var(--muted)]">
-                      {draftCompareMode === 'auto'
-                        ? 'Automatically compares with the period immediately before your selection (e.g. this month vs last month).'
-                        : 'Pick any two dates to compare the selected range against.'}
+                      Compares with the period immediately before your selection (e.g. this month vs
+                      last month).
                     </p>
                   </>
                 )}

@@ -255,8 +255,8 @@ export function TransactionsPage() {
   const currentMonthKey = format(new Date(), 'yyyy-MM')
   const [filterPeriodMode, setFilterPeriodMode] = useState<FilterPeriodMode>('dateRange')
   const [filterMonthKey, setFilterMonthKey] = useState(currentMonthKey)
-  const [filterDateFrom, setFilterDateFrom] = useState(today)
-  const [filterDateTo, setFilterDateTo] = useState(today)
+  const [filterDateFrom, setFilterDateFrom] = useState('')
+  const [filterDateTo, setFilterDateTo] = useState('')
   const [filterTypeId, setFilterTypeId] = useState('')
   const [filterCategoryId, setFilterCategoryId] = useState('')
   const [filterCustomerId, setFilterCustomerId] = useState('')
@@ -412,7 +412,7 @@ export function TransactionsPage() {
   const periodCountsTowardBadge =
     filterPeriodMode === 'month'
       ? filterMonthKey !== currentMonthKey
-      : filterDateFrom !== today || filterDateTo !== today || filterDateFrom !== filterDateTo
+      : Boolean(filterDateFrom || filterDateTo)
   const activeFilterCount = [
     periodCountsTowardBadge,
     Boolean(filterTypeId),
@@ -1096,9 +1096,11 @@ export function TransactionsPage() {
   function applyFilter() {
     setFilterPeriodMode(draftPeriodMode)
     if (draftPeriodMode === 'dateRange') {
-      const from = draftDateFrom || today
-      let to = draftDateTo || from
-      if (to < from) to = from
+      let from = draftDateFrom
+      let to = draftDateTo
+      if (from && to && to < from) {
+        to = from
+      }
       setFilterDateFrom(from)
       setFilterDateTo(to)
     } else {
@@ -1113,8 +1115,8 @@ export function TransactionsPage() {
   function clearDraftFilters() {
     setDraftPeriodMode('dateRange')
     setDraftMonthKey(currentMonthKey)
-    setDraftDateFrom(today)
-    setDraftDateTo(today)
+    setDraftDateFrom('')
+    setDraftDateTo('')
     setDraftTypeId('')
     setDraftCategoryId('')
     setDraftCustomerId('')

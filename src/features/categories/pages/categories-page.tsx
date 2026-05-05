@@ -1,8 +1,9 @@
 import type { FormEvent } from 'react'
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { ChevronDown, Plus, Save, Tags, Trash2, X } from 'lucide-react'
 import {
   createTransactionType,
+  deleteCategory,
   deleteTransactionType,
   listCategories,
   listTransactionTypes,
@@ -17,6 +18,13 @@ type PageState = {
   transactionTypes: TransactionType[]
 }
 
+type DeleteCategoryState = {
+  id: number
+  relatedRecordsCount: number
+  transactionTypeId: number
+  transferCategoryId: number | null
+}
+
 export function CategoriesPage() {
   const { activeBusiness, hasPermission } = useAuth()
   const isCleaningBusiness = activeBusiness === 'cleaning'
@@ -24,7 +32,7 @@ export function CategoriesPage() {
 
   const [state, setState] = useState<PageState>({ categories: [], transactionTypes: [] })
   const [loading, setLoading] = useState(true)
-  const [savingId, setSavingId] = useState<number | null>(null)
+  const [savingTypeId, setSavingTypeId] = useState<number | null>(null)
   const [collapsedTypes, setCollapsedTypes] = useState<Set<number>>(new Set())
 
   const [typeModalOpen, setTypeModalOpen] = useState(false)
@@ -36,15 +44,22 @@ export function CategoriesPage() {
   const [categoryLabel, setCategoryLabel] = useState('')
   const [categoryModalLoadable, setCategoryModalLoadable] = useState(true)
   const [confirmDeleteId, setConfirmDeleteId] = useState<number | null>(null)
+  const [deleteCategoryState, setDeleteCategoryState] = useState<DeleteCategoryState | null>(null)
+  const latestLoadRequestRef = useRef(0)
 
   const load = useCallback(async () => {
+    const requestId = ++latestLoadRequestRef.current
+    setLoading(true)
     const [categories, transactionTypes] = await Promise.all([
       listCategories(false),
       listTransactionTypes(),
     ])
+    if (requestId !== latestLoadRequestRef.current) {
+      return
+    }
     setState({ categories, transactionTypes })
     setLoading(false)
-  }, [])
+  }, [activeBusiness])
 
   useEffect(() => {
     void load()
@@ -102,18 +117,42 @@ export function CategoriesPage() {
     await load()
   }
 
-  async function handleSave(category: Category) {
+  async function handleSaveType(typeId: number) {
     if (!canManage) return
-    setSavingId(category.id)
-    await saveCategory({
-      id: category.id,
-      isArchived: category.isArchived,
-      isLoadable: category.isLoadable,
-      label: category.label,
-      transactionTypeId: category.transactionTypeId,
-    })
+    const categoriesForType = state.categories.filter((category) => category.transactionTypeId === typeId)
+    if (categoriesForType.length === 0) return
+    setSavingTypeId(typeId)
+    await Promise.all(
+      categoriesForType.map((category) =>
+        saveCategory({
+          id: category.id,
+          isArchived: category.isArchived,
+          isLoadable: category.isLoadable,
+          label: category.label,
+          transactionTypeId: category.transactionTypeId,
+        }),
+      ),
+    )
     await load()
-    setSavingId(null)
+    setSavingTypeId(null)
+  }
+
+  function openDeleteCategoryDialog(category: Category) {
+    setDeleteCategoryState({
+      id: category.id,
+      relatedRecordsCount: category.relatedRecordsCount,
+      transactionTypeId: category.transactionTypeId,
+      transferCategoryId: null,
+    })
+  }
+
+  async function handleDeleteCategory() {
+    if (!canManage || !deleteCategoryState) return
+    const needsTransfer = deleteCategoryState.relatedRecordsCount > 0
+    if (needsTransfer && !deleteCategoryState.transferCategoryId) return
+    await deleteCategory(deleteCategoryState.id, deleteCategoryState.transferCategoryId ?? undefined)
+    setDeleteCategoryState(null)
+    await load()
   }
 
   function updateCategory(id: number, patch: Partial<Category>) {
@@ -124,6 +163,15 @@ export function CategoriesPage() {
   }
 
   const categoryModalType = state.transactionTypes.find((t) => t.id === categoryModalTypeId)
+  const transferTargets =
+    deleteCategoryState == null
+      ? []
+      : state.categories.filter(
+          (category) =>
+            category.transactionTypeId === deleteCategoryState.transactionTypeId &&
+            category.id !== deleteCategoryState.id &&
+            !category.isArchived,
+        )
 
   return (
     <section className="space-y-6">
@@ -219,15 +267,20 @@ export function CategoriesPage() {
                             className="flex flex-wrap items-center gap-3 px-5 py-2.5"
                           >
                             <div className="flex-1 min-w-0">
-                              {canManage ? (
-                                <input
-                                  className="h-9 w-full rounded-md border border-[var(--border)] bg-[var(--background)] px-3 text-sm focus:border-[var(--accent)] focus:outline-none"
-                                  onChange={(e) => updateCategory(category.id, { label: e.target.value })}
-                                  value={category.label}
-                                />
-                              ) : (
-                                <p className="text-sm font-medium">{category.label}</p>
-                              )}
+                              <div className="flex items-center gap-2">
+                                {canManage ? (
+                                  <input
+                                    className="h-9 w-full rounded-md border border-[var(--border)] bg-[var(--background)] px-3 text-sm focus:border-[var(--accent)] focus:outline-none"
+                                    onChange={(e) => updateCategory(category.id, { label: e.target.value })}
+                                    value={category.label}
+                                  />
+                                ) : (
+                                  <p className="text-sm font-medium">{category.label}</p>
+                                )}
+                                <span className="shrink-0 rounded-full bg-gray-500/10 px-2 py-0.5 text-[10px] font-semibold text-[var(--muted)]">
+                                  {category.relatedRecordsCount}
+                                </span>
+                              </div>
                             </div>
                             {type.code === 'SALE' && !isCleaningBusiness && (
                               <label className="flex shrink-0 cursor-pointer items-center gap-2 text-xs text-[var(--muted)]">
@@ -245,13 +298,12 @@ export function CategoriesPage() {
                             )}
                             {canManage && (
                               <button
-                                className="flex h-8 shrink-0 items-center gap-1.5 rounded-md border border-[var(--border)] px-3 text-xs font-medium transition hover:border-[var(--accent)]/50 hover:text-[var(--accent)] disabled:opacity-50"
-                                disabled={savingId === category.id}
-                                onClick={() => { void handleSave(category) }}
+                                aria-label="Delete category"
+                                className="rounded p-1.5 text-[var(--muted)] transition hover:bg-red-500/10 hover:text-red-500"
+                                onClick={() => openDeleteCategoryDialog(category)}
                                 type="button"
                               >
-                                <Save className="h-3 w-3" />
-                                {savingId === category.id ? 'Saving…' : 'Save'}
+                                <Trash2 className="h-4 w-4" />
                               </button>
                             )}
                           </div>
@@ -260,18 +312,31 @@ export function CategoriesPage() {
                     )}
 
                     {canManage && (
-                      <div className="border-t border-[var(--border)] px-5 py-3">
+                      <div className="border-t border-[var(--border)] px-5 py-3 flex items-center justify-between gap-2">
+                        <div className="flex items-center gap-2">
+                          <button
+                            className="flex items-center gap-1.5 text-xs font-medium text-[var(--accent)] transition hover:opacity-80"
+                            onClick={() => {
+                              setCategoryModalTypeId(type.id)
+                              setCategoryLabel('')
+                              setCategoryModalLoadable(type.code === 'SALE')
+                            }}
+                            type="button"
+                          >
+                            <Plus className="h-3.5 w-3.5" />
+                            Add Category
+                          </button>
+                        </div>
                         <button
-                          className="flex items-center gap-1.5 text-xs font-medium text-[var(--accent)] transition hover:opacity-80"
+                          className="flex h-8 shrink-0 items-center gap-1.5 rounded-md border border-[var(--border)] px-3 text-xs font-medium transition hover:border-[var(--accent)]/50 hover:text-[var(--accent)] disabled:opacity-50"
+                          disabled={savingTypeId === type.id}
                           onClick={() => {
-                            setCategoryModalTypeId(type.id)
-                            setCategoryLabel('')
-                            setCategoryModalLoadable(type.code === 'SALE')
+                            void handleSaveType(type.id)
                           }}
                           type="button"
                         >
-                          <Plus className="h-3.5 w-3.5" />
-                          Add Category
+                          <Save className="h-3 w-3" />
+                          {savingTypeId === type.id ? 'Saving…' : 'Save Categories'}
                         </button>
                       </div>
                     )}
@@ -404,6 +469,82 @@ export function CategoriesPage() {
                 </button>
               </div>
             </form>
+          </div>
+        </div>
+      )}
+
+      {deleteCategoryState && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4">
+          <div className="w-full max-w-md rounded-xl border border-[var(--border)] bg-[var(--panel)] shadow-xl">
+            <div className="flex items-center justify-between border-b border-[var(--border)] px-5 py-4">
+              <h2 className="text-base font-semibold">Delete Category</h2>
+              <button
+                className="rounded p-1 text-[var(--muted)] transition hover:bg-[var(--background)] hover:text-[var(--foreground)]"
+                onClick={() => setDeleteCategoryState(null)}
+                type="button"
+              >
+                <X className="h-4 w-4" />
+              </button>
+            </div>
+
+            <div className="space-y-4 p-5">
+              <p className="text-sm text-[var(--muted)]">
+                This category has{' '}
+                <span className="font-semibold text-[var(--foreground)]">
+                  {deleteCategoryState.relatedRecordsCount}
+                </span>{' '}
+                related transaction record{deleteCategoryState.relatedRecordsCount === 1 ? '' : 's'}.
+              </p>
+
+              {deleteCategoryState.relatedRecordsCount > 0 && (
+                <div className="space-y-1.5">
+                  <label className="text-xs font-medium uppercase tracking-wider text-[var(--muted)]">
+                    Transfer Related Records To
+                  </label>
+                  <select
+                    className="h-10 w-full rounded-md border border-[var(--border)] bg-[var(--background)] px-3 text-sm focus:border-[var(--accent)] focus:outline-none"
+                    onChange={(e) =>
+                      setDeleteCategoryState((prev) =>
+                        prev
+                          ? {
+                              ...prev,
+                              transferCategoryId: e.target.value ? Number(e.target.value) : null,
+                            }
+                          : prev,
+                      )
+                    }
+                    value={deleteCategoryState.transferCategoryId ?? ''}
+                  >
+                    <option value="">Select replacement category…</option>
+                    {transferTargets.map((category) => (
+                      <option key={category.id} value={category.id}>
+                        {category.label}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+              )}
+
+              <div className="flex justify-end gap-2 pt-1">
+                <button
+                  className="h-9 rounded-md border border-[var(--border)] px-4 text-sm font-medium transition hover:bg-[var(--background)]"
+                  onClick={() => setDeleteCategoryState(null)}
+                  type="button"
+                >
+                  Cancel
+                </button>
+                <button
+                  className="h-9 rounded-md bg-red-600 px-4 text-sm font-medium text-white transition hover:bg-red-700 disabled:opacity-50"
+                  disabled={deleteCategoryState.relatedRecordsCount > 0 && !deleteCategoryState.transferCategoryId}
+                  onClick={() => {
+                    void handleDeleteCategory()
+                  }}
+                  type="button"
+                >
+                  Delete Category
+                </button>
+              </div>
+            </div>
           </div>
         </div>
       )}
