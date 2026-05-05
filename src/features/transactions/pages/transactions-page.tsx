@@ -251,7 +251,6 @@ export function TransactionsPage() {
   const navigate = useNavigate()
   const [searchParams, setSearchParams] = useSearchParams()
   const customerPrefillConsumed = useRef<string | null>(null)
-  const today = format(new Date(), 'yyyy-MM-dd')
   const currentMonthKey = format(new Date(), 'yyyy-MM')
   const [filterPeriodMode, setFilterPeriodMode] = useState<FilterPeriodMode>('dateRange')
   const [filterMonthKey, setFilterMonthKey] = useState(currentMonthKey)
