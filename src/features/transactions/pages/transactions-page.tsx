@@ -52,6 +52,9 @@ import {
   type TransactionType,
 } from '../../../lib/db/repository'
 import { useAuth } from '../../auth/use-auth'
+import { FeatureTutorialProvider } from '../../tutorials/feature-tutorial-provider'
+import { TRANSACTION_TUTORIAL_STEPS } from '../../tutorials/transaction-tutorial-steps'
+import { TutorialTriggerButton } from '../../tutorials/tutorial-trigger-button'
 
 type DaySummary = {
   netIncome: number
@@ -214,18 +217,20 @@ function SortableColumnHeader({
 
 
 function ModalField({
+  children,
+  dataTutorial,
+  help,
   label,
   required,
-  children,
-  help,
 }: {
+  children: ReactNode
+  dataTutorial?: string
+  help?: ReactNode
   label: string
   required?: boolean
-  children: ReactNode
-  help?: ReactNode
 }) {
   return (
-    <div className="flex flex-col gap-1.5">
+    <div className="flex flex-col gap-1.5" data-tutorial={dataTutorial}>
       <label className="text-sm font-medium text-gray-700">
         {label}
         {required && <span className="ml-0.5 text-red-500">*</span>}
@@ -261,6 +266,17 @@ function lineItemQtyInputProps(unitType: string | undefined) {
 type FilterPeriodMode = 'dateRange' | 'month'
 
 export function TransactionsPage() {
+  return (
+    <FeatureTutorialProvider
+      featureKey="transactions"
+      steps={TRANSACTION_TUTORIAL_STEPS}
+    >
+      <TransactionsPageContent />
+    </FeatureTutorialProvider>
+  )
+}
+
+function TransactionsPageContent() {
   const { activeBusiness, hasPermission, user } = useAuth()
   const isCleaningBusiness = activeBusiness === 'cleaning'
   const TX_TABLE_GRID = isCleaningBusiness ? TX_TABLE_GRID_NO_LOADS : TX_TABLE_GRID_WITH_LOADS
@@ -1397,6 +1413,7 @@ export function TransactionsPage() {
         </div>
 
         <div className="flex flex-wrap items-center gap-2">
+          <TutorialTriggerButton />
           {canExport && (
             <button
               className="inline-flex items-center gap-1.5 rounded-md border border-[var(--border)] bg-[var(--panel)] px-3 py-2 text-sm text-[var(--muted)] transition hover:text-[var(--foreground)] disabled:opacity-40"
@@ -1410,6 +1427,7 @@ export function TransactionsPage() {
           {canCreate && (
             <button
               className="inline-flex items-center gap-1.5 rounded-md bg-[var(--accent)] px-3 py-2 text-sm font-medium text-white transition hover:opacity-90"
+              data-tutorial="tutorial-add-tx-btn"
               onClick={openNewModal}
               type="button"
             >
@@ -1421,7 +1439,10 @@ export function TransactionsPage() {
       </header>
 
       {/* Summary cards */}
-      <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
+      <div
+        className="grid grid-cols-2 gap-3 sm:grid-cols-4"
+        data-tutorial="tutorial-tx-summary"
+      >
         {[
           {
             label: 'Total Sales',
@@ -1535,7 +1556,10 @@ export function TransactionsPage() {
       </div>
 
       {/* Transaction list */}
-      <div className="rounded-lg border border-[var(--border)] bg-[var(--panel)] overflow-hidden">
+      <div
+        className="rounded-lg border border-[var(--border)] bg-[var(--panel)] overflow-hidden"
+        data-tutorial="tutorial-tx-table"
+      >
         {/* Desktop column headers */}
         <div
           className={`hidden ${TX_TABLE_GRID} sm:border-b sm:border-[var(--border)] sm:bg-[var(--background)]/40 sm:px-4 sm:py-2 sm:text-[10px] sm:font-semibold sm:uppercase sm:tracking-wider sm:text-[var(--muted)]`}
@@ -1964,7 +1988,7 @@ export function TransactionsPage() {
             {/* Form */}
             <form className="flex min-h-0 flex-1 flex-col overflow-hidden" onSubmit={handleSubmit}>
               <div className="min-h-0 flex-1 space-y-4 overflow-y-auto p-5">
-                <ModalField label="Date" required>
+                <ModalField dataTutorial="tutorial-tx-date" label="Date" required>
                   <input
                     className={modalInputClass}
                     onChange={(event) => setFormEntryDate(event.target.value)}
@@ -1973,7 +1997,7 @@ export function TransactionsPage() {
                   />
                 </ModalField>
 
-                <ModalField label="Transaction type" required>
+                <ModalField dataTutorial="tutorial-tx-type" label="Transaction type" required>
                   <select
                     className={modalSelectClass}
                     onChange={(event) => setFormTypeId(event.target.value)}
@@ -1988,7 +2012,7 @@ export function TransactionsPage() {
                   </select>
                 </ModalField>
 
-                <ModalField label="Category" required>
+                <ModalField dataTutorial="tutorial-tx-category" label="Category" required>
                   <select
                     className={modalSelectClass}
                     disabled={!formTypeId}
@@ -2037,7 +2061,10 @@ export function TransactionsPage() {
                 ) : null}
 
                 {isSaleType && canManageInventory ? (
-                  <div className="space-y-2 rounded-lg border border-gray-200 bg-gray-50/80 p-3">
+                  <div
+                    className="space-y-2 rounded-lg border border-gray-200 bg-gray-50/80 p-3"
+                    data-tutorial="tutorial-tx-template"
+                  >
                     <div className="flex flex-wrap items-end justify-between gap-2">
                       <ModalField label="Sale template (optional)">
                         <select
@@ -2163,7 +2190,7 @@ export function TransactionsPage() {
                 ) : null}
 
                 {showCustomerField ? (
-                  <ModalField label="Customer">
+                  <ModalField dataTutorial="tutorial-tx-customer" label="Customer">
                     <select
                       className={modalSelectClass}
                       onChange={(event) => setFormCustomerId(event.target.value)}
@@ -2270,7 +2297,7 @@ export function TransactionsPage() {
                   </label>
                 ) : null}
 
-                <ModalField label="Amount" required>
+                <ModalField dataTutorial="tutorial-tx-amount" label="Amount" required>
                   <input
                     className={modalInputClass}
                     disabled={showLoadFields && formRedeemReward}
@@ -2284,7 +2311,10 @@ export function TransactionsPage() {
                 </ModalField>
 
                 {!(showLoadFields && formRedeemReward) ? (
-                  <div className="space-y-2 rounded-lg border border-gray-200 bg-gray-50/80 p-3">
+                  <div
+                    className="space-y-2 rounded-lg border border-gray-200 bg-gray-50/80 p-3"
+                    data-tutorial="tutorial-tx-line-items"
+                  >
                     <div className="flex items-center justify-between gap-2">
                       <div>
                         <p className="text-sm font-medium text-gray-700">Additional items (optional)</p>
@@ -2516,7 +2546,7 @@ export function TransactionsPage() {
                   </div>
                 ) : null}
 
-                <ModalField label="Description">
+                <ModalField dataTutorial="tutorial-tx-description" label="Description">
                   <textarea
                     className="w-full rounded-md border border-gray-300 bg-gray-50 px-3 py-2.5 text-sm text-gray-900 outline-none focus:border-blue-500 focus:ring-1 focus:ring-blue-500/30 transition resize-none placeholder:text-gray-400"
                     onChange={(event) => setDescription(event.target.value)}

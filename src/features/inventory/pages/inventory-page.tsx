@@ -38,6 +38,9 @@ import {
   type InventoryItem,
 } from '../../../lib/db/repository'
 import { useAuth } from '../../auth/use-auth'
+import { FeatureTutorialProvider } from '../../tutorials/feature-tutorial-provider'
+import { INVENTORY_TUTORIAL_STEPS } from '../../tutorials/inventory-tutorial-steps'
+import { TutorialTriggerButton } from '../../tutorials/tutorial-trigger-button'
 import { InventoryBackupDialog } from '../components/inventory-backup-dialog'
 import { MaintenanceModal } from '../components/maintenance-modal'
 import { QuickMovementModal } from '../components/quick-movement-modal'
@@ -123,9 +126,19 @@ function saveColumnPrefs(prefs: ColumnVisibility): void {
   }
 }
 
-function ModalField({ label, required, children }: { children: ReactNode; label: string; required?: boolean }) {
+function ModalField({
+  children,
+  dataTutorial,
+  label,
+  required,
+}: {
+  children: ReactNode
+  dataTutorial?: string
+  label: string
+  required?: boolean
+}) {
   return (
-    <div className="flex flex-col gap-1.5">
+    <div className="flex flex-col gap-1.5" data-tutorial={dataTutorial}>
       <label className="text-sm font-medium text-gray-700">
         {label}
         {required && <span className="ml-0.5 text-red-500">*</span>}
@@ -173,6 +186,17 @@ function statusBadge(status: string) {
 }
 
 export function InventoryPage() {
+  return (
+    <FeatureTutorialProvider
+      featureKey="inventory"
+      steps={INVENTORY_TUTORIAL_STEPS}
+    >
+      <InventoryPageContent />
+    </FeatureTutorialProvider>
+  )
+}
+
+function InventoryPageContent() {
   const { hasPermission, user } = useAuth()
   const canManage = hasPermission('manage_inventory')
   const navigate = useNavigate()
@@ -523,15 +547,21 @@ export function InventoryPage() {
   return (
     <section className="space-y-5">
       {/* Header */}
-      <div>
-        <h1 className="text-xl font-semibold tracking-tight">Inventory</h1>
-        <p className="mt-1 text-sm text-[var(--muted)]">
-          Track supplies and equipment for daily operations.
-        </p>
+      <div className="flex items-start justify-between gap-3">
+        <div>
+          <h1 className="text-xl font-semibold tracking-tight">Inventory</h1>
+          <p className="mt-1 text-sm text-[var(--muted)]">
+            Track supplies and equipment for daily operations.
+          </p>
+        </div>
+        <TutorialTriggerButton />
       </div>
 
       {/* Stats */}
-      <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">
+      <div
+        className="grid grid-cols-2 gap-3 lg:grid-cols-4"
+        data-tutorial="tutorial-inventory-stats"
+      >
         {[
           {
             label: 'Total Items',
@@ -585,11 +615,15 @@ export function InventoryPage() {
       </div>
 
       {/* Toolbar */}
-      <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+      <div
+        className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between"
+        data-tutorial="tutorial-inventory-toolbar"
+      >
         {canManage ? (
           <div className="flex flex-wrap items-center gap-2">
             <button
               className="flex items-center gap-2 rounded-md bg-[var(--accent)] px-3.5 py-2 text-sm font-medium text-white shadow-sm hover:opacity-90 transition"
+              data-tutorial="tutorial-add-item-btn"
               onClick={openAdd}
               type="button"
             >
@@ -637,7 +671,10 @@ export function InventoryPage() {
       </div>
 
       {/* Items table */}
-      <div className="rounded-xl border border-[var(--border)] overflow-hidden">
+      <div
+        className="rounded-xl border border-[var(--border)] overflow-hidden"
+        data-tutorial="tutorial-inventory-table"
+      >
         {loading ? (
           <div className="flex items-center justify-center py-16 text-sm text-[var(--muted)]">Loading…</div>
         ) : displayed.length === 0 ? (
@@ -858,10 +895,10 @@ export function InventoryPage() {
 
             <form className="space-y-4 p-5" onSubmit={handleSubmit}>
               <div className="grid grid-cols-2 gap-3">
-                <ModalField label="Item Name" required>
+                <ModalField dataTutorial="tutorial-item-name" label="Item Name" required>
                   <input autoFocus className={inputClass} onChange={(e) => setFormName(e.target.value)} placeholder="e.g. Detergent Powder" type="text" value={formName} />
                 </ModalField>
-                <ModalField label="Category" required>
+                <ModalField dataTutorial="tutorial-item-category" label="Category" required>
                   <select className={selectClass} onChange={(e) => handleCategoryChange(e.target.value)} value={formCategory}>
                     {categories
                       .filter((category) => category.code === formCategory || category.isActive)
@@ -876,14 +913,14 @@ export function InventoryPage() {
               </div>
 
               <div className="grid grid-cols-2 gap-3">
-                <ModalField label="Unit Type" required>
+                <ModalField dataTutorial="tutorial-item-unit-type" label="Unit Type" required>
                   <select className={selectClass} onChange={(e) => handleUnitTypeChange(e.target.value)} value={formUnitType}>
                     {UNIT_TYPE_OPTIONS.map((opt) => (
                       <option key={opt.value} value={opt.value}>{opt.label}</option>
                     ))}
                   </select>
                 </ModalField>
-                <ModalField label="Unit Label" required>
+                <ModalField dataTutorial="tutorial-item-unit-label" label="Unit Label" required>
                   <input
                     className={inputClass}
                     list={formUnitType === 'liquid' ? 'liquid-unit-suggestions' : undefined}
@@ -903,10 +940,10 @@ export function InventoryPage() {
               </div>
 
               <div className="grid grid-cols-2 gap-3">
-                <ModalField label="Cost per Unit">
+                <ModalField dataTutorial="tutorial-item-cost" label="Cost per Unit">
                   <input className={inputClass} min="0" onChange={(e) => setFormCostPerUnit(e.target.value)} placeholder="0.00" step="0.01" type="number" value={formCostPerUnit} />
                 </ModalField>
-                <ModalField label="Selling Price (per unit)">
+                <ModalField dataTutorial="tutorial-item-price" label="Selling Price (per unit)">
                   <input
                     className={inputClass}
                     min="0"
@@ -918,7 +955,10 @@ export function InventoryPage() {
                   />
                 </ModalField>
               </div>
-              <div className="space-y-2 rounded-lg border border-gray-200 bg-gray-50/80 p-3">
+              <div
+                className="space-y-2 rounded-lg border border-gray-200 bg-gray-50/80 p-3"
+                data-tutorial="tutorial-item-alt-units"
+              >
                 <div className="flex items-start justify-between gap-2">
                   <div>
                     <p className="text-sm font-medium text-gray-700">Smaller selling units (optional)</p>
@@ -1093,11 +1133,11 @@ export function InventoryPage() {
                 ) : null}
               </div>
 
-              <ModalField label="Min. Stock Threshold">
+              <ModalField dataTutorial="tutorial-item-threshold" label="Min. Stock Threshold">
                 <input className={inputClass} min="0" onChange={(e) => setFormLowStockThreshold(e.target.value)} placeholder="10" step="any" type="number" value={formLowStockThreshold} />
               </ModalField>
 
-              <ModalField label="Supplier">
+              <ModalField dataTutorial="tutorial-item-supplier" label="Supplier">
                 <input className={inputClass} onChange={(e) => setFormSupplier(e.target.value)} placeholder="Optional supplier name" type="text" value={formSupplier} />
               </ModalField>
 
@@ -1121,7 +1161,7 @@ export function InventoryPage() {
               </ModalField>
 
               {!editingId && (
-                <ModalField label="Initial Stock">
+                <ModalField dataTutorial="tutorial-item-initial-stock" label="Initial Stock">
                   <input className={inputClass} min="0" onChange={(e) => setFormInitialStock(e.target.value)} placeholder="0" step="any" type="number" value={formInitialStock} />
                 </ModalField>
               )}

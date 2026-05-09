@@ -19,6 +19,9 @@ import {
 } from "../../../lib/db/repository"
 import { formatCurrency } from "../../../lib/format"
 import { useAuth } from "../../auth/use-auth"
+import { FeatureTutorialProvider } from "../../tutorials/feature-tutorial-provider"
+import { SALE_TEMPLATE_TUTORIAL_STEPS } from "../../tutorials/sale-template-tutorial-steps"
+import { TutorialTriggerButton } from "../../tutorials/tutorial-trigger-button"
 
 // Inventory unit types that can have fractional quantities (e.g. 1.5 kg).
 const MEASURABLE_UNIT_TYPES = new Set(["liquid", "weight", "length"])
@@ -62,16 +65,18 @@ function defaultPriceForUnit(item: InventoryItem | undefined, saleUnitId: number
 }
 
 function ModalField({
-  label,
   children,
+  dataTutorial,
+  label,
   required,
 }: {
   children: ReactNode
+  dataTutorial?: string
   label: string
   required?: boolean
 }) {
   return (
-    <div className="flex flex-col gap-1.5">
+    <div className="flex flex-col gap-1.5" data-tutorial={dataTutorial}>
       <label className="text-sm font-medium text-gray-700">
         {label}
         {required && <span className="ml-0.5 text-red-500">*</span>}
@@ -102,6 +107,17 @@ function newLineKey() {
 }
 
 export function InventoryTemplatesPage() {
+  return (
+    <FeatureTutorialProvider
+      featureKey="sale-templates"
+      steps={SALE_TEMPLATE_TUTORIAL_STEPS}
+    >
+      <InventoryTemplatesPageContent />
+    </FeatureTutorialProvider>
+  )
+}
+
+function InventoryTemplatesPageContent() {
   const { hasPermission } = useAuth()
   const canManage = hasPermission("manage_inventory")
 
@@ -323,16 +339,20 @@ export function InventoryTemplatesPage() {
             linked stock-out movements automatically.
           </p>
         </div>
-        {canManage ? (
-          <button
-            className="inline-flex h-9 items-center gap-2 rounded-md bg-[var(--accent)] px-4 text-sm font-medium text-white transition hover:opacity-90"
-            onClick={openCreate}
-            type="button"
-          >
-            <Plus className="h-4 w-4" />
-            New template
-          </button>
-        ) : null}
+        <div className="flex items-center gap-2">
+          <TutorialTriggerButton />
+          {canManage ? (
+            <button
+              className="inline-flex h-9 items-center gap-2 rounded-md bg-[var(--accent)] px-4 text-sm font-medium text-white transition hover:opacity-90"
+              data-tutorial="tutorial-create-template-btn"
+              onClick={openCreate}
+              type="button"
+            >
+              <Plus className="h-4 w-4" />
+              New template
+            </button>
+          ) : null}
+        </div>
       </header>
 
       {!canManage ? (
@@ -353,12 +373,18 @@ export function InventoryTemplatesPage() {
           Loading…
         </div>
       ) : templates.length === 0 ? (
-        <p className="rounded-lg border border-[var(--border)] bg-[var(--panel)] px-4 py-8 text-center text-sm text-[var(--muted)]">
+        <p
+          className="rounded-lg border border-[var(--border)] bg-[var(--panel)] px-4 py-8 text-center text-sm text-[var(--muted)]"
+          data-tutorial="tutorial-templates-list"
+        >
           No templates yet.{" "}
           {canManage ? "Create one to speed up sale stock-outs." : ""}
         </p>
       ) : (
-        <div className="overflow-x-auto rounded-xl border border-[var(--border)] bg-[var(--panel)]">
+        <div
+          className="overflow-x-auto rounded-xl border border-[var(--border)] bg-[var(--panel)]"
+          data-tutorial="tutorial-templates-list"
+        >
           <table className="w-full min-w-[640px] text-sm">
             <thead>
               <tr className="border-b border-[var(--border)] bg-[var(--background)] text-left text-xs font-semibold uppercase tracking-wide text-[var(--muted)]">
@@ -469,6 +495,7 @@ export function InventoryTemplatesPage() {
             >
               <div className="space-y-4 overflow-y-auto p-5">
                 <ModalField
+                  dataTutorial="tutorial-template-name"
                   label="Name"
                   required
                 >
@@ -478,7 +505,10 @@ export function InventoryTemplatesPage() {
                     value={formName}
                   />
                 </ModalField>
-                <ModalField label="Description">
+                <ModalField
+                  dataTutorial="tutorial-template-description"
+                  label="Description"
+                >
                   <textarea
                     className="min-h-[72px] w-full rounded-md border border-gray-300 bg-gray-50 px-3 py-2 text-sm text-gray-900 outline-none focus:border-blue-500 focus:ring-1 focus:ring-blue-500/30"
                     onChange={(e) => setFormDescription(e.target.value)}
@@ -486,7 +516,10 @@ export function InventoryTemplatesPage() {
                     value={formDescription}
                   />
                 </ModalField>
-                <label className="flex cursor-pointer items-center gap-2 text-sm text-gray-800">
+                <label
+                  className="flex cursor-pointer items-center gap-2 text-sm text-gray-800"
+                  data-tutorial="tutorial-template-active"
+                >
                   <input
                     checked={formActive}
                     className="rounded border-gray-300"
@@ -496,7 +529,7 @@ export function InventoryTemplatesPage() {
                   Active (shown in transaction form)
                 </label>
 
-                <div>
+                <div data-tutorial="tutorial-template-lines">
                   <div className="mb-4 flex items-center justify-between">
                     <div>
                       <span className="text-sm font-medium text-gray-700">
