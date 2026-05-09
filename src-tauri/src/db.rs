@@ -720,6 +720,114 @@ fn build_migrations() -> Vec<Migration> {
       "#,
       kind: MigrationKind::Up,
     },
+    Migration {
+      version: 21,
+      description: "line_item_quantity_and_inventory_selling_price",
+      sql: r#"
+        -- Quantity + unit price on transaction line items.
+        -- The existing `price` column continues to mean "line total" so
+        -- existing read sites keep working without changes.
+        ALTER TABLE transaction_line_items
+          ADD COLUMN quantity REAL NOT NULL DEFAULT 1;
+
+        ALTER TABLE transaction_line_items
+          ADD COLUMN unit_price REAL NOT NULL DEFAULT 0;
+
+        -- Backfill: legacy rows had no quantity, so the stored `price` was
+        -- effectively the unit price for a single unit.
+        UPDATE transaction_line_items
+        SET unit_price = price
+        WHERE unit_price = 0;
+
+        -- Selling price for inventory items, used to auto-fill the unit price
+        -- of additional items on a sale. Default to 0; we backfill from cost
+        -- so first-time auto-fill behaves like before.
+        ALTER TABLE inventory_items
+          ADD COLUMN selling_price REAL NOT NULL DEFAULT 0;
+
+        UPDATE inventory_items
+        SET selling_price = cost_per_unit
+        WHERE selling_price = 0;
+      "#,
+      kind: MigrationKind::Up,
+    },
+    Migration {
+      version: 22,
+      description: "transaction_template_items_unit_price",
+      sql: r#"
+        -- Per-line unit price on sale templates so a combo can lock in a
+        -- price that differs from the inventory item's default selling price.
+        ALTER TABLE transaction_template_items
+          ADD COLUMN unit_price REAL NOT NULL DEFAULT 0;
+
+        -- Backfill: prefer the inventory item's selling price, fall back to
+        -- cost-per-unit so existing templates start with a sensible price.
+        UPDATE transaction_template_items
+        SET unit_price = (
+          SELECT
+            CASE
+              WHEN i.selling_price > 0 THEN i.selling_price
+              ELSE i.cost_per_unit
+            END
+          FROM inventory_items i
+          WHERE i.id = transaction_template_items.inventory_item_id
+        )
+        WHERE unit_price = 0;
+      "#,
+      kind: MigrationKind::Up,
+    },
+    Migration {
+      version: 23,
+      description: "alt_selling_units_for_inventory",
+      sql: r#"
+        -- Multiple alternate selling units per item (e.g. "cup" with 31 per
+        -- gallon, "sachet" with 64 per gallon). Stock is kept in the base
+        -- unit of the inventory item; alt units are display + sale shortcuts.
+        CREATE TABLE IF NOT EXISTS inventory_item_units (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          item_id INTEGER NOT NULL REFERENCES inventory_items(id) ON DELETE CASCADE,
+          unit_label TEXT NOT NULL,
+          units_per_base REAL NOT NULL CHECK (units_per_base > 0),
+          unit_price REAL NOT NULL DEFAULT 0,
+          sort_order INTEGER NOT NULL DEFAULT 0,
+          is_active INTEGER NOT NULL DEFAULT 1,
+          created_at TEXT NOT NULL DEFAULT (datetime('now')),
+          UNIQUE(item_id, unit_label)
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_inventory_item_units_item
+          ON inventory_item_units(item_id);
+
+        -- Snapshot the chosen sale unit on each line item so historical
+        -- transactions display correctly even if alt unit definitions change.
+        --   sale_unit_label  : '' (base unit) or e.g. 'cup'
+        --   sale_unit_factor : 1 (base) or e.g. 31 (cups per gallon)
+        --   sale_unit_id     : informational FK; ON DELETE SET NULL so
+        --                      removing an alt unit doesn't break history.
+        ALTER TABLE transaction_line_items
+          ADD COLUMN sale_unit_label TEXT NOT NULL DEFAULT '';
+
+        ALTER TABLE transaction_line_items
+          ADD COLUMN sale_unit_factor REAL NOT NULL DEFAULT 1;
+
+        ALTER TABLE transaction_line_items
+          ADD COLUMN sale_unit_id INTEGER
+            REFERENCES inventory_item_units(id) ON DELETE SET NULL;
+
+        -- Same snapshot fields on template items so a template remembers
+        -- which unit it was authored in.
+        ALTER TABLE transaction_template_items
+          ADD COLUMN sale_unit_label TEXT NOT NULL DEFAULT '';
+
+        ALTER TABLE transaction_template_items
+          ADD COLUMN sale_unit_factor REAL NOT NULL DEFAULT 1;
+
+        ALTER TABLE transaction_template_items
+          ADD COLUMN sale_unit_id INTEGER
+            REFERENCES inventory_item_units(id) ON DELETE SET NULL;
+      "#,
+      kind: MigrationKind::Up,
+    },
   ]
 }
 

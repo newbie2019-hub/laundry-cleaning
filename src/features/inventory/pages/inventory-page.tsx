@@ -6,6 +6,7 @@ import {
   AlertTriangle,
   ArrowDown,
   ArrowDownToLine,
+  ArrowLeftRight,
   ArrowUp,
   ArrowUpDown,
   ArrowUpFromLine,
@@ -17,10 +18,17 @@ import {
   Plus,
   Search,
   SlidersHorizontal,
+  Trash2,
   Wrench,
   X,
 } from 'lucide-react'
 import { formatCurrency } from '../../../lib/format'
+import {
+  calcUnitsPerBase,
+  findLiquidUnit,
+  isKnownLiquidUnit,
+  LIQUID_UNITS,
+} from '../../../lib/liquid-units'
 import {
   listInventoryCategories,
   listInventoryItems,
@@ -30,6 +38,7 @@ import {
   type InventoryItem,
 } from '../../../lib/db/repository'
 import { useAuth } from '../../auth/use-auth'
+import { InventoryBackupDialog } from '../components/inventory-backup-dialog'
 import { MaintenanceModal } from '../components/maintenance-modal'
 import { QuickMovementModal } from '../components/quick-movement-modal'
 
@@ -192,6 +201,16 @@ export function InventoryPage() {
   const [formUnitType, setFormUnitType] = useState('per_pc')
   const [formUnitLabel, setFormUnitLabel] = useState('pcs')
   const [formCostPerUnit, setFormCostPerUnit] = useState('')
+  const [formSellingPrice, setFormSellingPrice] = useState('')
+  const [formAltUnits, setFormAltUnits] = useState<
+    Array<{
+      key: string
+      id: number | null
+      labelStr: string
+      ratioStr: string
+      priceStr: string
+    }>
+  >([])
   const [formLowStockThreshold, setFormLowStockThreshold] = useState('10')
   const [formSupplier, setFormSupplier] = useState('')
   const [formStatus, setFormStatus] = useState('operational')
@@ -203,6 +222,7 @@ export function InventoryPage() {
 
   const [quickMov, setQuickMov] = useState<{ item: InventoryItem; type: 'IN' | 'OUT' } | null>(null)
   const [serviceItem, setServiceItem] = useState<InventoryItem | null>(null)
+  const [isBackupDialogOpen, setIsBackupDialogOpen] = useState(false)
 
   const loadCategories = useCallback(async () => {
     try {
@@ -313,6 +333,8 @@ export function InventoryPage() {
     setFormUnitType('per_pc')
     setFormUnitLabel('pcs')
     setFormCostPerUnit('')
+    setFormSellingPrice('')
+    setFormAltUnits([])
     setFormLowStockThreshold('10')
     setFormSupplier('')
     setFormStatus('operational')
@@ -332,6 +354,16 @@ export function InventoryPage() {
     setFormUnitType(item.unitType)
     setFormUnitLabel(item.unitLabel)
     setFormCostPerUnit(String(item.costPerUnit))
+    setFormSellingPrice(item.sellingPrice > 0 ? String(item.sellingPrice) : '')
+    setFormAltUnits(
+      item.altUnits.map((u) => ({
+        key: `alt-${u.id}-${Math.random().toString(36).slice(2, 7)}`,
+        id: u.id,
+        labelStr: u.unitLabel,
+        ratioStr: String(u.unitsPerBase),
+        priceStr: u.unitPrice > 0 ? String(u.unitPrice) : '',
+      })),
+    )
     setFormLowStockThreshold(String(item.lowStockThreshold))
     setFormSupplier(item.supplier)
     setFormStatus(item.status || 'operational')
@@ -361,6 +393,55 @@ export function InventoryPage() {
     if (!formName.trim()) { setFormError('Item name is required.'); return }
     const cost = parseFloat(formCostPerUnit || '0')
     if (isNaN(cost) || cost < 0) { setFormError('Cost must be a valid non-negative number.'); return }
+    const sellingPriceRaw = formSellingPrice.trim()
+    const sellingPrice = sellingPriceRaw === '' ? 0 : parseFloat(sellingPriceRaw)
+    if (isNaN(sellingPrice) || sellingPrice < 0) { setFormError('Selling price must be a valid non-negative number.'); return }
+
+    // Validate + normalize alt units. Empty rows are dropped.
+    const altUnitsDraft: Array<{
+      id?: number
+      unitLabel: string
+      unitsPerBase: number
+      unitPrice: number
+      sortOrder: number
+    }> = []
+    const seenAltLabels = new Set<string>()
+    for (let idx = 0; idx < formAltUnits.length; idx += 1) {
+      const row = formAltUnits[idx]!
+      const label = row.labelStr.trim()
+      const ratioTrim = row.ratioStr.trim()
+      const priceTrim = row.priceStr.trim()
+      if (label === '' && ratioTrim === '' && priceTrim === '') continue
+      if (label === '') { setFormError('Each smaller unit needs a label.'); return }
+      if (label.toLowerCase() === formUnitLabel.trim().toLowerCase()) {
+        setFormError(`"${label}" is the base unit. Use a different label for the smaller unit.`)
+        return
+      }
+      const labelKey = label.toLowerCase()
+      if (seenAltLabels.has(labelKey)) {
+        setFormError(`Duplicate smaller unit label "${label}".`)
+        return
+      }
+      seenAltLabels.add(labelKey)
+      const ratio = parseFloat(ratioTrim)
+      if (!Number.isFinite(ratio) || ratio <= 0) {
+        setFormError(`Enter how many "${label}" fit in one ${formUnitLabel || 'base unit'}.`)
+        return
+      }
+      const altPrice = priceTrim === '' ? 0 : parseFloat(priceTrim)
+      if (!Number.isFinite(altPrice) || altPrice < 0) {
+        setFormError(`Price for "${label}" must be a valid non-negative number.`)
+        return
+      }
+      altUnitsDraft.push({
+        id: row.id ?? undefined,
+        unitLabel: label,
+        unitsPerBase: ratio,
+        unitPrice: altPrice,
+        sortOrder: idx,
+      })
+    }
+
     const threshold = parseFloat(formLowStockThreshold || '0')
     if (isNaN(threshold) || threshold < 0) { setFormError('Threshold must be non-negative.'); return }
     const initialQty = formInitialStock ? parseFloat(formInitialStock) : 0
@@ -371,6 +452,7 @@ export function InventoryPage() {
     try {
       const itemId = await saveInventoryItem(
         {
+          altUnits: altUnitsDraft,
           category: formCategory,
           categoryId: formCategoryId,
           costPerUnit: cost,
@@ -379,6 +461,7 @@ export function InventoryPage() {
           lastMaintenanceDate: isEquipmentCategory ? formLastMaintenance : '',
           lowStockThreshold: threshold,
           name: formName.trim(),
+          sellingPrice,
           status: isEquipmentCategory ? formStatus : '',
           supplier: formSupplier.trim(),
           unitLabel: formUnitLabel.trim() || 'unit',
@@ -504,14 +587,25 @@ export function InventoryPage() {
       {/* Toolbar */}
       <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
         {canManage ? (
-          <button
-            className="flex items-center gap-2 rounded-md bg-[var(--accent)] px-3.5 py-2 text-sm font-medium text-white shadow-sm hover:opacity-90 transition"
-            onClick={openAdd}
-            type="button"
-          >
-            <Plus className="h-4 w-4" />
-            Add Item
-          </button>
+          <div className="flex flex-wrap items-center gap-2">
+            <button
+              className="flex items-center gap-2 rounded-md bg-[var(--accent)] px-3.5 py-2 text-sm font-medium text-white shadow-sm hover:opacity-90 transition"
+              onClick={openAdd}
+              type="button"
+            >
+              <Plus className="h-4 w-4" />
+              Add Item
+            </button>
+            <button
+              className="flex items-center gap-2 rounded-md border border-[var(--border)] bg-[var(--panel)] px-3 py-2 text-sm font-medium text-[var(--foreground)] hover:bg-[var(--background)] transition"
+              onClick={() => setIsBackupDialogOpen(true)}
+              title="Export or import inventory as a JSON file"
+              type="button"
+            >
+              <ArrowLeftRight className="h-4 w-4" />
+              Backup
+            </button>
+          </div>
         ) : (
           <div />
         )}
@@ -645,6 +739,17 @@ export function InventoryPage() {
                           <div className={['tabular-nums font-medium whitespace-nowrap', item.isLowStock ? 'text-red-500' : ''].join(' ')}>
                             {formatQty(item.currentStock)} <span className="font-normal text-[var(--muted)]">{item.unitLabel}</span>
                           </div>
+                          {item.altUnits.length > 0 && item.currentStock > 0 ? (
+                            <div className="text-[10px] tabular-nums text-[var(--muted)]">
+                              {item.altUnits
+                                .filter((u) => u.isActive && u.unitsPerBase > 0)
+                                .slice(0, 2)
+                                .map((u) =>
+                                  `≈ ${formatQty(item.currentStock * u.unitsPerBase)} ${u.unitLabel}`,
+                                )
+                                .join(' · ')}
+                            </div>
+                          ) : null}
                           <div className="text-[10px] text-[var(--muted)]">
                             min: {formatQty(item.lowStockThreshold)}
                           </div>
@@ -779,7 +884,21 @@ export function InventoryPage() {
                   </select>
                 </ModalField>
                 <ModalField label="Unit Label" required>
-                  <input className={inputClass} onChange={(e) => setFormUnitLabel(e.target.value)} placeholder="pcs, L, kg…" type="text" value={formUnitLabel} />
+                  <input
+                    className={inputClass}
+                    list={formUnitType === 'liquid' ? 'liquid-unit-suggestions' : undefined}
+                    onChange={(e) => setFormUnitLabel(e.target.value)}
+                    placeholder="pcs, L, kg…"
+                    type="text"
+                    value={formUnitLabel}
+                  />
+                  <datalist id="liquid-unit-suggestions">
+                    {LIQUID_UNITS.map((u) => (
+                      <option key={u.label} value={u.label}>
+                        {u.displayName}
+                      </option>
+                    ))}
+                  </datalist>
                 </ModalField>
               </div>
 
@@ -787,10 +906,196 @@ export function InventoryPage() {
                 <ModalField label="Cost per Unit">
                   <input className={inputClass} min="0" onChange={(e) => setFormCostPerUnit(e.target.value)} placeholder="0.00" step="0.01" type="number" value={formCostPerUnit} />
                 </ModalField>
-                <ModalField label="Min. Stock Threshold">
-                  <input className={inputClass} min="0" onChange={(e) => setFormLowStockThreshold(e.target.value)} placeholder="10" step="any" type="number" value={formLowStockThreshold} />
+                <ModalField label="Selling Price (per unit)">
+                  <input
+                    className={inputClass}
+                    min="0"
+                    onChange={(e) => setFormSellingPrice(e.target.value)}
+                    placeholder="Auto-fills sale lines"
+                    step="0.01"
+                    type="number"
+                    value={formSellingPrice}
+                  />
                 </ModalField>
               </div>
+              <div className="space-y-2 rounded-lg border border-gray-200 bg-gray-50/80 p-3">
+                <div className="flex items-start justify-between gap-2">
+                  <div>
+                    <p className="text-sm font-medium text-gray-700">Smaller selling units (optional)</p>
+                    <p className="text-xs text-gray-500">
+                      Sell this item by another unit too — e.g. a {(formUnitLabel || 'gallon').toLowerCase()} item that you also sell by the cup.
+                      Stock stays in {formUnitLabel || 'the base unit'}; sales convert automatically.
+                    </p>
+                  </div>
+                  <button
+                    className="inline-flex shrink-0 items-center gap-1 rounded-md border border-gray-300 bg-white px-2.5 py-1.5 text-xs font-medium text-gray-700 hover:border-gray-400 hover:bg-gray-50"
+                    onClick={() =>
+                      setFormAltUnits((prev) => [
+                        ...prev,
+                        {
+                          key: `alt-new-${Math.random().toString(36).slice(2, 7)}`,
+                          id: null,
+                          labelStr: '',
+                          ratioStr: '',
+                          priceStr: '',
+                        },
+                      ])
+                    }
+                    type="button"
+                  >
+                    <Plus className="h-3.5 w-3.5" />
+                    Add unit
+                  </button>
+                </div>
+                {formUnitType === 'liquid' && isKnownLiquidUnit(formUnitLabel) ? (
+                  <div className="rounded-md border border-blue-100 bg-blue-50/60 p-2">
+                    <p className="mb-1.5 text-[11px] font-medium uppercase tracking-wider text-blue-700/80">
+                      Quick-add liquid sub-units
+                    </p>
+                    <div className="flex flex-wrap gap-1.5">
+                      {LIQUID_UNITS.filter((u) => {
+                        const base = findLiquidUnit(formUnitLabel)
+                        return base != null && u.label !== base.label && u.mlValue < base.mlValue
+                      }).map((u) => {
+                        const ratio = calcUnitsPerBase(formUnitLabel, u.label)
+                        if (ratio == null) return null
+                        const targetLabel = u.label.toLowerCase()
+                        const checked = formAltUnits.some(
+                          (r) => r.labelStr.trim().toLowerCase() === targetLabel,
+                        )
+                        return (
+                          <label
+                            className={`inline-flex cursor-pointer items-center gap-1.5 rounded-md border px-2 py-1 text-xs transition-colors ${
+                              checked
+                                ? 'border-blue-400 bg-white text-blue-700'
+                                : 'border-blue-200 bg-white/60 text-gray-600 hover:border-blue-300 hover:bg-white'
+                            }`}
+                            key={u.label}
+                            title={`${u.displayName} — ${ratio.toFixed(3).replace(/\.?0+$/, '')} per ${formUnitLabel}`}
+                          >
+                            <input
+                              checked={checked}
+                              className="h-3 w-3 cursor-pointer accent-blue-600"
+                              onChange={(e) => {
+                                if (e.target.checked) {
+                                  setFormAltUnits((prev) =>
+                                    prev.some(
+                                      (r) => r.labelStr.trim().toLowerCase() === targetLabel,
+                                    )
+                                      ? prev
+                                      : [
+                                          ...prev,
+                                          {
+                                            key: `alt-quick-${u.label}-${Math.random().toString(36).slice(2, 7)}`,
+                                            id: null,
+                                            labelStr: u.label,
+                                            ratioStr: String(
+                                              Math.round(ratio * 1000) / 1000,
+                                            ),
+                                            priceStr: '',
+                                          },
+                                        ],
+                                  )
+                                } else {
+                                  setFormAltUnits((prev) =>
+                                    prev.filter(
+                                      (r) => r.labelStr.trim().toLowerCase() !== targetLabel,
+                                    ),
+                                  )
+                                }
+                              }}
+                              type="checkbox"
+                            />
+                            {u.label}
+                          </label>
+                        )
+                      })}
+                    </div>
+                    <p className="mt-1.5 text-[10px] text-blue-700/70">
+                      Ratios fill automatically. Edit the row below to override.
+                    </p>
+                  </div>
+                ) : null}
+                {formAltUnits.length > 0 ? (
+                  <>
+                    <div className="hidden gap-2 px-1 text-[10px] font-medium uppercase tracking-wider text-gray-400 sm:flex">
+                      <span className="flex-1">Unit name</span>
+                      <span className="w-24 shrink-0 text-center">Per {formUnitLabel || 'base'}</span>
+                      <span className="w-24 shrink-0 text-right">Default price</span>
+                      <span className="w-7 shrink-0" />
+                    </div>
+                    <div className="space-y-2">
+                      {formAltUnits.map((row) => (
+                        <div className="flex items-start gap-2" key={row.key}>
+                          <div className="min-w-0 flex-1">
+                            <input
+                              aria-label="Smaller unit label"
+                              className={inputClass}
+                              onChange={(e) => {
+                                const v = e.target.value
+                                setFormAltUnits((prev) =>
+                                  prev.map((r) => (r.key === row.key ? { ...r, labelStr: v } : r)),
+                                )
+                              }}
+                              placeholder="cup, sachet, 250ml…"
+                              type="text"
+                              value={row.labelStr}
+                            />
+                          </div>
+                          <div className="w-24 shrink-0">
+                            <input
+                              aria-label="Units per base"
+                              className={`${inputClass} text-center`}
+                              min="0.001"
+                              onChange={(e) => {
+                                const v = e.target.value
+                                setFormAltUnits((prev) =>
+                                  prev.map((r) => (r.key === row.key ? { ...r, ratioStr: v } : r)),
+                                )
+                              }}
+                              placeholder="31"
+                              step="any"
+                              type="number"
+                              value={row.ratioStr}
+                            />
+                          </div>
+                          <div className="w-24 shrink-0">
+                            <input
+                              aria-label="Default price for this unit"
+                              className={`${inputClass} text-right`}
+                              min="0"
+                              onChange={(e) => {
+                                const v = e.target.value
+                                setFormAltUnits((prev) =>
+                                  prev.map((r) => (r.key === row.key ? { ...r, priceStr: v } : r)),
+                                )
+                              }}
+                              placeholder="0.00"
+                              step="0.01"
+                              type="number"
+                              value={row.priceStr}
+                            />
+                          </div>
+                          <button
+                            aria-label="Remove smaller unit"
+                            className="mt-1 shrink-0 rounded p-1.5 text-gray-400 hover:bg-red-50 hover:text-red-600"
+                            onClick={() =>
+                              setFormAltUnits((prev) => prev.filter((r) => r.key !== row.key))
+                            }
+                            type="button"
+                          >
+                            <Trash2 className="h-4 w-4" />
+                          </button>
+                        </div>
+                      ))}
+                    </div>
+                  </>
+                ) : null}
+              </div>
+
+              <ModalField label="Min. Stock Threshold">
+                <input className={inputClass} min="0" onChange={(e) => setFormLowStockThreshold(e.target.value)} placeholder="10" step="any" type="number" value={formLowStockThreshold} />
+              </ModalField>
 
               <ModalField label="Supplier">
                 <input className={inputClass} onChange={(e) => setFormSupplier(e.target.value)} placeholder="Optional supplier name" type="text" value={formSupplier} />
@@ -867,6 +1172,17 @@ export function InventoryPage() {
         onSaved={loadItems}
         open={serviceItem !== null}
         userId={user?.id ?? null}
+      />
+
+      <InventoryBackupDialog
+        onApplied={() => {
+          // Refresh categories and items so newly imported rows show up
+          // immediately. Best-effort — failures are silent.
+          void loadCategories()
+          void loadItems()
+        }}
+        onClose={() => setIsBackupDialogOpen(false)}
+        open={isBackupDialogOpen}
       />
 
       {/* ── FILTER DIALOG ── */}

@@ -64,14 +64,47 @@ export type TransactionLineItem = {
   id: number
   inventoryItemId: number | null
   label: string
+  /** Line total = quantity × unitPrice. Persisted for backwards-compat reads. */
   price: number
+  /** Number entered by the user, in `saleUnitLabel` if present, else base. */
+  quantity: number
+  /** Per-unit price in `saleUnitLabel` if present, else base. */
+  unitPrice: number
+  /** Empty string for the inventory item's base unit, e.g. 'cup' otherwise. */
+  saleUnitLabel: string
+  /** Snapshotted conversion: how many sale units fit in one base unit (1 = base). */
+  saleUnitFactor: number
+  /** Informational FK to the inventory_item_units row chosen at sale time. */
+  saleUnitId: number | null
   sortOrder: number
 }
 
 export type TransactionLineItemDraft = {
   inventoryItemId: number | null
   label: string
-  price: number
+  /**
+   * Number of units sold/charged on this line. Defaults to 1 when omitted so
+   * legacy callers that only supplied `price` keep working.
+   */
+  quantity?: number
+  /**
+   * Per-unit price. When omitted, falls back to the lump-sum `price` (for
+   * backwards compatibility with callers that haven't been updated yet).
+   */
+  unitPrice?: number
+  /**
+   * Lump-sum price for the line. When `quantity` and `unitPrice` are
+   * supplied, this can be omitted — it will be derived as quantity × unitPrice.
+   */
+  price?: number
+  /**
+   * Sale-unit snapshot. Leave undefined / empty / 1 to mean "base unit".
+   * When the user picks an alt unit, supply all three so the line can
+   * reproduce the conversion in the future even if the alt unit changes.
+   */
+  saleUnitLabel?: string
+  saleUnitFactor?: number
+  saleUnitId?: number | null
 }
 
 export type TransactionDraft = {
@@ -93,7 +126,13 @@ export type TransactionDraft = {
   staffCount: number | null
   /** When set with non-empty templateItems, OUT movements are created for a SALE. */
   templateId?: number | null
-  templateItems?: Array<{ inventoryItemId: number; quantity: number }> | null
+  templateItems?: Array<{
+    inventoryItemId: number
+    quantity: number
+    saleUnitLabel?: string
+    saleUnitFactor?: number
+    saleUnitId?: number | null
+  }> | null
   transactionTypeId: number
 }
 
@@ -674,7 +713,13 @@ async function syncSaleTemplateMovementsForTransaction(
     entryDate: string
     isSale: boolean
     templateId: number | null | undefined
-    templateItems: Array<{ inventoryItemId: number; quantity: number }> | null | undefined
+    templateItems: Array<{
+      inventoryItemId: number
+      quantity: number
+      saleUnitLabel?: string
+      saleUnitFactor?: number
+      saleUnitId?: number | null
+    }> | null | undefined
     transactionId: number
     userId: number
   },
@@ -733,6 +778,16 @@ async function syncSaleTemplateMovementsForTransaction(
 
   for (const line of lines) {
     const cost = costById.get(line.inventoryItemId) ?? 0
+    const factor =
+      line.saleUnitFactor != null && Number.isFinite(line.saleUnitFactor) && line.saleUnitFactor > 0
+        ? line.saleUnitFactor
+        : 1
+    const baseQuantity = factor > 0 ? line.quantity / factor : line.quantity
+    const altLabel = line.saleUnitLabel?.trim() ?? ''
+    const notes =
+      altLabel && factor !== 1
+        ? `Stock out (${templateLabel}) — ${line.quantity} ${altLabel}`
+        : `Stock out (${templateLabel})`
     await database.execute(
       `
         INSERT INTO inventory_movements (
@@ -742,9 +797,9 @@ async function syncSaleTemplateMovementsForTransaction(
       `,
       [
         line.inventoryItemId,
-        line.quantity,
+        baseQuantity,
         cost,
-        `Stock out (${templateLabel})`,
+        notes,
         params.entryDate,
         params.userId,
         params.transactionId,
@@ -925,15 +980,50 @@ export async function saveTransaction(input: TransactionDraft, userId: number, t
     await database.execute('DELETE FROM transaction_line_items WHERE transaction_id = $1', [finalTransactionId])
     const rawItems = Array.isArray(input.lineItems) ? input.lineItems : []
     const normalized = rawItems
-      .map((item) => ({
-        inventoryItemId:
-          item.inventoryItemId != null && Number.isFinite(Number(item.inventoryItemId))
-            ? Number(item.inventoryItemId)
-            : null,
-        label: typeof item.label === 'string' ? item.label.trim() : '',
-        price: Number(item.price),
-      }))
-      .filter((item) => item.label !== '' && Number.isFinite(item.price) && item.price >= 0)
+      .map((item) => {
+        const rawQty = item.quantity != null ? Number(item.quantity) : NaN
+        const quantity = Number.isFinite(rawQty) && rawQty > 0 ? rawQty : 1
+        const rawUnitPrice = item.unitPrice != null ? Number(item.unitPrice) : NaN
+        const rawTotal = item.price != null ? Number(item.price) : NaN
+        // Prefer the explicit unit price; otherwise derive it from the
+        // legacy lump-sum `price` field so older callers keep working.
+        const unitPrice =
+          Number.isFinite(rawUnitPrice) && rawUnitPrice >= 0
+            ? rawUnitPrice
+            : Number.isFinite(rawTotal) && rawTotal >= 0
+              ? rawTotal / quantity
+              : NaN
+        const lineTotal = Number.isFinite(unitPrice) ? quantity * unitPrice : NaN
+        const rawFactor = item.saleUnitFactor != null ? Number(item.saleUnitFactor) : NaN
+        const saleUnitFactor = Number.isFinite(rawFactor) && rawFactor > 0 ? rawFactor : 1
+        const saleUnitLabel =
+          typeof item.saleUnitLabel === 'string' ? item.saleUnitLabel.trim() : ''
+        return {
+          inventoryItemId:
+            item.inventoryItemId != null && Number.isFinite(Number(item.inventoryItemId))
+              ? Number(item.inventoryItemId)
+              : null,
+          label: typeof item.label === 'string' ? item.label.trim() : '',
+          price: lineTotal,
+          quantity,
+          saleUnitFactor,
+          saleUnitId:
+            item.saleUnitId != null && Number.isFinite(Number(item.saleUnitId))
+              ? Number(item.saleUnitId)
+              : null,
+          saleUnitLabel,
+          unitPrice,
+        }
+      })
+      .filter(
+        (item) =>
+          item.label !== '' &&
+          Number.isFinite(item.unitPrice) &&
+          item.unitPrice >= 0 &&
+          Number.isFinite(item.price) &&
+          item.price >= 0 &&
+          item.quantity > 0,
+      )
 
     const inventoryLinkedIds = [
       ...new Set(
@@ -958,10 +1048,24 @@ export async function saveTransaction(input: TransactionDraft, userId: number, t
       const item = normalized[i]!
       const insertResult = await database.execute(
         `
-          INSERT INTO transaction_line_items (transaction_id, inventory_item_id, label, price, sort_order)
-          VALUES ($1, $2, $3, $4, $5)
+          INSERT INTO transaction_line_items (
+            transaction_id, inventory_item_id, label, price, quantity, unit_price,
+            sale_unit_label, sale_unit_factor, sale_unit_id, sort_order
+          )
+          VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
         `,
-        [finalTransactionId, item.inventoryItemId, item.label, item.price, i],
+        [
+          finalTransactionId,
+          item.inventoryItemId,
+          item.label,
+          item.price,
+          item.quantity,
+          item.unitPrice,
+          item.saleUnitLabel,
+          item.saleUnitFactor,
+          item.saleUnitId,
+          i,
+        ],
       )
 
       if (isSale && item.inventoryItemId != null) {
@@ -969,18 +1073,29 @@ export async function saveTransaction(input: TransactionDraft, userId: number, t
         const lineItemId = typeof rawId === 'number' ? rawId : Number(rawId)
         if (Number.isFinite(lineItemId) && lineItemId > 0) {
           const unitCost = costByInventoryId.get(item.inventoryItemId) ?? 0
+          // Convert the line's quantity into base units for the OUT movement.
+          // sale_unit_factor = "alt units per base", so qty_in_base = qty / factor.
+          const baseQuantity =
+            item.saleUnitFactor > 0 ? item.quantity / item.saleUnitFactor : item.quantity
+          // Enrich notes with the sale-unit context so the inventory movements
+          // page can show "Sold as 2 cups" without needing to join back.
+          const notes =
+            item.saleUnitLabel && item.saleUnitFactor !== 1
+              ? `Sold: ${item.label} (${item.quantity} ${item.saleUnitLabel})`
+              : `Sold: ${item.label}`
           await database.execute(
             `
               INSERT INTO inventory_movements (
                 item_id, movement_type, quantity, unit_cost, notes, movement_date,
                 created_by, transaction_id, template_id, line_item_id
               )
-              VALUES ($1, 'OUT', 1, $2, $3, $4, $5, $6, NULL, $7)
+              VALUES ($1, 'OUT', $2, $3, $4, $5, $6, $7, NULL, $8)
             `,
             [
               item.inventoryItemId,
+              baseQuantity,
               unitCost,
-              `Sold: ${item.label}`,
+              notes,
               input.entryDate,
               userId,
               finalTransactionId,
@@ -1078,6 +1193,11 @@ export async function listTransactionLineItems(transactionId: number): Promise<T
       inventoryItemId: number | null
       label: string
       price: number
+      quantity: number | null
+      unitPrice: number | null
+      saleUnitLabel: string | null
+      saleUnitFactor: number | null
+      saleUnitId: number | null
       sortOrder: number
     }>
   >(
@@ -1087,6 +1207,11 @@ export async function listTransactionLineItems(transactionId: number): Promise<T
         inventory_item_id AS inventoryItemId,
         label,
         price,
+        quantity,
+        unit_price AS unitPrice,
+        sale_unit_label AS saleUnitLabel,
+        sale_unit_factor AS saleUnitFactor,
+        sale_unit_id AS saleUnitId,
         sort_order AS sortOrder
       FROM transaction_line_items
       WHERE transaction_id = $1
@@ -1094,13 +1219,32 @@ export async function listTransactionLineItems(transactionId: number): Promise<T
     `,
     [transactionId],
   )
-  return rows.map((r) => ({
-    id: Number(r.id),
-    inventoryItemId: r.inventoryItemId != null ? Number(r.inventoryItemId) : null,
-    label: String(r.label ?? ''),
-    price: Number(r.price ?? 0),
-    sortOrder: Number(r.sortOrder ?? 0),
-  }))
+  return rows.map((r) => {
+    const price = Number(r.price ?? 0)
+    const rawQty = r.quantity != null ? Number(r.quantity) : NaN
+    const quantity = Number.isFinite(rawQty) && rawQty > 0 ? rawQty : 1
+    const rawUnit = r.unitPrice != null ? Number(r.unitPrice) : NaN
+    const unitPrice =
+      Number.isFinite(rawUnit) && rawUnit >= 0
+        ? rawUnit
+        : quantity > 0
+          ? price / quantity
+          : price
+    const rawFactor = r.saleUnitFactor != null ? Number(r.saleUnitFactor) : NaN
+    const saleUnitFactor = Number.isFinite(rawFactor) && rawFactor > 0 ? rawFactor : 1
+    return {
+      id: Number(r.id),
+      inventoryItemId: r.inventoryItemId != null ? Number(r.inventoryItemId) : null,
+      label: String(r.label ?? ''),
+      price,
+      quantity,
+      saleUnitFactor,
+      saleUnitId: r.saleUnitId != null ? Number(r.saleUnitId) : null,
+      saleUnitLabel: String(r.saleUnitLabel ?? ''),
+      sortOrder: Number(r.sortOrder ?? 0),
+      unitPrice,
+    }
+  })
 }
 
 export async function deleteTransaction(transactionId: number) {
@@ -2905,9 +3049,19 @@ export type TransactionTemplateItemLine = {
   inventoryItemId: number
   isItemActive: boolean
   itemName: string
+  /** Quantity in the template's chosen sale unit. */
   quantity: number
-  sortOrder: number
+  /** Per-unit selling price stored with the template. May differ from the
+   *  inventory item's default selling price (e.g. a combo discount). */
+  unitPrice: number
+  /** Inventory item's base unit label (e.g. "gallon"). */
   unitLabel: string
+  /** Empty string when authored in the base unit, otherwise the alt unit. */
+  saleUnitLabel: string
+  /** Snapshotted conversion ratio (1 = base unit). */
+  saleUnitFactor: number
+  saleUnitId: number | null
+  sortOrder: number
 }
 
 export type TransactionTemplateSummary = {
@@ -2922,6 +3076,13 @@ export type TransactionTemplateItemDraft = {
   inventoryItemId: number
   quantity: number
   sortOrder?: number
+  /** Optional. When omitted, persists 0 — the apply step then falls back to
+   *  the inventory item's selling price. */
+  unitPrice?: number
+  /** Sale-unit snapshot for templates. Leave undefined to mean "base unit". */
+  saleUnitLabel?: string
+  saleUnitFactor?: number
+  saleUnitId?: number | null
 }
 
 export type TransactionTemplateDraft = {
@@ -2937,12 +3098,16 @@ type TransactionTemplateFlatRow = {
   item_is_active: number | null
   item_name: string | null
   quantity: number | null
+  sale_unit_factor: number | null
+  sale_unit_id: number | null
+  sale_unit_label: string | null
   sort_order: number | null
   template_description: string
   template_id: number
   template_is_active: number
   template_name: string
   unit_label: string | null
+  unit_price: number | null
 }
 
 function mapFlatRowsToTemplateSummaries(rows: TransactionTemplateFlatRow[]): TransactionTemplateSummary[] {
@@ -2960,13 +3125,18 @@ function mapFlatRowsToTemplateSummaries(rows: TransactionTemplateFlatRow[]): Tra
       byId.set(row.template_id, t)
     }
     if (row.inventory_item_id != null && row.quantity != null) {
+      const rawFactor = row.sale_unit_factor != null ? Number(row.sale_unit_factor) : NaN
       t.items.push({
         inventoryItemId: row.inventory_item_id,
         isItemActive: Boolean(row.item_is_active),
         itemName: row.item_name ?? '(unknown item)',
         quantity: toNumber(row.quantity),
+        saleUnitFactor: Number.isFinite(rawFactor) && rawFactor > 0 ? rawFactor : 1,
+        saleUnitId: row.sale_unit_id != null ? Number(row.sale_unit_id) : null,
+        saleUnitLabel: row.sale_unit_label != null ? String(row.sale_unit_label) : '',
         sortOrder: row.sort_order ?? 0,
         unitLabel: row.unit_label ?? '',
+        unitPrice: row.unit_price != null ? toNumber(row.unit_price) : 0,
       })
     }
   }
@@ -2984,6 +3154,10 @@ export async function listTransactionTemplates(): Promise<TransactionTemplateSum
         tt.is_active AS template_is_active,
         ti.inventory_item_id AS inventory_item_id,
         ti.quantity AS quantity,
+        ti.unit_price AS unit_price,
+        ti.sale_unit_label AS sale_unit_label,
+        ti.sale_unit_factor AS sale_unit_factor,
+        ti.sale_unit_id AS sale_unit_id,
         ti.sort_order AS sort_order,
         i.name AS item_name,
         i.unit_label AS unit_label,
@@ -3008,6 +3182,10 @@ export async function getTransactionTemplateById(id: number): Promise<Transactio
         tt.is_active AS template_is_active,
         ti.inventory_item_id AS inventory_item_id,
         ti.quantity AS quantity,
+        ti.unit_price AS unit_price,
+        ti.sale_unit_label AS sale_unit_label,
+        ti.sale_unit_factor AS sale_unit_factor,
+        ti.sale_unit_id AS sale_unit_id,
         ti.sort_order AS sort_order,
         i.name AS item_name,
         i.unit_label AS unit_label,
@@ -3044,6 +3222,12 @@ export async function saveTransactionTemplate(draft: TransactionTemplateDraft): 
     if (!Number.isFinite(q) || q <= 0) {
       throw new Error('Each line must have a positive quantity.')
     }
+    if (item.unitPrice != null) {
+      const u = Number(item.unitPrice)
+      if (!Number.isFinite(u) || u < 0) {
+        throw new Error('Each line must have a non-negative unit price.')
+      }
+    }
   }
 
   if (draft.id) {
@@ -3062,12 +3246,39 @@ export async function saveTransactionTemplate(draft: TransactionTemplateDraft): 
     await database.execute(`DELETE FROM transaction_template_items WHERE template_id = $1`, [draft.id])
     let order = 0
     for (const item of draft.items) {
+      const unitPrice =
+        item.unitPrice != null && Number.isFinite(item.unitPrice) && item.unitPrice >= 0
+          ? item.unitPrice
+          : 0
+      const factor =
+        item.saleUnitFactor != null &&
+        Number.isFinite(item.saleUnitFactor) &&
+        item.saleUnitFactor > 0
+          ? item.saleUnitFactor
+          : 1
+      const altLabel = item.saleUnitLabel?.trim() ?? ''
+      const saleUnitId =
+        item.saleUnitId != null && Number.isFinite(Number(item.saleUnitId))
+          ? Number(item.saleUnitId)
+          : null
       await database.execute(
         `
-          INSERT INTO transaction_template_items (template_id, inventory_item_id, quantity, sort_order)
-          VALUES ($1, $2, $3, $4)
+          INSERT INTO transaction_template_items (
+            template_id, inventory_item_id, quantity, unit_price,
+            sale_unit_label, sale_unit_factor, sale_unit_id, sort_order
+          )
+          VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
         `,
-        [draft.id, item.inventoryItemId, item.quantity, item.sortOrder ?? order],
+        [
+          draft.id,
+          item.inventoryItemId,
+          item.quantity,
+          unitPrice,
+          altLabel,
+          factor,
+          saleUnitId,
+          item.sortOrder ?? order,
+        ],
       )
       order += 1
     }
@@ -3088,12 +3299,39 @@ export async function saveTransactionTemplate(draft: TransactionTemplateDraft): 
   }
   let order = 0
   for (const item of draft.items) {
+    const unitPrice =
+      item.unitPrice != null && Number.isFinite(item.unitPrice) && item.unitPrice >= 0
+        ? item.unitPrice
+        : 0
+    const factor =
+      item.saleUnitFactor != null &&
+      Number.isFinite(item.saleUnitFactor) &&
+      item.saleUnitFactor > 0
+        ? item.saleUnitFactor
+        : 1
+    const altLabel = item.saleUnitLabel?.trim() ?? ''
+    const saleUnitId =
+      item.saleUnitId != null && Number.isFinite(Number(item.saleUnitId))
+        ? Number(item.saleUnitId)
+        : null
     await database.execute(
       `
-        INSERT INTO transaction_template_items (template_id, inventory_item_id, quantity, sort_order)
-        VALUES ($1, $2, $3, $4)
+        INSERT INTO transaction_template_items (
+          template_id, inventory_item_id, quantity, unit_price,
+          sale_unit_label, sale_unit_factor, sale_unit_id, sort_order
+        )
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
       `,
-      [templateId, item.inventoryItemId, item.quantity, item.sortOrder ?? order],
+      [
+        templateId,
+        item.inventoryItemId,
+        item.quantity,
+        unitPrice,
+        altLabel,
+        factor,
+        saleUnitId,
+        item.sortOrder ?? order,
+      ],
     )
     order += 1
   }
@@ -3102,6 +3340,17 @@ export async function saveTransactionTemplate(draft: TransactionTemplateDraft): 
 
 export async function deleteTransactionTemplate(id: number): Promise<void> {
   const database = await getDatabase()
+  // `inventory_movements.template_id` references `transaction_templates(id)`
+  // with no ON DELETE clause (defined in migration 16), which means a template
+  // that has ever been used in a sale would be blocked from deletion by the
+  // foreign key. Nullify those references first so the template — and its
+  // line items via ON DELETE CASCADE — can be removed cleanly. The historical
+  // movements stay attached to their transactions; only the template link
+  // is dropped.
+  await database.execute(
+    `UPDATE inventory_movements SET template_id = NULL WHERE template_id = $1`,
+    [id],
+  )
   await database.execute(`DELETE FROM transaction_templates WHERE id = $1`, [id])
 }
 
@@ -3125,6 +3374,9 @@ export type InventoryCategoryDraft = {
 }
 
 export type InventoryItem = {
+  /** Alternate sale units (e.g. selling a "gallon" item by the "cup"). Always
+   * sorted by `sortOrder` then label. Empty when the item has no alt units. */
+  altUnits: InventoryItemUnit[]
   categoryCode: string
   categoryId: number | null
   categoryLabel: string
@@ -3139,6 +3391,8 @@ export type InventoryItem = {
   lastRestockedDate: string | null
   lowStockThreshold: number
   name: string
+  /** Default per-unit selling price used when the item is added to a sale. */
+  sellingPrice: number
   status: string
   stockValue: number
   supplier: string
@@ -3146,7 +3400,33 @@ export type InventoryItem = {
   unitType: string
 }
 
+export type InventoryItemUnit = {
+  id: number
+  itemId: number
+  unitLabel: string
+  /** How many of this alt unit fit in one base unit (e.g. 31 cups per gallon). */
+  unitsPerBase: number
+  /** Optional default per-unit price for this alt unit. 0 means "compute as
+   * inventory's selling price ÷ unitsPerBase" at point-of-sale. */
+  unitPrice: number
+  sortOrder: number
+  isActive: boolean
+}
+
+export type InventoryItemUnitDraft = {
+  /** Set when updating an existing alt unit, omit to insert a new one. */
+  id?: number
+  unitLabel: string
+  unitsPerBase: number
+  unitPrice: number
+  sortOrder?: number
+  isActive?: boolean
+}
+
 export type InventoryItemDraft = {
+  /** Optional. When provided, replaces the item's alt unit set atomically.
+   * Pass `[]` to remove all alt units; omit to leave them untouched. */
+  altUnits?: InventoryItemUnitDraft[]
   category: string
   categoryId?: number | null
   costPerUnit: number
@@ -3155,6 +3435,7 @@ export type InventoryItemDraft = {
   lastMaintenanceDate: string
   lowStockThreshold: number
   name: string
+  sellingPrice: number
   status: string
   supplier: string
   unitLabel: string
@@ -3202,6 +3483,7 @@ type InventoryItemRow = {
   lastRestockedDate: string | null
   lowStockThreshold: number
   name: string
+  sellingPrice: number
   status: string
   supplier: string
   unitLabel: string
@@ -3462,6 +3744,7 @@ export async function listInventoryItems(filters?: {
         i.unit_type AS unitType,
         i.unit_label AS unitLabel,
         i.cost_per_unit AS costPerUnit,
+        i.selling_price AS sellingPrice,
         i.is_active AS isActive,
         i.low_stock_threshold AS lowStockThreshold,
         i.category_id AS categoryId,
@@ -3487,11 +3770,53 @@ export async function listInventoryItems(filters?: {
     params,
   )
 
+  // Batch-load alt units for all items in one query to avoid N+1.
+  const altUnitsByItemId = new Map<number, InventoryItemUnit[]>()
+  if (rows.length > 0) {
+    const ids = rows.map((r) => r.id)
+    const placeholders = ids.map((_, i) => `$${i + 1}`).join(', ')
+    const altRows = await database.select<
+      Array<{
+        id: number
+        item_id: number
+        unit_label: string
+        units_per_base: number
+        unit_price: number
+        sort_order: number
+        is_active: number
+      }>
+    >(
+      `
+        SELECT id, item_id, unit_label, units_per_base, unit_price,
+               sort_order, is_active
+        FROM inventory_item_units
+        WHERE item_id IN (${placeholders})
+        ORDER BY item_id, sort_order, unit_label
+      `,
+      ids,
+    )
+    for (const r of altRows) {
+      const list = altUnitsByItemId.get(r.item_id) ?? []
+      list.push({
+        id: Number(r.id),
+        itemId: Number(r.item_id),
+        unitLabel: String(r.unit_label ?? ''),
+        unitsPerBase: toNumber(r.units_per_base),
+        unitPrice: toNumber(r.unit_price),
+        sortOrder: Number(r.sort_order ?? 0),
+        isActive: Boolean(r.is_active),
+      })
+      altUnitsByItemId.set(r.item_id, list)
+    }
+  }
+
   let items = rows.map((row) => {
     const currentStock = toNumber(row.currentStock)
     const costPerUnit = toNumber(row.costPerUnit)
+    const sellingPrice = toNumber(row.sellingPrice)
     const lowStockThreshold = toNumber(row.lowStockThreshold)
     return {
+      altUnits: altUnitsByItemId.get(row.id) ?? [],
       category: row.categoryCode,
       categoryCode: row.categoryCode,
       categoryId: row.categoryId,
@@ -3506,6 +3831,7 @@ export async function listInventoryItems(filters?: {
       lastRestockedDate: row.lastRestockedDate,
       lowStockThreshold,
       name: row.name,
+      sellingPrice,
       status: row.status,
       stockValue: currentStock * costPerUnit,
       supplier: row.supplier,
@@ -3529,6 +3855,9 @@ export async function saveInventoryItem(draft: InventoryItemDraft, id?: number):
   const database = await getDatabase()
   const resolvedCategory = await resolveInventoryCategory(database, draft.categoryId, draft.category)
 
+  const sellingPrice =
+    Number.isFinite(draft.sellingPrice) && draft.sellingPrice >= 0 ? draft.sellingPrice : 0
+
   if (id) {
     await database.execute(
       `
@@ -3545,8 +3874,9 @@ export async function saveInventoryItem(draft: InventoryItemDraft, id?: number):
           supplier = $10,
           status = $11,
           last_maintenance_date = $12,
+          selling_price = $13,
           updated_at = CURRENT_TIMESTAMP
-        WHERE id = $13
+        WHERE id = $14
       `,
       [
         draft.name,
@@ -3561,9 +3891,13 @@ export async function saveInventoryItem(draft: InventoryItemDraft, id?: number):
         draft.supplier,
         draft.status,
         draft.lastMaintenanceDate,
+        sellingPrice,
         id,
       ],
     )
+    if (draft.altUnits !== undefined) {
+      await replaceInventoryItemUnits(id, draft.altUnits)
+    }
     return id
   }
 
@@ -3581,9 +3915,10 @@ export async function saveInventoryItem(draft: InventoryItemDraft, id?: number):
         category,
         supplier,
         status,
-        last_maintenance_date
+        last_maintenance_date,
+        selling_price
       )
-      VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
+      VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
     `,
     [
       draft.name,
@@ -3598,9 +3933,153 @@ export async function saveInventoryItem(draft: InventoryItemDraft, id?: number):
       draft.supplier,
       draft.status,
       draft.lastMaintenanceDate,
+      sellingPrice,
     ],
   )
-  return result.lastInsertId as number
+  const newId = result.lastInsertId as number
+  if (draft.altUnits !== undefined) {
+    await replaceInventoryItemUnits(newId, draft.altUnits)
+  }
+  return newId
+}
+
+export async function listInventoryItemUnits(itemId: number): Promise<InventoryItemUnit[]> {
+  const database = await getDatabase()
+  const rows = await database.select<
+    Array<{
+      id: number
+      item_id: number
+      unit_label: string
+      units_per_base: number
+      unit_price: number
+      sort_order: number
+      is_active: number
+    }>
+  >(
+    `
+      SELECT id, item_id, unit_label, units_per_base, unit_price,
+             sort_order, is_active
+      FROM inventory_item_units
+      WHERE item_id = $1
+      ORDER BY sort_order ASC, unit_label ASC
+    `,
+    [itemId],
+  )
+  return rows.map((r) => ({
+    id: Number(r.id),
+    itemId: Number(r.item_id),
+    unitLabel: String(r.unit_label ?? ''),
+    unitsPerBase: toNumber(r.units_per_base),
+    unitPrice: toNumber(r.unit_price),
+    sortOrder: Number(r.sort_order ?? 0),
+    isActive: Boolean(r.is_active),
+  }))
+}
+
+/**
+ * Atomically replace the alt unit set for an item. Existing rows that
+ * collide on `(item_id, unit_label)` are updated in place to preserve their
+ * `id` (so historical line items still reference them); any prior rows
+ * whose label is not in the new set are deleted.
+ */
+export async function replaceInventoryItemUnits(
+  itemId: number,
+  drafts: InventoryItemUnitDraft[],
+): Promise<void> {
+  const database = await getDatabase()
+  const normalized = drafts
+    .map((d, idx) => {
+      const label = (d.unitLabel ?? '').trim()
+      const ratio = Number(d.unitsPerBase)
+      const price = Number(d.unitPrice)
+      return {
+        id: d.id != null && Number.isFinite(d.id) && d.id > 0 ? Number(d.id) : null,
+        unitLabel: label,
+        unitsPerBase: Number.isFinite(ratio) && ratio > 0 ? ratio : NaN,
+        unitPrice: Number.isFinite(price) && price >= 0 ? price : 0,
+        sortOrder: d.sortOrder ?? idx,
+        isActive: d.isActive == null ? true : Boolean(d.isActive),
+      }
+    })
+    .filter((d) => d.unitLabel !== '' && Number.isFinite(d.unitsPerBase))
+
+  // Reject duplicate labels in the same item to keep UNIQUE(item_id, unit_label) clean.
+  const seen = new Set<string>()
+  for (const d of normalized) {
+    const key = d.unitLabel.toLowerCase()
+    if (seen.has(key)) {
+      throw new Error(`Duplicate alt unit label "${d.unitLabel}".`)
+    }
+    seen.add(key)
+  }
+
+  const existing = await database.select<Array<{ id: number; unit_label: string }>>(
+    `SELECT id, unit_label FROM inventory_item_units WHERE item_id = $1`,
+    [itemId],
+  )
+  const existingByLabel = new Map<string, number>()
+  for (const r of existing) {
+    existingByLabel.set(String(r.unit_label).toLowerCase(), Number(r.id))
+  }
+
+  const keepIds = new Set<number>()
+  for (const d of normalized) {
+    const matchedId =
+      d.id != null && existing.some((e) => Number(e.id) === d.id)
+        ? d.id
+        : existingByLabel.get(d.unitLabel.toLowerCase()) ?? null
+    if (matchedId != null) {
+      await database.execute(
+        `
+          UPDATE inventory_item_units SET
+            unit_label = $1,
+            units_per_base = $2,
+            unit_price = $3,
+            sort_order = $4,
+            is_active = $5
+          WHERE id = $6 AND item_id = $7
+        `,
+        [
+          d.unitLabel,
+          d.unitsPerBase,
+          d.unitPrice,
+          d.sortOrder,
+          d.isActive ? 1 : 0,
+          matchedId,
+          itemId,
+        ],
+      )
+      keepIds.add(matchedId)
+    } else {
+      const ins = await database.execute(
+        `
+          INSERT INTO inventory_item_units (
+            item_id, unit_label, units_per_base, unit_price, sort_order, is_active
+          )
+          VALUES ($1, $2, $3, $4, $5, $6)
+        `,
+        [
+          itemId,
+          d.unitLabel,
+          d.unitsPerBase,
+          d.unitPrice,
+          d.sortOrder,
+          d.isActive ? 1 : 0,
+        ],
+      )
+      const lid = ins.lastInsertId
+      const newId = typeof lid === 'number' ? lid : Number(lid)
+      if (Number.isFinite(newId) && newId > 0) keepIds.add(newId)
+    }
+  }
+
+  // Delete any prior rows that weren't kept. ON DELETE SET NULL on the
+  // line/template snapshots preserves the historical conversion factor.
+  for (const e of existing) {
+    if (!keepIds.has(Number(e.id))) {
+      await database.execute(`DELETE FROM inventory_item_units WHERE id = $1`, [e.id])
+    }
+  }
 }
 
 export async function listInventoryMovements(filters?: {
@@ -6186,6 +6665,144 @@ export async function vacuumInto(targetPath: string): Promise<void> {
   // VACUUM INTO does not support parameter binding in SQLite —
   // the path is constructed by us (not user input) so this is safe.
   await database.execute(`VACUUM INTO '${targetPath.replaceAll("'", "''")}'`)
+}
+
+// ─── Natural-key lookups for the JSON backup importer ────────────────────────
+//
+// These four helpers exist so the import flow in `src/features/backup/` can
+// resolve incoming foreign-key references (which travel as natural-key tuples
+// instead of raw ids) to the LOCAL database id of the matching row. They are
+// kept short and read-only on purpose; the importer does its own bulk-loading
+// of every entity for the dry-run preview, but uses these per-row queries
+// while it walks the apply plan.
+
+export async function findCustomerByNaturalKey(
+  name: string,
+  phone: string,
+): Promise<{ id: number; name: string; phone: string } | null> {
+  const database = await getDatabase()
+  const rows = await database.select<Array<{ id: number; name: string; phone: string }>>(
+    `
+      SELECT id, name, phone
+      FROM customers
+      WHERE LOWER(TRIM(name)) = LOWER(TRIM($1))
+        AND TRIM(COALESCE(phone, '')) = TRIM(COALESCE($2, ''))
+      ORDER BY id
+      LIMIT 1
+    `,
+    [name, phone],
+  )
+  return rows[0] ?? null
+}
+
+export async function findInventoryItemByName(
+  name: string,
+): Promise<{ id: number; name: string } | null> {
+  const database = await getDatabase()
+  const rows = await database.select<Array<{ id: number; name: string }>>(
+    `
+      SELECT id, name
+      FROM inventory_items
+      WHERE LOWER(TRIM(name)) = LOWER(TRIM($1))
+      ORDER BY id
+      LIMIT 1
+    `,
+    [name],
+  )
+  return rows[0] ?? null
+}
+
+export async function findStaffByNaturalKey(
+  firstName: string,
+  middleName: string,
+  lastName: string,
+  birthdate: string,
+): Promise<{ id: number } | null> {
+  const database = await getDatabase()
+  const rows = await database.select<Array<{ id: number }>>(
+    `
+      SELECT id
+      FROM staff
+      WHERE LOWER(TRIM(first_name)) = LOWER(TRIM($1))
+        AND LOWER(TRIM(COALESCE(middle_name, ''))) = LOWER(TRIM(COALESCE($2, '')))
+        AND LOWER(TRIM(last_name)) = LOWER(TRIM($3))
+        AND TRIM(COALESCE(birthdate, '')) = TRIM(COALESCE($4, ''))
+      ORDER BY id
+      LIMIT 1
+    `,
+    [firstName, middleName, lastName, birthdate],
+  )
+  return rows[0] ?? null
+}
+
+/**
+ * Finds the existing transaction id (if any) matching the same identity
+ * fields used by the JSON-backup transaction fingerprint. Looking up by the
+ * fields themselves (denormalized SQL) instead of by the hash, since the
+ * fingerprint is a derived value never stored in the DB.
+ */
+export async function findTransactionByIdentity(input: {
+  entryDate: string
+  transactionTypeCode: string
+  categoryLabel: string
+  amount: number
+  description: string
+  customerName: string | null
+  customerPhone: string | null
+  kg: number | null
+  loads: number | null
+  isLoyaltyReward: boolean
+}): Promise<{ id: number } | null> {
+  const database = await getDatabase()
+  const wantsCustomer = input.customerName != null
+  const rows = await database.select<Array<{ id: number }>>(
+    `
+      SELECT t.id AS id
+      FROM transactions t
+      JOIN transaction_types tt ON tt.id = t.transaction_type_id
+      JOIN categories c ON c.id = t.category_id
+      LEFT JOIN customers cust ON cust.id = t.customer_id
+      WHERE t.entry_date = $1
+        AND tt.code = $2
+        AND LOWER(TRIM(c.label)) = LOWER(TRIM($3))
+        AND ROUND(t.amount, 2) = ROUND($4, 2)
+        AND COALESCE(TRIM(t.description), '') = COALESCE(TRIM($5), '')
+        AND (
+          ($6 = 0 AND t.customer_id IS NULL)
+          OR (
+            $6 = 1
+            AND cust.id IS NOT NULL
+            AND LOWER(TRIM(cust.name)) = LOWER(TRIM($7))
+            AND TRIM(COALESCE(cust.phone, '')) = TRIM(COALESCE($8, ''))
+          )
+        )
+        AND (
+          ($9 IS NULL AND t.kg IS NULL)
+          OR ($9 IS NOT NULL AND t.kg IS NOT NULL AND ROUND(t.kg, 4) = ROUND($9, 4))
+        )
+        AND (
+          ($10 IS NULL AND t.loads IS NULL)
+          OR ($10 IS NOT NULL AND t.loads IS NOT NULL AND ROUND(t.loads, 4) = ROUND($10, 4))
+        )
+        AND COALESCE(t.is_loyalty_reward, 0) = $11
+      ORDER BY t.id
+      LIMIT 1
+    `,
+    [
+      input.entryDate,
+      input.transactionTypeCode,
+      input.categoryLabel,
+      input.amount,
+      input.description ?? '',
+      wantsCustomer ? 1 : 0,
+      input.customerName ?? '',
+      input.customerPhone ?? '',
+      input.kg,
+      input.loads,
+      input.isLoyaltyReward ? 1 : 0,
+    ],
+  )
+  return rows[0] ?? null
 }
 
 // ─── Reset All Data ──────────────────────────────────────────────────────────

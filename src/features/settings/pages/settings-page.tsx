@@ -5,13 +5,16 @@ import {
   AlertTriangle,
   Check,
   Database,
+  Download,
   Gift,
   ImagePlus,
   Monitor,
   Moon,
+  RefreshCw,
   Save,
   Sun,
   Trash2,
+  Upload,
   User,
   Wallet,
   X,
@@ -21,6 +24,8 @@ import { useNavigate } from "react-router-dom"
 import { useTheme } from "next-themes"
 import { toast } from "sonner"
 import { useAuth } from "../../auth/use-auth"
+import { BackupImportDialog } from "../../backup/backup-import-dialog"
+import { exportActiveBusinessToJson } from "../../backup/backup-export"
 import {
   loadAppSettings,
   saveAppSettings,
@@ -74,6 +79,11 @@ export function SettingsPage() {
 
   const [isExporting, setIsExporting] = useState(false)
   const [exportMessage, setExportMessage] = useState<string | null>(null)
+
+  const [isExportingJson, setIsExportingJson] = useState(false)
+  const [jsonExportMessage, setJsonExportMessage] = useState<string | null>(null)
+  const [importDialogOpen, setImportDialogOpen] = useState(false)
+  const [importRefreshKey, setImportRefreshKey] = useState(0)
 
   const [profileDisplayName, setProfileDisplayName] = useState(
     user?.displayName ?? "",
@@ -193,6 +203,28 @@ export function SettingsPage() {
       toast.error("Backup failed", { description: msg })
     } finally {
       setIsExporting(false)
+    }
+  }
+
+  async function handleExportJson() {
+    setIsExportingJson(true)
+    setJsonExportMessage(null)
+    try {
+      const result = await exportActiveBusinessToJson()
+      const totalRows = Object.values(result.counts).reduce(
+        (acc, n) => acc + (typeof n === "number" ? n : 0),
+        0,
+      )
+      setJsonExportMessage(`Saved ${result.filename} (${totalRows} rows).`)
+      toast.success("Backup file written", {
+        description: `${result.filename} (${(result.byteLength / 1024).toFixed(1)} KB)`,
+      })
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : "Unknown error"
+      setJsonExportMessage(`Export failed: ${msg}`)
+      toast.error("Export failed", { description: msg })
+    } finally {
+      setIsExportingJson(false)
     }
   }
 
@@ -699,6 +731,57 @@ export function SettingsPage() {
           </div>
         )}
 
+        {/* Backup & Sync (manual JSON export/import for cross-device sync) */}
+        <div className="grid grid-cols-1 gap-x-10 gap-y-4 py-8 md:grid-cols-[280px_1fr]">
+          <div>
+            <div className="flex items-center gap-2">
+              <RefreshCw className="h-4 w-4 text-[var(--muted)]" />
+              <h2 className="text-sm font-semibold">Backup &amp; Sync</h2>
+            </div>
+            <p className="mt-1 text-xs leading-relaxed text-[var(--muted)]">
+              Export every transaction, customer, staff record, inventory item,
+              and incident report from this business as a single JSON file you
+              can copy to another device. The importer skips identical rows and
+              asks you per row whether to overwrite anything that conflicts.
+              User accounts and permissions are intentionally not included.
+            </p>
+          </div>
+          <div className="w-full max-w-[480px] space-y-3 md:justify-self-end">
+            {jsonExportMessage && (
+              <p
+                className={`text-xs ${jsonExportMessage.includes("failed") ? "text-red-500" : "text-emerald-500"}`}
+              >
+                {jsonExportMessage}
+              </p>
+            )}
+            <div className="flex flex-wrap items-center gap-2">
+              <button
+                className="inline-flex items-center gap-2 rounded-lg border border-[var(--border)] bg-[var(--background)] px-4 py-2.5 text-sm font-medium text-[var(--foreground)] transition hover:border-[var(--accent)]/50 hover:text-[var(--accent)] disabled:opacity-50"
+                disabled={isExportingJson}
+                onClick={() => {
+                  void handleExportJson()
+                }}
+                type="button"
+              >
+                <Download className="h-4 w-4" />
+                {isExportingJson ? "Exporting…" : "Export all data (.json)"}
+              </button>
+              <button
+                className="inline-flex items-center gap-2 rounded-lg border border-[var(--border)] bg-[var(--background)] px-4 py-2.5 text-sm font-medium text-[var(--foreground)] transition hover:border-[var(--accent)]/50 hover:text-[var(--accent)]"
+                onClick={() => setImportDialogOpen(true)}
+                type="button"
+              >
+                <Upload className="h-4 w-4" />
+                Import from .json
+              </button>
+            </div>
+            <p className="text-[11px] leading-relaxed text-[var(--muted)]">
+              Tip: copy the file to a USB drive or send it through any chat app — it's
+              just text.
+            </p>
+          </div>
+        </div>
+
         {/* Database backup */}
         <div className="grid grid-cols-1 gap-x-10 gap-y-4 py-8 md:grid-cols-[280px_1fr]">
           <div>
@@ -836,6 +919,30 @@ export function SettingsPage() {
           </div>
         </div>
       )}
+
+      <BackupImportDialog
+        key={importRefreshKey}
+        onApplied={() => {
+          // Bump the key so the next time the dialog is reopened it starts
+          // fresh; also nudge any other in-memory caches by reloading the
+          // settings the user can see on this page.
+          setImportRefreshKey((k) => k + 1)
+          void Promise.all([
+            getLoyaltySettings(),
+            getPayrollSettings(),
+          ]).then(([loyalty, payroll]) => {
+            setLoyaltyKgPerLoad(loyalty.kgPerLoad)
+            setLoyaltyFreeAfterLoads(loyalty.freeAfterLoads)
+            setPayrollCutoffDay(payroll.cutoffDay)
+            setHolidayMultiplier(payroll.holidayDefaultMultiplier)
+            setAutoDeductCashAdvances(payroll.autoDeductCashAdvances)
+          }).catch(() => {
+            /* refreshing the visible settings is best-effort */
+          })
+        }}
+        onClose={() => setImportDialogOpen(false)}
+        open={importDialogOpen}
+      />
     </section>
   )
 }

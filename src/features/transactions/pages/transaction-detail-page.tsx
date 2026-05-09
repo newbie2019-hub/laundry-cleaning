@@ -2,6 +2,7 @@ import type { FormEvent, ReactNode } from 'react'
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { Link, useParams } from 'react-router-dom'
 import { format } from 'date-fns'
+import { toast } from 'sonner'
 import {
   ArrowDownToLine,
   ArrowLeft,
@@ -218,12 +219,17 @@ export function TransactionDetailPage() {
   }
 
   async function handleDeleteMovement(movementId: number) {
-    if (!canDeleteInventory) return
+    if (!canDeleteInventory) {
+      toast.error('You do not have permission to delete inventory entries.')
+      return
+    }
     try {
       await deleteInventoryMovement(movementId)
       await loadAll()
-    } catch {
-      /* ignore */
+      toast.success('Movement deleted.')
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : 'Unable to delete this movement.'
+      toast.error('Delete failed', { description: msg })
     }
   }
 
@@ -350,15 +356,30 @@ export function TransactionDetailPage() {
           </div>
           {hasLineItems ? (
             <div className="space-y-2 pl-3">
-              {lineItems.map((li) => (
-                <div
-                  className="flex items-center justify-between gap-6 text-[var(--muted)]"
-                  key={li.id}
-                >
-                  <span className="truncate">{li.label}</span>
-                  <span className="tabular-nums">{formatCurrency(li.price)}</span>
-                </div>
-              ))}
+              {lineItems.map((li) => {
+                const usingAlt =
+                  li.saleUnitLabel !== '' && li.saleUnitFactor !== 1
+                const showBreakdown =
+                  usingAlt ||
+                  (Number.isFinite(li.quantity) && li.quantity > 0 && li.quantity !== 1)
+                return (
+                  <div
+                    className="flex items-start justify-between gap-6 text-[var(--muted)]"
+                    key={li.id}
+                  >
+                    <div className="min-w-0">
+                      <p className="truncate">{li.label}</p>
+                      {showBreakdown ? (
+                        <p className="text-xs tabular-nums">
+                          {li.quantity} {usingAlt ? li.saleUnitLabel : ''} @ {formatCurrency(li.unitPrice)}
+                          {usingAlt ? ` / ${li.saleUnitLabel}` : ''}
+                        </p>
+                      ) : null}
+                    </div>
+                    <span className="tabular-nums">{formatCurrency(li.price)}</span>
+                  </div>
+                )
+              })}
             </div>
           ) : null}
           <div className="flex items-center justify-between gap-6 border-t border-[var(--border)] pt-4 text-base font-semibold">

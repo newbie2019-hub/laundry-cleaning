@@ -2,6 +2,7 @@ import type { FormEvent, ReactNode } from 'react'
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { Link, useSearchParams } from 'react-router-dom'
 import { endOfMonth, format } from 'date-fns'
+import { toast } from 'sonner'
 import {
   ArrowDownToLine,
   ArrowUpFromLine,
@@ -373,7 +374,11 @@ export function InventoryMovementsPage() {
       await deleteInventoryMovement(id)
       await loadMovements()
       await loadItems()
-    } catch { /* ignore */ }
+      toast.success('Movement deleted.')
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : 'Unable to delete this movement.'
+      toast.error('Delete failed', { description: msg })
+    }
   }
 
   const QUICK_NOTES_IN = ['Restock', 'Return', 'Adjustment']

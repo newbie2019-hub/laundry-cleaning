@@ -10,6 +10,7 @@ import {
   Building2,
   CreditCard,
   Download,
+  Minus,
   Pencil,
   Plus,
   Search,
@@ -242,6 +243,21 @@ const modalInputClass =
 const modalSelectClass =
   'h-10 w-full rounded-md border border-gray-300 bg-gray-50 px-3 text-sm text-gray-900 outline-none focus:border-blue-500 focus:ring-1 focus:ring-blue-500/30 transition'
 
+// Inventory unit types that are intrinsically fractional (e.g. 1.5 kg, 0.25 L).
+// Other unit types still allow decimals — the only difference is whether the
+// browser stepper buttons increment by 0.01 or by 1.
+const MEASURABLE_UNIT_TYPES = new Set(['liquid', 'weight', 'length'])
+
+function lineItemQtyInputProps(unitType: string | undefined) {
+  const measurable = unitType ? MEASURABLE_UNIT_TYPES.has(unitType) : false
+  // `step="any"` lets the user type any decimal (no browser validation error)
+  // while keeping the up/down arrow keys at sensible whole-number increments
+  // for piece-style units. Measurable units get fine 0.01 steps.
+  return measurable
+    ? { step: '0.01', min: '0.01' }
+    : { step: 'any', min: '0.01' }
+}
+
 type FilterPeriodMode = 'dateRange' | 'month'
 
 export function TransactionsPage() {
@@ -305,7 +321,15 @@ export function TransactionsPage() {
       key: string
       inventoryItemId: number | null
       label: string
+      quantityStr: string
+      /** Per-unit price (line total = qty × unit price). */
       priceStr: string
+      /** Empty string = base unit; otherwise the alt unit's label. */
+      saleUnitLabel: string
+      /** Conversion factor stored on the line (1 = base unit). */
+      saleUnitFactor: number
+      /** FK to inventory_item_units row, when an alt unit is chosen. */
+      saleUnitId: number | null
     }>
   >([])
   const lineItemListId = useId()
@@ -321,6 +345,10 @@ export function TransactionsPage() {
       unitLabel: string
       unitPrice: number
       currentStock: number
+      /** Sale-unit snapshot from the template; '' = base unit. */
+      saleUnitLabel: string
+      saleUnitFactor: number
+      saleUnitId: number | null
     }>
   >([])
 
@@ -610,7 +638,16 @@ export function TransactionsPage() {
   const addLineItem = useCallback(() => {
     setFormLineItems((prev) => [
       ...prev,
-      { key: makeLineItemKey(), inventoryItemId: null, label: '', priceStr: '' },
+      {
+        key: makeLineItemKey(),
+        inventoryItemId: null,
+        label: '',
+        quantityStr: '1',
+        priceStr: '',
+        saleUnitLabel: '',
+        saleUnitFactor: 1,
+        saleUnitId: null,
+      },
     ])
   }, [makeLineItemKey])
 
@@ -626,18 +663,28 @@ export function TransactionsPage() {
           const match = formInventoryOptions.find(
             (inv) => inv.name.toLowerCase() === label.trim().toLowerCase(),
           )
+          // Re-link inventory: when the link changes, reset the alt-unit
+          // selection because the new item has a different alt-unit set.
+          const isNewLink = match ? l.inventoryItemId !== match.id : false
           let nextPriceStr = l.priceStr
-          if (match && (l.priceStr.trim() === '' || l.inventoryItemId !== match.id)) {
-            nextPriceStr =
-              Number.isFinite(match.costPerUnit) && match.costPerUnit > 0
-                ? String(match.costPerUnit)
-                : nextPriceStr
+          if (match && (l.priceStr.trim() === '' || isNewLink)) {
+            const autoFill =
+              Number.isFinite(match.sellingPrice) && match.sellingPrice > 0
+                ? match.sellingPrice
+                : Number.isFinite(match.costPerUnit) && match.costPerUnit > 0
+                  ? match.costPerUnit
+                  : null
+            if (autoFill != null) nextPriceStr = String(autoFill)
           }
           return {
             ...l,
             label,
             inventoryItemId: match ? match.id : null,
             priceStr: nextPriceStr,
+            // Reset the sale unit when the inventory link changes (or is removed).
+            saleUnitLabel: isNewLink || match == null ? '' : l.saleUnitLabel,
+            saleUnitFactor: isNewLink || match == null ? 1 : l.saleUnitFactor,
+            saleUnitId: isNewLink || match == null ? null : l.saleUnitId,
           }
         }),
       )
@@ -645,16 +692,94 @@ export function TransactionsPage() {
     [formInventoryOptions],
   )
 
+  const updateLineItemQuantity = useCallback((key: string, quantityStr: string) => {
+    setFormLineItems((prev) => prev.map((l) => (l.key === key ? { ...l, quantityStr } : l)))
+  }, [])
+
   const updateLineItemPrice = useCallback((key: string, priceStr: string) => {
     setFormLineItems((prev) => prev.map((l) => (l.key === key ? { ...l, priceStr } : l)))
   }, [])
 
+  /**
+   * Switch the sale unit for a line. Pass an empty `unitId` (or '') to revert
+   * to the inventory item's base unit. We reset the unit price to the chosen
+   * unit's default (alt-unit's `unitPrice`, or `sellingPrice / factor` when
+   * the alt has no explicit price).
+   */
+  const updateLineItemUnit = useCallback(
+    (key: string, unitId: string) => {
+      setFormLineItems((prev) =>
+        prev.map((l) => {
+          if (l.key !== key) return l
+          const inv =
+            l.inventoryItemId != null
+              ? formInventoryOptions.find((i) => i.id === l.inventoryItemId)
+              : undefined
+          if (unitId === '') {
+            // Revert to base unit; auto-fill price from inventory selling/cost.
+            const basePrice =
+              inv && Number.isFinite(inv.sellingPrice) && inv.sellingPrice > 0
+                ? inv.sellingPrice
+                : inv && Number.isFinite(inv.costPerUnit) && inv.costPerUnit > 0
+                  ? inv.costPerUnit
+                  : null
+            return {
+              ...l,
+              priceStr: basePrice != null ? String(basePrice) : l.priceStr,
+              saleUnitLabel: '',
+              saleUnitFactor: 1,
+              saleUnitId: null,
+            }
+          }
+          if (!inv) return l
+          const altId = Number(unitId)
+          const alt = inv.altUnits.find((u) => u.id === altId)
+          if (!alt) return l
+          const altDefaultPrice =
+            alt.unitPrice > 0
+              ? alt.unitPrice
+              : inv.sellingPrice > 0
+                ? inv.sellingPrice / alt.unitsPerBase
+                : inv.costPerUnit > 0
+                  ? inv.costPerUnit / alt.unitsPerBase
+                  : null
+          return {
+            ...l,
+            priceStr:
+              altDefaultPrice != null
+                ? String(Math.round(altDefaultPrice * 100) / 100)
+                : l.priceStr,
+            saleUnitLabel: alt.unitLabel,
+            saleUnitFactor: alt.unitsPerBase,
+            saleUnitId: alt.id,
+          }
+        }),
+      )
+    },
+    [formInventoryOptions],
+  )
+
   const lineItemsTotal = useMemo(() => {
     return formLineItems.reduce((sum, li) => {
-      const p = Number(li.priceStr)
-      return sum + (Number.isFinite(p) && p > 0 && li.label.trim() !== '' ? p : 0)
+      const qty = Number(li.quantityStr)
+      const unit = Number(li.priceStr)
+      const valid =
+        li.label.trim() !== '' &&
+        Number.isFinite(qty) && qty > 0 &&
+        Number.isFinite(unit) && unit >= 0
+      return sum + (valid ? qty * unit : 0)
     }, 0)
   }, [formLineItems])
+
+  const templatePreviewComboTotal = useMemo(() => {
+    return formTemplatePreviewLines.reduce((sum, line) => {
+      if (line.missingItem) return sum
+      const qty = Number(line.quantityStr)
+      if (!Number.isFinite(qty) || qty <= 0) return sum
+      if (!Number.isFinite(line.unitPrice) || line.unitPrice <= 0) return sum
+      return sum + qty * line.unitPrice
+    }, 0)
+  }, [formTemplatePreviewLines])
 
   const baseAmountNum = useMemo(() => {
     const n = Number(amount)
@@ -763,10 +888,34 @@ export function TransactionsPage() {
       unitLabel: string
       unitPrice: number
       currentStock: number
+      saleUnitLabel: string
+      saleUnitFactor: number
+      saleUnitId: number | null
     }> = []
     for (const it of tpl.items) {
       const inv = stockById.get(it.inventoryItemId)
       const key = `${tpl.id}-${it.inventoryItemId}-${Math.random().toString(36).slice(2, 9)}`
+      // Resolve the per-line unit price: prefer the template's stored value,
+      // then the inventory item's selling price, finally fall back to cost.
+      const tplUnit = Number.isFinite(it.unitPrice) && it.unitPrice > 0 ? it.unitPrice : 0
+      // The template's snapshot defines its sale unit; honor it if still valid.
+      const altFactor =
+        Number.isFinite(it.saleUnitFactor) && it.saleUnitFactor > 0
+          ? it.saleUnitFactor
+          : 1
+      const usingAlt = it.saleUnitLabel !== '' && altFactor !== 1
+      const baseInvPrice =
+        inv && Number.isFinite(inv.sellingPrice) && inv.sellingPrice > 0
+          ? inv.sellingPrice
+          : inv && Number.isFinite(inv.costPerUnit) && inv.costPerUnit > 0
+            ? inv.costPerUnit
+            : 0
+      // When falling back from the template's stored price, scale the
+      // inventory's base price by the alt unit's factor so a per-cup line
+      // doesn't accidentally take the per-gallon price.
+      const invFallback = usingAlt && altFactor > 0 ? baseInvPrice / altFactor : baseInvPrice
+      const unitPrice = tplUnit > 0 ? tplUnit : invFallback
+      const displayUnitLabel = usingAlt ? it.saleUnitLabel : (inv?.unitLabel ?? it.unitLabel)
       if (!inv) {
         lines.push({
           currentStock: 0,
@@ -777,8 +926,11 @@ export function TransactionsPage() {
           lowStockThreshold: 0,
           missingItem: true,
           quantityStr: String(it.quantity),
-          unitLabel: it.unitLabel,
-          unitPrice: 0,
+          saleUnitFactor: altFactor,
+          saleUnitId: it.saleUnitId,
+          saleUnitLabel: it.saleUnitLabel,
+          unitLabel: displayUnitLabel,
+          unitPrice,
         })
         continue
       }
@@ -791,11 +943,28 @@ export function TransactionsPage() {
         lowStockThreshold: inv.lowStockThreshold,
         missingItem: false,
         quantityStr: String(it.quantity),
-        unitLabel: inv.unitLabel,
-        unitPrice: Number.isFinite(inv.costPerUnit) && inv.costPerUnit > 0 ? inv.costPerUnit : 0,
+        saleUnitFactor: altFactor,
+        saleUnitId: it.saleUnitId,
+        saleUnitLabel: it.saleUnitLabel,
+        unitLabel: displayUnitLabel,
+        unitPrice,
       })
     }
     setFormTemplatePreviewLines(lines)
+
+    // Auto-fill the transaction Amount with the template's combo total when
+    // the template lines have unit prices. Only applied lines (non-missing,
+    // active items) count. The user can still edit Amount afterwards.
+    const comboTotal = lines.reduce((sum, l) => {
+      if (l.missingItem) return sum
+      const q = Number(l.quantityStr)
+      if (!Number.isFinite(q) || q <= 0) return sum
+      if (!Number.isFinite(l.unitPrice) || l.unitPrice <= 0) return sum
+      return sum + q * l.unitPrice
+    }, 0)
+    if (comboTotal > 0) {
+      setAmount(String(Math.round(comboTotal * 100) / 100))
+    }
   }
 
   function updateTemplatePreviewQuantity(key: string, quantityStr: string) {
@@ -854,21 +1023,42 @@ export function TransactionsPage() {
       inventoryItemId: number | null
       label: string
       price: number
+      quantity: number
+      unitPrice: number
+      saleUnitLabel: string
+      saleUnitFactor: number
+      saleUnitId: number | null
     }> = []
     for (const li of formLineItems) {
       const label = li.label.trim()
       const priceTrim = li.priceStr.trim()
-      if (label === '' && priceTrim === '') continue
+      const qtyTrim = li.quantityStr.trim()
+      if (label === '' && priceTrim === '' && (qtyTrim === '' || qtyTrim === '1')) continue
       if (label === '') {
         setError('Additional item name is required.')
         return
       }
-      const price = Number(priceTrim)
-      if (!Number.isFinite(price) || price < 0) {
-        setError(`Enter a valid price for "${label}".`)
+      const quantity = qtyTrim === '' ? 1 : Number(qtyTrim)
+      if (!Number.isFinite(quantity) || quantity <= 0) {
+        setError(`Enter a quantity greater than 0 for "${label}".`)
         return
       }
-      normalizedLineItems.push({ inventoryItemId: li.inventoryItemId, label, price })
+      const unitPrice = Number(priceTrim)
+      if (!Number.isFinite(unitPrice) || unitPrice < 0) {
+        setError(`Enter a valid unit price for "${label}".`)
+        return
+      }
+      const price = quantity * unitPrice
+      normalizedLineItems.push({
+        inventoryItemId: li.inventoryItemId,
+        label,
+        price,
+        quantity,
+        saleUnitFactor: li.saleUnitFactor > 0 ? li.saleUnitFactor : 1,
+        saleUnitId: li.saleUnitId,
+        saleUnitLabel: li.saleUnitLabel,
+        unitPrice,
+      })
     }
 
     const lineItemsSum = normalizedLineItems.reduce((acc, li) => acc + li.price, 0)
@@ -928,15 +1118,29 @@ export function TransactionsPage() {
         transactionTypeId: Number(formTypeId),
       }
 
-      let templatePatch: { templateId?: number | null; templateItems?: Array<{ inventoryItemId: number; quantity: number }> | null } =
-        {}
+      let templatePatch: {
+        templateId?: number | null
+        templateItems?: Array<{
+          inventoryItemId: number
+          quantity: number
+          saleUnitLabel?: string
+          saleUnitFactor?: number
+          saleUnitId?: number | null
+        }> | null
+      } = {}
       if (canManageInventory) {
         if (isSaleType) {
           const templateItems = formTemplatePreviewLines
             .filter((l) => !l.missingItem)
             .map((l) => {
               const q = Number(l.quantityStr.trim())
-              return { inventoryItemId: l.inventoryItemId, quantity: q }
+              return {
+                inventoryItemId: l.inventoryItemId,
+                quantity: q,
+                saleUnitFactor: l.saleUnitFactor > 0 ? l.saleUnitFactor : 1,
+                saleUnitId: l.saleUnitId,
+                saleUnitLabel: l.saleUnitLabel,
+              }
             })
             .filter((l) => Number.isFinite(l.quantity) && l.quantity > 0)
 
@@ -1041,7 +1245,11 @@ export function TransactionsPage() {
               key: `edit-li-${li.id}-${Math.random().toString(36).slice(2, 7)}`,
               inventoryItemId: li.inventoryItemId,
               label: li.label,
-              priceStr: String(li.price),
+              quantityStr: String(li.quantity),
+              priceStr: String(li.unitPrice),
+              saleUnitFactor: li.saleUnitFactor > 0 ? li.saleUnitFactor : 1,
+              saleUnitId: li.saleUnitId,
+              saleUnitLabel: li.saleUnitLabel,
             })),
           )
         }
@@ -1053,12 +1261,54 @@ export function TransactionsPage() {
             const tid = tmplMovs[0]!.templateId ?? null
             if (tid != null) setFormTemplatePickerId(String(tid))
             const itemById = new Map(invItems.map((i) => [i.id, i]))
+            // Pull the template's stored unit prices so the preview matches
+            // what was saved on the template (not just the live inventory).
+            const tpl = tid != null
+              ? formTransactionTemplates.find((t) => t.id === tid)
+              : undefined
+            const tplPriceByItemId = new Map<number, number>()
+            // Snapshot lookup keyed by inventory item id — used to recover the
+            // sale-unit info on edit even though `inventory_movements` only
+            // stores base-unit quantities.
+            const tplSnapshotByItemId = new Map<
+              number,
+              { saleUnitLabel: string; saleUnitFactor: number; saleUnitId: number | null }
+            >()
+            if (tpl) {
+              for (const it of tpl.items) {
+                if (Number.isFinite(it.unitPrice) && it.unitPrice > 0) {
+                  tplPriceByItemId.set(it.inventoryItemId, it.unitPrice)
+                }
+                tplSnapshotByItemId.set(it.inventoryItemId, {
+                  saleUnitFactor: it.saleUnitFactor > 0 ? it.saleUnitFactor : 1,
+                  saleUnitId: it.saleUnitId,
+                  saleUnitLabel: it.saleUnitLabel,
+                })
+              }
+            }
             setFormTemplatePreviewLines(
               tmplMovs.map((m) => {
                 const inv = itemById.get(m.itemId)
-                const price = inv && Number.isFinite(inv.costPerUnit) && inv.costPerUnit > 0
-                  ? inv.costPerUnit
-                  : 0
+                const tplPrice = tplPriceByItemId.get(m.itemId) ?? 0
+                const invPrice =
+                  inv && Number.isFinite(inv.sellingPrice) && inv.sellingPrice > 0
+                    ? inv.sellingPrice
+                    : inv && Number.isFinite(inv.costPerUnit) && inv.costPerUnit > 0
+                      ? inv.costPerUnit
+                      : 0
+                const price = tplPrice > 0 ? tplPrice : invPrice
+                const snap = tplSnapshotByItemId.get(m.itemId) ?? {
+                  saleUnitFactor: 1,
+                  saleUnitId: null,
+                  saleUnitLabel: '',
+                }
+                // Movement quantity is in base units; convert back to the
+                // template's authored unit so the input matches what the user
+                // typed when authoring the template.
+                const altQty =
+                  snap.saleUnitFactor > 0 ? m.quantity * snap.saleUnitFactor : m.quantity
+                const displayUnitLabel =
+                  snap.saleUnitLabel !== '' ? snap.saleUnitLabel : (inv?.unitLabel ?? m.unitLabel)
                 return {
                   currentStock: inv?.currentStock ?? 0,
                   inventoryItemId: m.itemId,
@@ -1067,8 +1317,11 @@ export function TransactionsPage() {
                   key: `edit-${m.id}-${Math.random().toString(36).slice(2, 9)}`,
                   lowStockThreshold: inv?.lowStockThreshold ?? 0,
                   missingItem: inv == null,
-                  quantityStr: String(m.quantity),
-                  unitLabel: inv?.unitLabel ?? m.unitLabel,
+                  quantityStr: String(altQty),
+                  saleUnitFactor: snap.saleUnitFactor,
+                  saleUnitId: snap.saleUnitId,
+                  saleUnitLabel: snap.saleUnitLabel,
+                  unitLabel: displayUnitLabel,
                   unitPrice: price,
                 }
               }),
@@ -1692,7 +1945,7 @@ export function TransactionsPage() {
 
           {/* Modal panel — always white */}
           <div
-            className={`relative z-10 flex max-h-[90vh] w-full flex-col overflow-hidden rounded-xl bg-white shadow-2xl ${isSaleType && canManageInventory ? 'max-w-xl' : 'max-w-md'}`}
+            className={`relative z-10 flex max-h-[90vh] w-full flex-col overflow-hidden rounded-xl bg-white shadow-2xl ${isSaleType && canManageInventory ? 'max-w-xl' : 'max-w-lg'}`}
           >
             {/* Header */}
             <div className="flex shrink-0 items-center justify-between border-b border-gray-200 px-5 py-4">
@@ -1814,29 +2067,39 @@ export function TransactionsPage() {
                       ) : null}
                     </div>
                     <p className="text-xs text-gray-500">
-                      Applies stock-out movements when you save. Template items do not change the
-                      transaction amount. Manage templates under{' '}
+                      Applies stock-out movements when you save and auto-fills the Amount with the template's
+                      combo total. Manage templates under{' '}
                       <span className="font-medium text-gray-700">Inventory → Sale templates</span>.
                     </p>
                     {formTemplatePreviewLines.length > 0 ? (
                       <div className="mt-2 overflow-x-auto rounded-md border border-gray-200 bg-white">
-                        <table className="w-full min-w-[280px] text-xs">
+                        <table className="w-full min-w-[320px] text-xs">
                           <thead>
                             <tr className="border-b border-gray-200 bg-gray-50 text-left text-[10px] font-semibold uppercase tracking-wide text-gray-500">
                               <th className="px-2 py-1.5">Item</th>
                               <th className="px-2 py-1.5 text-right">Stock</th>
                               <th className="px-2 py-1.5 text-right">Qty out</th>
+                              <th className="px-2 py-1.5 text-right">Unit price</th>
+                              <th className="px-2 py-1.5 text-right">Line total</th>
                             </tr>
                           </thead>
                           <tbody className="divide-y divide-gray-100">
                             {formTemplatePreviewLines.map((line) => {
                               const q = Number(line.quantityStr.trim())
-                              const projected = Number.isFinite(q) ? line.currentStock - q : line.currentStock
+                              // Convert qty to base units for the stock check
+                              // when the template line is authored in an alt unit.
+                              const baseQ = line.saleUnitFactor > 0 ? q / line.saleUnitFactor : q
+                              const projected = Number.isFinite(baseQ) ? line.currentStock - baseQ : line.currentStock
                               const lowWarn =
                                 !line.missingItem &&
                                 Number.isFinite(q) &&
                                 q > 0 &&
                                 (projected < 0 || projected <= line.lowStockThreshold)
+                              const lineTotal =
+                                Number.isFinite(q) && q > 0 &&
+                                Number.isFinite(line.unitPrice) && line.unitPrice >= 0
+                                  ? q * line.unitPrice
+                                  : null
                               return (
                                 <tr key={line.key}>
                                   <td className="px-2 py-1.5">
@@ -1871,10 +2134,28 @@ export function TransactionsPage() {
                                       <div className="mt-0.5 text-[10px] font-medium text-amber-700">Low / over stock</div>
                                     ) : null}
                                   </td>
+                                  <td className="px-2 py-1.5 text-right tabular-nums text-gray-600">
+                                    {line.unitPrice > 0 ? formatCurrency(line.unitPrice) : '—'}
+                                  </td>
+                                  <td className="px-2 py-1.5 text-right tabular-nums text-gray-900">
+                                    {lineTotal != null && lineTotal > 0 ? formatCurrency(lineTotal) : '—'}
+                                  </td>
                                 </tr>
                               )
                             })}
                           </tbody>
+                          {templatePreviewComboTotal > 0 ? (
+                            <tfoot>
+                              <tr className="border-t border-gray-200 bg-gray-50 text-[11px]">
+                                <td className="px-2 py-1.5 font-medium text-gray-700" colSpan={4}>
+                                  Combo total
+                                </td>
+                                <td className="px-2 py-1.5 text-right font-semibold tabular-nums text-gray-900">
+                                  {formatCurrency(templatePreviewComboTotal)}
+                                </td>
+                              </tr>
+                            </tfoot>
+                          ) : null}
                         </table>
                       </div>
                     ) : null}
@@ -2008,7 +2289,7 @@ export function TransactionsPage() {
                       <div>
                         <p className="text-sm font-medium text-gray-700">Additional items (optional)</p>
                         <p className="text-xs text-gray-500">
-                          Pick from inventory or type a custom name. Prices add to the total.
+                          Pick from inventory or type a custom name. Enter quantity and unit price — line totals add to the amount.
                         </p>
                       </div>
                       <button
@@ -2028,40 +2309,196 @@ export function TransactionsPage() {
                             <option key={inv.id} value={inv.name} />
                           ))}
                         </datalist>
+                        <div className="hidden gap-2 px-1 text-[10px] font-medium uppercase tracking-wider text-gray-400 sm:flex">
+                          <span className="flex-1">Item</span>
+                          <span className="shrink-0 text-center" style={{ width: '11rem' }}>Qty &amp; unit</span>
+                          <span className="w-4 shrink-0" />
+                          <span className="w-24 shrink-0 text-right">Unit price</span>
+                          <span className="w-7 shrink-0" />
+                        </div>
                         <div className="space-y-2">
-                          {formLineItems.map((li) => (
-                            <div className="flex items-start gap-2" key={li.key}>
-                              <div className="flex-1 min-w-0">
-                                <input
-                                  className={modalInputClass}
-                                  list={lineItemListId}
-                                  onChange={(event) => updateLineItemLabel(li.key, event.target.value)}
-                                  placeholder="Item name"
-                                  type="text"
-                                  value={li.label}
-                                />
+                          {formLineItems.map((li) => {
+                            const linkedInv = li.inventoryItemId != null
+                              ? formInventoryOptions.find((inv) => inv.id === li.inventoryItemId)
+                              : undefined
+                            // When the line is selling in an alt unit, the qty
+                            // is being entered in that unit, not the inventory's
+                            // base unit type. Treat alt units as freely fractional.
+                            const usingAlt = li.saleUnitLabel !== '' && li.saleUnitFactor !== 1
+                            const qtyProps = usingAlt
+                              ? { step: 'any', min: '0.01' }
+                              : lineItemQtyInputProps(linkedInv?.unitType)
+                            const baseUnitLabel = linkedInv?.unitLabel?.trim() || ''
+                            const activeUnitLabel = usingAlt
+                              ? li.saleUnitLabel
+                              : baseUnitLabel || ''
+                            const qtyNum = Number(li.quantityStr)
+                            const unitNum = Number(li.priceStr)
+                            const lineTotal =
+                              Number.isFinite(qtyNum) && qtyNum > 0 &&
+                              Number.isFinite(unitNum) && unitNum >= 0
+                                ? qtyNum * unitNum
+                                : null
+                            const activeAltUnits = (linkedInv?.altUnits ?? []).filter(
+                              (u) => u.isActive && u.unitsPerBase > 0,
+                            )
+                            const showUnitPicker = activeAltUnits.length > 0
+                            // When alt unit changes the stock impact, surface it.
+                            const baseQtyForStock =
+                              usingAlt && Number.isFinite(qtyNum) && qtyNum > 0 && li.saleUnitFactor > 0
+                                ? qtyNum / li.saleUnitFactor
+                                : null
+                            return (
+                              <div className="space-y-1" key={li.key}>
+                                <div className="flex items-start gap-2">
+                                  <div className="flex-1 min-w-0">
+                                    <input
+                                      className={modalInputClass}
+                                      list={lineItemListId}
+                                      onChange={(event) => updateLineItemLabel(li.key, event.target.value)}
+                                      placeholder="Item name"
+                                      type="text"
+                                      value={li.label}
+                                    />
+                                  </div>
+                                  {showUnitPicker ? (
+                                    <div
+                                      aria-label="Quantity and sale unit"
+                                      className="flex h-10 shrink-0 items-stretch overflow-hidden rounded-md border border-gray-300 bg-white focus-within:border-blue-400 focus-within:ring-1 focus-within:ring-blue-200"
+                                      style={{ width: '11rem' }}
+                                    >
+                                      <button
+                                        aria-label="Decrease quantity"
+                                        className="flex w-7 shrink-0 items-center justify-center text-gray-500 hover:bg-gray-50 hover:text-gray-900 disabled:cursor-not-allowed disabled:text-gray-300"
+                                        disabled={
+                                          !Number.isFinite(qtyNum) || qtyNum <= Number(qtyProps.min)
+                                        }
+                                        onClick={() => {
+                                          const stepNum =
+                                            qtyProps.step === '0.01' ? 0.01 : 1
+                                          const current = Number.isFinite(qtyNum) ? qtyNum : 0
+                                          const minNum = Number(qtyProps.min) || 0
+                                          const next = Math.max(minNum, current - stepNum)
+                                          const rounded =
+                                            stepNum < 1
+                                              ? Math.round(next * 100) / 100
+                                              : Math.round(next)
+                                          updateLineItemQuantity(li.key, String(rounded))
+                                        }}
+                                        type="button"
+                                      >
+                                        <Minus className="h-3.5 w-3.5" />
+                                      </button>
+                                      <input
+                                        aria-label="Quantity"
+                                        className="w-12 shrink-0 border-0 bg-transparent px-1 text-center text-sm focus:outline-none focus:ring-0"
+                                        min={qtyProps.min}
+                                        onChange={(event) =>
+                                          updateLineItemQuantity(li.key, event.target.value)
+                                        }
+                                        placeholder="1"
+                                        step={qtyProps.step}
+                                        type="number"
+                                        value={li.quantityStr}
+                                      />
+                                      <select
+                                        aria-label="Sale unit"
+                                        className="min-w-0 flex-1 border-0 border-l border-gray-200 bg-transparent px-2 text-xs focus:outline-none focus:ring-0"
+                                        onChange={(event) =>
+                                          updateLineItemUnit(li.key, event.target.value)
+                                        }
+                                        value={li.saleUnitId != null ? String(li.saleUnitId) : ''}
+                                      >
+                                        <option value="">{baseUnitLabel || 'unit'}</option>
+                                        {activeAltUnits.map((u) => (
+                                          <option key={u.id} value={u.id}>
+                                            {u.unitLabel}
+                                          </option>
+                                        ))}
+                                      </select>
+                                      <button
+                                        aria-label="Increase quantity"
+                                        className="flex w-7 shrink-0 items-center justify-center border-l border-gray-200 text-gray-500 hover:bg-gray-50 hover:text-gray-900"
+                                        onClick={() => {
+                                          const stepNum =
+                                            qtyProps.step === '0.01' ? 0.01 : 1
+                                          const current = Number.isFinite(qtyNum) ? qtyNum : 0
+                                          const next = current + stepNum
+                                          const rounded =
+                                            stepNum < 1
+                                              ? Math.round(next * 100) / 100
+                                              : Math.round(next)
+                                          updateLineItemQuantity(li.key, String(rounded))
+                                        }}
+                                        type="button"
+                                      >
+                                        <Plus className="h-3.5 w-3.5" />
+                                      </button>
+                                    </div>
+                                  ) : (
+                                    <div
+                                      className="flex h-10 shrink-0 items-stretch gap-2"
+                                      style={{ width: '11rem' }}
+                                    >
+                                      <div className="w-16 shrink-0">
+                                        <input
+                                          aria-label="Quantity"
+                                          className={`${modalInputClass} px-2 text-center`}
+                                          min={qtyProps.min}
+                                          onChange={(event) =>
+                                            updateLineItemQuantity(li.key, event.target.value)
+                                          }
+                                          placeholder="1"
+                                          step={qtyProps.step}
+                                          type="number"
+                                          value={li.quantityStr}
+                                        />
+                                      </div>
+                                      <div className="flex flex-1 items-center justify-center text-xs text-gray-400">
+                                        {baseUnitLabel || '—'}
+                                      </div>
+                                    </div>
+                                  )}
+                                  <span className="w-4 shrink-0 self-center text-center text-xs text-gray-400">
+                                    ×
+                                  </span>
+                                  <div className="w-24 shrink-0">
+                                    <input
+                                      aria-label="Unit price"
+                                      className={`${modalInputClass} text-right`}
+                                      min="0"
+                                      onChange={(event) => updateLineItemPrice(li.key, event.target.value)}
+                                      placeholder="0.00"
+                                      step="0.01"
+                                      type="number"
+                                      value={li.priceStr}
+                                    />
+                                  </div>
+                                  <button
+                                    aria-label="Remove item"
+                                    className="mt-1 shrink-0 rounded-md p-1.5 text-gray-500 hover:bg-red-50 hover:text-red-600"
+                                    onClick={() => removeLineItem(li.key)}
+                                    type="button"
+                                  >
+                                    <Trash2 className="h-4 w-4" />
+                                  </button>
+                                </div>
+                                <div className="flex items-center justify-between gap-2 pl-1 pr-9 text-[11px] text-gray-500">
+                                  <span className="truncate">
+                                    {activeUnitLabel
+                                      ? `Priced per ${activeUnitLabel}`
+                                      : 'Price is per unit'}
+                                    {baseQtyForStock != null && baseUnitLabel
+                                      ? ` · stock −${baseQtyForStock.toFixed(3).replace(/\.?0+$/, '')} ${baseUnitLabel}`
+                                      : ''}
+                                  </span>
+                                  <span className="tabular-nums text-gray-700">
+                                    {lineTotal != null ? `= ${formatCurrency(lineTotal)}` : '—'}
+                                  </span>
+                                </div>
                               </div>
-                              <div className="w-28 shrink-0">
-                                <input
-                                  className={`${modalInputClass} text-right`}
-                                  min="0"
-                                  onChange={(event) => updateLineItemPrice(li.key, event.target.value)}
-                                  placeholder="0.00"
-                                  step="0.01"
-                                  type="number"
-                                  value={li.priceStr}
-                                />
-                              </div>
-                              <button
-                                aria-label="Remove item"
-                                className="mt-1 rounded-md p-1.5 text-gray-500 hover:bg-red-50 hover:text-red-600"
-                                onClick={() => removeLineItem(li.key)}
-                                type="button"
-                              >
-                                <Trash2 className="h-4 w-4" />
-                              </button>
-                            </div>
-                          ))}
+                            )
+                          })}
                         </div>
                       </>
                     ) : null}
