@@ -3851,6 +3851,39 @@ export async function listInventoryItems(filters?: {
   return items
 }
 
+/**
+ * Update every `inventory_movements` row for the given item that still has
+ * `unit_cost = 0` so it picks up the supplied non-zero cost. This is used
+ * when the user originally added an item without a cost (the linked stock
+ * movements were created with 0 as a placeholder) and later sets the real
+ * cost on the inventory item — the placeholder rows are then "filled in".
+ *
+ * Returns the number of movement rows that were updated, so callers can
+ * surface a toast like "Updated 3 past stock movements with the new cost."
+ *
+ * Movements that already have a non-zero `unit_cost` are left untouched —
+ * they are deliberate historical snapshots of what was paid/charged at the
+ * time of the movement.
+ */
+export async function backfillZeroUnitCostMovements(
+  itemId: number,
+  newCostPerUnit: number,
+): Promise<number> {
+  if (!Number.isFinite(newCostPerUnit) || newCostPerUnit <= 0) return 0
+  const database = await getDatabase()
+  const rows = await database.select<Array<{ count: number }>>(
+    `SELECT COUNT(*) AS count FROM inventory_movements WHERE item_id = $1 AND unit_cost = 0`,
+    [itemId],
+  )
+  const count = rows.length > 0 ? Number(rows[0]?.count ?? 0) : 0
+  if (count === 0) return 0
+  await database.execute(
+    `UPDATE inventory_movements SET unit_cost = $1 WHERE item_id = $2 AND unit_cost = 0`,
+    [newCostPerUnit, itemId],
+  )
+  return count
+}
+
 export async function saveInventoryItem(draft: InventoryItemDraft, id?: number): Promise<number> {
   const database = await getDatabase()
   const resolvedCategory = await resolveInventoryCategory(database, draft.categoryId, draft.category)
@@ -3898,6 +3931,12 @@ export async function saveInventoryItem(draft: InventoryItemDraft, id?: number):
     if (draft.altUnits !== undefined) {
       await replaceInventoryItemUnits(id, draft.altUnits)
     }
+    // NOTE: Back-fill of past `inventory_movements` rows that have
+    // `unit_cost = 0` is intentionally NOT done here. Callers (the inventory
+    // page) invoke `backfillZeroUnitCostMovements` explicitly so they can
+    // surface a toast with the affected row count. Doing it silently here
+    // would also mean every callsite (backup import, etc.) inherits the
+    // mutation, which is not always desirable.
     return id
   }
 

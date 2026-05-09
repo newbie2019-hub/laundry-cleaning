@@ -1,4 +1,4 @@
-import { useLayoutEffect, useState } from 'react'
+import { useEffect, useLayoutEffect, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
 import type { TutorialPlacement, TutorialStep } from './feature-tutorial-types'
 
@@ -14,9 +14,13 @@ type Props = {
 }
 
 const POPOVER_WIDTH = 380
-const POPOVER_HEIGHT_ESTIMATE = 240
+// Initial guess used before the popover ref measures its real height. The
+// real height is read with a ResizeObserver and fed back into the position
+// calculation so flip-to-top works correctly even for long descriptions.
+const POPOVER_HEIGHT_ESTIMATE = 320
 const SPOTLIGHT_PADDING = 8
 const GAP = 12
+const VIEWPORT_MARGIN = 16
 
 // Poll the DOM for an element tagged with the given data-tutorial value.
 // Unlike the onboarding tour we keep polling indefinitely because tutorial
@@ -76,16 +80,56 @@ function useAnchorRect(anchor: string | null): Rect | null {
 function computePopoverPosition(
   spotlight: Rect,
   placement: TutorialPlacement,
+  popHeight: number,
 ): React.CSSProperties {
   const vw = window.innerWidth
   const vh = window.innerHeight
-  const popW = Math.min(POPOVER_WIDTH, vw - 32)
-  const popH = POPOVER_HEIGHT_ESTIMATE
+  const popW = Math.min(POPOVER_WIDTH, vw - VIEWPORT_MARGIN * 2)
+  // Cap height so we never need a popover taller than the viewport — its
+  // content scrolls internally instead.
+  const popH = Math.min(popHeight, vh - VIEWPORT_MARGIN * 2)
+
+  // Space available on each side of the spotlight when placed at that side.
+  const spaceTop = spotlight.top - GAP
+  const spaceBottom = vh - (spotlight.top + spotlight.height) - GAP
+  const spaceLeft = spotlight.left - GAP
+  const spaceRight = vw - (spotlight.left + spotlight.width) - GAP
+
+  // Pick the actual side. Honour the requested placement when it fits;
+  // otherwise flip to the side with the most room. This is what fixes the
+  // case where a `right` step near the bottom of the modal pushes the
+  // popover off-screen.
+  let actual: TutorialPlacement = placement
+  const fits = (p: TutorialPlacement): boolean => {
+    switch (p) {
+      case 'top':
+        return spaceTop >= popH
+      case 'bottom':
+        return spaceBottom >= popH
+      case 'left':
+        return spaceLeft >= popW
+      case 'right':
+        return spaceRight >= popW
+      case 'center':
+      default:
+        return true
+    }
+  }
+  if (placement !== 'center' && !fits(placement)) {
+    const candidates: { side: TutorialPlacement; space: number }[] = [
+      { side: 'bottom', space: spaceBottom - popH },
+      { side: 'top', space: spaceTop - popH },
+      { side: 'right', space: spaceRight - popW },
+      { side: 'left', space: spaceLeft - popW },
+    ]
+    candidates.sort((a, b) => b.space - a.space)
+    actual = candidates[0]?.side ?? placement
+  }
 
   let top = 0
   let left = 0
 
-  switch (placement) {
+  switch (actual) {
     case 'top': {
       top = spotlight.top - popH - GAP
       left = spotlight.left + spotlight.width / 2 - popW / 2
@@ -110,17 +154,16 @@ function computePopoverPosition(
     }
   }
 
-  if (top < 16) {
-    top = spotlight.top + spotlight.height + GAP
-  }
-  if (top + popH > vh - 16) {
-    top = Math.max(16, spotlight.top - popH - GAP)
-  }
+  // Final clamp inside the viewport.
+  top = Math.max(VIEWPORT_MARGIN, Math.min(vh - popH - VIEWPORT_MARGIN, top))
+  left = Math.max(VIEWPORT_MARGIN, Math.min(vw - popW - VIEWPORT_MARGIN, left))
 
-  top = Math.max(16, Math.min(vh - popH - 16, top))
-  left = Math.max(16, Math.min(vw - popW - 16, left))
-
-  return { left, top, width: popW }
+  return {
+    left,
+    maxHeight: vh - VIEWPORT_MARGIN * 2,
+    top,
+    width: popW,
+  }
 }
 
 // Render the description as paragraphs so the steps that include short
@@ -212,6 +255,55 @@ export function FeatureTutorialOverlay({
   total,
 }: Props) {
   const rect = useAnchorRect(step.anchor)
+  const popoverRef = useRef<HTMLDivElement | null>(null)
+  const [popHeight, setPopHeight] = useState<number>(POPOVER_HEIGHT_ESTIMATE)
+
+  // Re-measure the popover whenever the step changes, so the position
+  // calculation uses the actual rendered height (long descriptions push
+  // height past 400+ px which the static estimate could not handle).
+  useLayoutEffect(() => {
+    const el = popoverRef.current
+    if (!el) return
+    const update = () => {
+      const h = el.getBoundingClientRect().height
+      if (h > 0) setPopHeight(h)
+    }
+    update()
+    const ro = new ResizeObserver(update)
+    ro.observe(el)
+    return () => ro.disconnect()
+  }, [step.id])
+
+  // Keyboard navigation: ← back, → next, Enter next, Esc skip. Ignore key
+  // presses that originate inside form controls so the user can still type
+  // and use arrow keys inside inputs/selects/textareas without accidentally
+  // advancing the tutorial.
+  useEffect(() => {
+    const handler = (e: KeyboardEvent) => {
+      const target = e.target as HTMLElement | null
+      const tag = target?.tagName
+      const isFormControl =
+        tag === 'INPUT' ||
+        tag === 'TEXTAREA' ||
+        tag === 'SELECT' ||
+        target?.isContentEditable === true
+      if (e.key === 'Escape') {
+        e.preventDefault()
+        onSkip()
+        return
+      }
+      if (isFormControl) return
+      if (e.key === 'ArrowRight' || e.key === 'Enter') {
+        e.preventDefault()
+        onNext()
+      } else if (e.key === 'ArrowLeft') {
+        e.preventDefault()
+        onBack()
+      }
+    }
+    window.addEventListener('keydown', handler)
+    return () => window.removeEventListener('keydown', handler)
+  }, [onBack, onNext, onSkip])
 
   const spotlight: Rect | null = rect
     ? {
@@ -223,12 +315,13 @@ export function FeatureTutorialOverlay({
     : null
 
   const popoverStyle: React.CSSProperties = spotlight
-    ? computePopoverPosition(spotlight, step.placement)
+    ? computePopoverPosition(spotlight, step.placement, popHeight)
     : {
         left: '50%',
+        maxHeight: window.innerHeight - VIEWPORT_MARGIN * 2,
         top: '50%',
         transform: 'translate(-50%, -50%)',
-        width: Math.min(POPOVER_WIDTH, window.innerWidth - 32),
+        width: Math.min(POPOVER_WIDTH, window.innerWidth - VIEWPORT_MARGIN * 2),
       }
 
   const isLast = currentIndex + 1 >= total
@@ -262,26 +355,30 @@ export function FeatureTutorialOverlay({
 
       <div
         aria-modal="true"
-        className="pointer-events-auto absolute z-[2101] rounded-xl border border-[var(--border)] bg-[var(--panel)] p-5 shadow-2xl"
+        className="pointer-events-auto absolute z-[2101] flex flex-col rounded-xl border border-[var(--border)] bg-[var(--panel)] shadow-2xl"
+        ref={popoverRef}
         role="dialog"
         style={popoverStyle}
       >
-        <div className="mb-1 text-[10px] font-medium uppercase tracking-wide text-[var(--muted)]">
-          Step {currentIndex + 1} of {total}
+        <div className="min-h-0 flex-1 overflow-y-auto p-5">
+          <div className="mb-1 text-[10px] font-medium uppercase tracking-wide text-[var(--muted)]">
+            Step {currentIndex + 1} of {total}
+          </div>
+          <h3 className="text-base font-semibold tracking-tight text-[var(--foreground)]">
+            {step.title}
+          </h3>
+          <div className="mt-1.5">{renderDescription(step.description)}</div>
+          {step.note ? (
+            <p className="mt-3 rounded-md border border-[var(--accent)]/30 bg-[var(--accent)]/10 px-3 py-2 text-xs text-[var(--accent-strong,var(--accent))]">
+              {renderInline(step.note)}
+            </p>
+          ) : null}
         </div>
-        <h3 className="text-base font-semibold tracking-tight text-[var(--foreground)]">
-          {step.title}
-        </h3>
-        <div className="mt-1.5">{renderDescription(step.description)}</div>
-        {step.note ? (
-          <p className="mt-3 rounded-md border border-[var(--accent)]/30 bg-[var(--accent)]/10 px-3 py-2 text-xs text-[var(--accent-strong,var(--accent))]">
-            {renderInline(step.note)}
-          </p>
-        ) : null}
-        <div className="mt-5 flex items-center justify-between gap-2">
+        <div className="flex shrink-0 items-center justify-between gap-2 border-t border-[var(--border)] px-5 py-3">
           <button
             className="text-xs font-medium text-[var(--muted)] underline-offset-4 transition hover:text-[var(--foreground)] hover:underline"
             onClick={onSkip}
+            title="Esc"
             type="button"
           >
             Skip tutorial
@@ -291,6 +388,7 @@ export function FeatureTutorialOverlay({
               <button
                 className="rounded-md border border-[var(--border)] px-3 py-1.5 text-xs font-medium text-[var(--muted)] transition hover:border-[var(--accent)] hover:text-[var(--foreground)]"
                 onClick={onBack}
+                title="←"
                 type="button"
               >
                 Back
@@ -299,6 +397,7 @@ export function FeatureTutorialOverlay({
             <button
               className="rounded-md bg-[var(--accent)] px-3 py-1.5 text-xs font-semibold text-white transition hover:opacity-90"
               onClick={onNext}
+              title="→"
               type="button"
             >
               {nextLabel}

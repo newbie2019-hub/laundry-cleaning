@@ -29,7 +29,9 @@ import {
   isKnownLiquidUnit,
   LIQUID_UNITS,
 } from '../../../lib/liquid-units'
+import { toast } from 'sonner'
 import {
+  backfillZeroUnitCostMovements,
   listInventoryCategories,
   listInventoryItems,
   saveInventoryItem,
@@ -473,6 +475,13 @@ function InventoryPageContent() {
 
     setIsSubmitting(true)
     setFormError(null)
+    // Capture the previous cost so we can back-fill historical inventory
+    // movements that were recorded as 0 (the placeholder used when the
+    // item's cost wasn't set yet). We only run the back-fill when the user
+    // actually raises the cost from 0 to a non-zero value.
+    const previousCost = editingId
+      ? items.find((it) => it.id === editingId)?.costPerUnit ?? 0
+      : 0
     try {
       const itemId = await saveInventoryItem(
         {
@@ -505,6 +514,21 @@ function InventoryPageContent() {
           },
           user.id,
         )
+      }
+      // Back-fill historical movements that still have unit_cost = 0. Only
+      // do this on edit (not on create — fresh items have no past movements
+      // beyond the initial stock IN, which already used the new cost).
+      if (editingId && previousCost === 0 && cost > 0) {
+        try {
+          const updated = await backfillZeroUnitCostMovements(itemId, cost)
+          if (updated > 0) {
+            toast.success(
+              `Updated ${updated} past stock movement${updated === 1 ? '' : 's'} with the new cost of ${formatCurrency(cost)}.`,
+            )
+          }
+        } catch {
+          // Non-fatal: the item save already succeeded.
+        }
       }
       setIsModalOpen(false)
       await loadItems()
