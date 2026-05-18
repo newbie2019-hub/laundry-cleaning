@@ -86,7 +86,6 @@ export function ProcessPayrollDialog({ onClose, onProcessed, open }: Props) {
   const [rows, setRows] = useState<StaffRow[]>([])
   const [selected, setSelected] = useState<Set<number>>(new Set())
   const [processing, setProcessing] = useState(false)
-  const [autoDeduct, setAutoDeduct] = useState(true)
   const [loadingStaff, setLoadingStaff] = useState(true)
 
   // ── Load staff on open ───────────────────────────────────────────────────
@@ -100,7 +99,6 @@ export function ProcessPayrollDialog({ onClose, onProcessed, open }: Props) {
           listStaff({ includeArchived: false }),
           getPayrollSettings(),
         ])
-        setAutoDeduct(settings.autoDeductCashAdvances)
         const suggested = suggestPeriodEnd([], settings.cutoffDay)
         const suggestedStart = periodStartForWeekEnding(suggested)
         setPeriodStart(suggestedStart)
@@ -556,7 +554,7 @@ export function ProcessPayrollDialog({ onClose, onProcessed, open }: Props) {
                 <tbody>
                   {rows.map((r) => {
                     const isOk = r.previewState.kind === 'ok'
-                    const hasItems = isOk && r.previewState.preview.items.length > 0
+                    const hasItems = r.previewState.kind === 'ok' && r.previewState.preview.items.length > 0
                     const isSelectable = hasItems && r.processResult?.kind !== 'ok'
                     const isChecked = selected.has(r.staff.id)
                     const isDimmed =
@@ -568,7 +566,7 @@ export function ProcessPayrollDialog({ onClose, onProcessed, open }: Props) {
 
                     // Compute per-row values
                     const selectedAdvTotal =
-                      isOk
+                      r.previewState.kind === 'ok'
                         ? r.previewState.advances
                             .filter((a) => r.selectedAdvanceIds.has(a.id))
                             .reduce((s, a) => s + a.amount, 0)
@@ -580,13 +578,13 @@ export function ProcessPayrollDialog({ onClose, onProcessed, open }: Props) {
                       .filter((a) => a.label.trim() && a.kind === 'deduction')
                       .reduce((s, a) => s + a.amount, 0)
                     const totalDeductions = selectedAdvTotal + adjDeduction
-                    const netPay = isOk
+                    const netPay = r.previewState.kind === 'ok'
                       ? roundMoney(r.previewState.preview.grossPay + adjBonus - totalDeductions)
                       : 0
 
                     const hasAdjustments =
                       r.adjustments.length > 0 ||
-                      (isOk && r.previewState.advances.length > 0)
+                      (r.previewState.kind === 'ok' && r.previewState.advances.length > 0)
 
                     return (
                       <>
@@ -634,7 +632,7 @@ export function ProcessPayrollDialog({ onClose, onProcessed, open }: Props) {
                           <td className="px-4 py-3 text-right tabular-nums">
                             {r.previewState.kind === 'loading' ? (
                               <Loader2 className="ml-auto h-3.5 w-3.5 animate-spin text-[var(--muted)]" />
-                            ) : isOk ? (
+                            ) : r.previewState.kind === 'ok' ? (
                               r.previewState.preview.items.length
                             ) : r.previewState.kind === 'error' ? (
                               <span className="text-xs text-red-400">—</span>
@@ -645,7 +643,7 @@ export function ProcessPayrollDialog({ onClose, onProcessed, open }: Props) {
 
                           {/* Gross */}
                           <td className="px-4 py-3 text-right tabular-nums">
-                            {isOk ? formatCurrency(r.previewState.preview.grossPay) : '—'}
+                            {r.previewState.kind === 'ok' ? formatCurrency(r.previewState.preview.grossPay) : '—'}
                           </td>
 
                           {/* Deductions */}
@@ -708,7 +706,7 @@ export function ProcessPayrollDialog({ onClose, onProcessed, open }: Props) {
                         </tr>
 
                         {/* Expanded adjustment panel */}
-                        {r.expandedAdjust && isOk && (
+                        {r.expandedAdjust && r.previewState.kind === 'ok' && (
                           <tr key={`adj-${r.staff.id}`} className="border-b border-[var(--border)]">
                             <td colSpan={8} className="bg-[var(--background)]/40 px-6 py-4">
                               <div className="space-y-4">
