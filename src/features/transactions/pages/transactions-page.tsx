@@ -2304,7 +2304,7 @@ function TransactionsPageContent() {
                     min="0"
                     onChange={(event) => setAmount(event.target.value)}
                     placeholder="0.00"
-                    step="0.01"
+                    step="any"
                     type="number"
                     value={amount}
                   />
@@ -2499,7 +2499,7 @@ function TransactionsPageContent() {
                                       min="0"
                                       onChange={(event) => updateLineItemPrice(li.key, event.target.value)}
                                       placeholder="0.00"
-                                      step="0.01"
+                                      step="any"
                                       type="number"
                                       value={li.priceStr}
                                     />

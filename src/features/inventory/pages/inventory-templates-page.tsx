@@ -673,7 +673,7 @@ function InventoryTemplatesPageContent() {
                                   )
                                 }}
                                 placeholder="Unit price"
-                                step="0.01"
+                                step="any"
                                 type="number"
                                 value={line.priceStr}
                               />

@@ -631,7 +631,7 @@ export function InventoryMovementsPage() {
                   <input className={inputClass} min="0.001" onChange={(e) => setFormQty(e.target.value)} placeholder="0" step="any" type="number" value={formQty} />
                 </ModalField>
                 <ModalField label="Unit Cost">
-                  <input className={inputClass} min="0" onChange={(e) => setFormUnitCost(e.target.value)} placeholder="0.00" step="0.01" type="number" value={formUnitCost} />
+                  <input className={inputClass} min="0" onChange={(e) => setFormUnitCost(e.target.value)} placeholder="0.00" step="any" type="number" value={formUnitCost} />
                 </ModalField>
               </div>
 
@@ -826,7 +826,7 @@ export function InventoryMovementsPage() {
                     min="0"
                     onChange={(e) => setDraftUnitCostMin(e.target.value)}
                     placeholder="Any"
-                    step="0.01"
+                    step="any"
                     type="number"
                     value={draftUnitCostMin}
                   />
@@ -837,7 +837,7 @@ export function InventoryMovementsPage() {
                     min="0"
                     onChange={(e) => setDraftUnitCostMax(e.target.value)}
                     placeholder="Any"
-                    step="0.01"
+                    step="any"
                     type="number"
                     value={draftUnitCostMax}
                   />

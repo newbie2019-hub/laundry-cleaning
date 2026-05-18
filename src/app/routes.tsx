@@ -19,6 +19,7 @@ import { InventoryCategoriesPage } from '../features/inventory/pages/inventory-c
 import { InventorySummaryPage } from '../features/inventory/pages/inventory-summary-page'
 import { InventoryTemplatesPage } from '../features/inventory/pages/inventory-templates-page'
 import { SettingsPage } from '../features/settings/pages/settings-page'
+import { BulkPayrollPage } from '../features/staff/pages/bulk-payroll-page'
 import { StaffDetailPage } from '../features/staff/pages/staff-detail-page'
 import { StaffPage } from '../features/staff/pages/staff-page'
 import { TransactionDetailPage } from '../features/transactions/pages/transaction-detail-page'
@@ -90,6 +91,10 @@ const router = createHashRouter([
               {
                 path: '/staff/:id',
                 element: <StaffDetailPage />,
+              },
+              {
+                path: '/payroll',
+                element: <BulkPayrollPage />,
               },
               {
                 path: '/incident-reports',

@@ -181,7 +181,7 @@ export function QuickMovementModal({
                 min="0"
                 onChange={(e) => setMovUnitCost(e.target.value)}
                 placeholder="0.00"
-                step="0.01"
+                step="any"
                 type="number"
                 value={movUnitCost}
               />

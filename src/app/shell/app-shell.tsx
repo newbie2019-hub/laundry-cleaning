@@ -16,6 +16,7 @@ import {
   UserCog,
   UserRound,
   Users,
+  Wallet,
   WalletCards,
 } from "lucide-react"
 import { useCallback, useEffect, useState } from "react"
@@ -27,11 +28,14 @@ import { useTour } from "../../features/onboarding/use-tour"
 
 const SIDEBAR_COLLAPSED_KEY = "sidebar-collapsed"
 
+type NavChild = { to: string; label: string; icon: LucideIcon; requiredPermission?: string }
+
 type NavItem = {
   to: string
   label: string
   icon: LucideIcon
-  children?: Array<{ to: string; label: string; icon: LucideIcon }>
+  requiredPermission?: string
+  children?: NavChild[]
 }
 
 const navigationItems: NavItem[] = [
@@ -65,6 +69,12 @@ const navigationItems: NavItem[] = [
     to: "/staff",
     label: "Staff",
     icon: UserCog,
+  },
+  {
+    to: "/payroll",
+    label: "Payroll",
+    icon: Wallet,
+    requiredPermission: "process_payroll",
   },
   {
     to: "/customers",
@@ -229,7 +239,7 @@ function NavItemEntry({
 }
 
 export function AppShell() {
-  const { activeBusiness, signOut, user } = useAuth()
+  const { activeBusiness, hasPermission, signOut, user } = useAuth()
   const { restart: restartTour } = useTour()
   const navigate = useNavigate()
   const currentBusiness = BUSINESSES[activeBusiness]
@@ -308,13 +318,15 @@ export function AppShell() {
           data-tour="sidebar-nav"
         >
           <div className="space-y-0.5">
-            {navigationItems.map((item) => (
-              <NavItemEntry
-                key={item.to}
-                collapsed={collapsed}
-                item={item}
-              />
-            ))}
+            {navigationItems
+              .filter((item) => !item.requiredPermission || hasPermission(item.requiredPermission))
+              .map((item) => (
+                <NavItemEntry
+                  key={item.to}
+                  collapsed={collapsed}
+                  item={item}
+                />
+              ))}
           </div>
         </nav>
 
@@ -451,7 +463,7 @@ export function AppShell() {
             <span className="text-sm font-semibold">{appSettings.name}</span>
           </div>
           <div className="flex items-center gap-1">
-            {allMobileItems.map((item) => {
+            {allMobileItems.filter((item) => !item.requiredPermission || hasPermission(item.requiredPermission)).map((item) => {
               const Icon = item.icon
               return (
                 <NavLink

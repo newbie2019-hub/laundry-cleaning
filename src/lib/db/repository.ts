@@ -6329,6 +6329,163 @@ export async function listPayrolls(staffId: number): Promise<PayrollListItem[]> 
   }))
 }
 
+export type AttendanceDaySummary = {
+  absentCount: number
+  date: string
+  halfCount: number
+  holidayCount: number
+  overtimeCount: number
+  presentCount: number
+  totalCount: number
+}
+
+export type PayrollPayDateSummary = {
+  count: number
+  payDate: string
+  totalGross: number
+  totalNet: number
+}
+
+export type AllStaffPayrollItem = PayrollListItem & {
+  staffDisplayName: string
+}
+
+export async function listAttendanceDaySummaries(from: string, to: string): Promise<AttendanceDaySummary[]> {
+  const database = await getDatabase()
+  const rows = await database.select<
+    Array<{
+      absentCount: number
+      date: string
+      halfCount: number
+      holidayCount: number
+      overtimeCount: number
+      presentCount: number
+      totalCount: number
+    }>
+  >(
+    `
+      SELECT
+        attendance_date AS date,
+        SUM(CASE WHEN status = 'present' THEN 1 ELSE 0 END) AS presentCount,
+        SUM(CASE WHEN status = 'absent' THEN 1 ELSE 0 END) AS absentCount,
+        SUM(CASE WHEN status = 'half' THEN 1 ELSE 0 END) AS halfCount,
+        SUM(CASE WHEN status = 'overtime' THEN 1 ELSE 0 END) AS overtimeCount,
+        SUM(CASE WHEN status = 'holiday' THEN 1 ELSE 0 END) AS holidayCount,
+        COUNT(*) AS totalCount
+      FROM staff_attendance
+      WHERE attendance_date >= $1 AND attendance_date <= $2
+      GROUP BY attendance_date
+      ORDER BY attendance_date ASC
+    `,
+    [from, to],
+  )
+  return rows.map((r) => ({
+    absentCount: Number(r.absentCount),
+    date: r.date,
+    halfCount: Number(r.halfCount),
+    holidayCount: Number(r.holidayCount),
+    overtimeCount: Number(r.overtimeCount),
+    presentCount: Number(r.presentCount),
+    totalCount: Number(r.totalCount),
+  }))
+}
+
+export async function listPayrollPayDateSummaries(from: string, to: string): Promise<PayrollPayDateSummary[]> {
+  const database = await getDatabase()
+  const rows = await database.select<
+    Array<{
+      count: number
+      payDate: string
+      totalGross: number
+      totalNet: number
+    }>
+  >(
+    `
+      SELECT
+        pay_date AS payDate,
+        COUNT(*) AS count,
+        SUM(gross_pay) AS totalGross,
+        SUM(net_pay) AS totalNet
+      FROM staff_payrolls
+      WHERE pay_date >= $1 AND pay_date <= $2 AND status = 'paid'
+      GROUP BY pay_date
+      ORDER BY pay_date ASC
+    `,
+    [from, to],
+  )
+  return rows.map((r) => ({
+    count: Number(r.count),
+    payDate: r.payDate,
+    totalGross: toNumber(r.totalGross),
+    totalNet: toNumber(r.totalNet),
+  }))
+}
+
+export async function listPayrollsByPayDate(payDate: string): Promise<AllStaffPayrollItem[]> {
+  const database = await getDatabase()
+  const rows = await database.select<
+    Array<{
+      cutoffDay: number
+      firstName: string
+      grossPay: number
+      id: number
+      lastName: string
+      middleName: string
+      netPay: number
+      notes: string
+      payDate: string
+      periodEnd: string
+      periodStart: string
+      staffId: number
+      status: string
+      totalAdjustments: number
+      transactionId: number | null
+    }>
+  >(
+    `
+      SELECT
+        p.id,
+        p.staff_id AS staffId,
+        p.period_start AS periodStart,
+        p.period_end AS periodEnd,
+        p.pay_date AS payDate,
+        p.cutoff_day AS cutoffDay,
+        p.gross_pay AS grossPay,
+        p.total_adjustments AS totalAdjustments,
+        p.net_pay AS netPay,
+        p.status,
+        p.transaction_id AS transactionId,
+        p.notes,
+        s.first_name AS firstName,
+        s.middle_name AS middleName,
+        s.last_name AS lastName
+      FROM staff_payrolls p
+      JOIN staff s ON s.id = p.staff_id
+      WHERE p.pay_date = $1 AND p.status = 'paid'
+      ORDER BY s.first_name ASC, s.last_name ASC
+    `,
+    [payDate],
+  )
+  return rows.map((r) => {
+    const parts = [r.firstName, r.middleName, r.lastName].filter((p) => p && p.trim().length > 0)
+    return {
+      cutoffDay: Number(r.cutoffDay),
+      grossPay: toNumber(r.grossPay),
+      id: r.id,
+      netPay: toNumber(r.netPay),
+      notes: r.notes,
+      payDate: r.payDate,
+      periodEnd: r.periodEnd,
+      periodStart: r.periodStart,
+      staffDisplayName: parts.join(' '),
+      staffId: r.staffId,
+      status: r.status as 'paid' | 'void',
+      totalAdjustments: toNumber(r.totalAdjustments),
+      transactionId: r.transactionId == null ? null : Number(r.transactionId),
+    }
+  })
+}
+
 export async function getPayrollDetail(payrollId: number): Promise<PayrollDetail | null> {
   const database = await getDatabase()
   const payrollRows = await database.select<
@@ -6431,9 +6588,6 @@ export async function voidPayroll(payrollId: number): Promise<void> {
   }
 
   const transactionId = detail.payroll.transactionId
-  if (!transactionId) {
-    throw new Error('Payroll has no linked transaction.')
-  }
 
   // The Tauri SQL plugin does not support transactions across multiple
   // `execute()` calls (pooled connections), so we delete child rows first and
@@ -6453,7 +6607,11 @@ export async function voidPayroll(payrollId: number): Promise<void> {
     `,
     [payrollId],
   )
-  await database.execute(`DELETE FROM transactions WHERE id = $1`, [transactionId])
+  // Only attempt to remove the ledger entry when it still exists; the FK is
+  // ON DELETE SET NULL so a manually-deleted transaction sets this to NULL.
+  if (transactionId) {
+    await database.execute(`DELETE FROM transactions WHERE id = $1`, [transactionId])
+  }
   await database.execute(
     `
       UPDATE staff_payrolls
