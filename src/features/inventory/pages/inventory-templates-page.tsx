@@ -23,12 +23,9 @@ import { FeatureTutorialProvider } from "../../tutorials/feature-tutorial-provid
 import { SALE_TEMPLATE_TUTORIAL_STEPS } from "../../tutorials/sale-template-tutorial-steps"
 import { TutorialTriggerButton } from "../../tutorials/tutorial-trigger-button"
 
-// Inventory unit types that can have fractional quantities (e.g. 1.5 kg).
-const MEASURABLE_UNIT_TYPES = new Set(["liquid", "weight", "length"])
-
-function qtyStepFor(unitType: string | undefined) {
-  return unitType && MEASURABLE_UNIT_TYPES.has(unitType) ? "0.01" : "any"
-}
+// Always "any": a fixed step combined with min="0.001" causes floating-point
+// rounding where whole numbers like 1 fail browser validation ((1-0.001)%0.01≠0).
+const QTY_STEP = "any"
 
 function defaultPriceFor(item: InventoryItem | undefined): string {
   if (!item) return ""
@@ -493,7 +490,7 @@ function InventoryTemplatesPageContent() {
               className="flex min-h-0 flex-1 flex-col"
               onSubmit={handleSubmit}
             >
-              <div className="space-y-4 overflow-y-auto p-5">
+              <div className="flex-1 min-h-0 space-y-4 overflow-y-auto p-5">
                 <ModalField
                   dataTutorial="tutorial-template-name"
                   label="Name"
@@ -649,7 +646,7 @@ function InventoryTemplatesPageContent() {
                                   )
                                 }}
                                 placeholder="Qty"
-                                step={usingAlt ? "any" : qtyStepFor(inv?.unitType)}
+                                step={QTY_STEP}
                                 type="number"
                                 value={line.quantity}
                               />

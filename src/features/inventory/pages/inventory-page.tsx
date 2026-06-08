@@ -907,8 +907,8 @@ function InventoryPageContent() {
       {/* ── ADD / EDIT ITEM MODAL ── */}
       {isModalOpen && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4">
-          <div className="w-full max-w-lg max-h-[90vh] overflow-y-auto rounded-xl bg-white shadow-xl">
-            <div className="flex items-center justify-between border-b border-gray-200 px-5 py-4">
+          <div className="flex w-full max-w-lg max-h-[90vh] flex-col rounded-xl bg-white shadow-xl">
+            <div className="flex shrink-0 items-center justify-between border-b border-gray-200 px-5 py-4">
               <h2 className="text-base font-semibold text-gray-900">
                 {editingId ? 'Edit Item' : 'Add Item'}
               </h2>
@@ -917,7 +917,8 @@ function InventoryPageContent() {
               </button>
             </div>
 
-            <form className="space-y-4 p-5" onSubmit={handleSubmit}>
+            <form className="flex min-h-0 flex-1 flex-col" onSubmit={handleSubmit}>
+              <div className="flex-1 min-h-0 overflow-y-auto space-y-4 p-5">
               <div className="grid grid-cols-2 gap-3">
                 <ModalField dataTutorial="tutorial-item-name" label="Item Name" required>
                   <input autoFocus className={inputClass} onChange={(e) => setFormName(e.target.value)} placeholder="e.g. Detergent Powder" type="text" value={formName} />
@@ -1198,8 +1199,9 @@ function InventoryPageContent() {
               )}
 
               {formError && <p className="rounded-md bg-red-50 px-3 py-2 text-sm text-red-600">{formError}</p>}
+              </div>
 
-              <div className="flex justify-end gap-2 pt-1">
+              <div className="flex shrink-0 justify-end gap-2 border-t border-gray-200 px-5 py-4">
                 <button className="rounded-md border border-gray-300 bg-white px-4 py-2 text-sm font-medium text-gray-700 hover:bg-gray-50" onClick={() => setIsModalOpen(false)} type="button">
                   Cancel
                 </button>

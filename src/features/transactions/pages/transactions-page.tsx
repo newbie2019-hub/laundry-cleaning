@@ -40,9 +40,11 @@ import {
   listTransactionTemplates,
   listTransactionTypes,
   listTransactions,
+  saveCustomer,
   saveTransaction,
   type Category,
   type Customer,
+  type CustomerDraft,
   type CustomerLoyaltyStatus,
   type InventoryItem,
   type LedgerTransaction,
@@ -283,6 +285,7 @@ function TransactionsPageContent() {
   const navigate = useNavigate()
   const [searchParams, setSearchParams] = useSearchParams()
   const customerPrefillConsumed = useRef<string | null>(null)
+  const customerContainerRef = useRef<HTMLDivElement>(null)
   const currentMonthKey = format(new Date(), 'yyyy-MM')
   const [filterPeriodMode, setFilterPeriodMode] = useState<FilterPeriodMode>('dateRange')
   const [filterMonthKey, setFilterMonthKey] = useState(currentMonthKey)
@@ -309,6 +312,9 @@ function TransactionsPageContent() {
   const [amount, setAmount] = useState('')
   const [staffCount, setStaffCount] = useState('')
   const [formCustomerId, setFormCustomerId] = useState('')
+  const [customerSearch, setCustomerSearch] = useState('')
+  const [customerDropdownOpen, setCustomerDropdownOpen] = useState(false)
+  const [isCreatingCustomer, setIsCreatingCustomer] = useState(false)
   const [formKg, setFormKg] = useState('')
   const [formLoads, setFormLoads] = useState('')
   const [showKgInput, setShowKgInput] = useState(false)
@@ -406,7 +412,7 @@ function TransactionsPageContent() {
   )
 
   useEffect(() => {
-    if (!showCustomerField || !formCustomerId) {
+    if (isCleaningBusiness || !showCustomerField || !formCustomerId) {
       setLoyaltyStatus(null)
       return
     }
@@ -417,7 +423,7 @@ function TransactionsPageContent() {
     return () => {
       cancelled = true
     }
-  }, [formCustomerId, showCustomerField])
+  }, [formCustomerId, isCleaningBusiness, showCustomerField])
 
   useEffect(() => {
     const cid = searchParams.get('customerId')
@@ -475,6 +481,43 @@ function TransactionsPageContent() {
     () => state.customers.filter((c) => !c.isArchived),
     [state.customers],
   )
+
+  const filteredCustomersForForm = useMemo(() => {
+    const q = customerSearch.toLowerCase().trim()
+    if (!q) return activeCustomersForForm
+    return activeCustomersForForm.filter((c) => {
+      const label = c.company ? `${c.name} (${c.company})` : c.name
+      return label.toLowerCase().includes(q)
+    })
+  }, [customerSearch, activeCustomersForForm])
+
+  const selectedCustomerLabel = useMemo(() => {
+    if (!formCustomerId) return ''
+    const c = state.customers.find((c) => String(c.id) === formCustomerId)
+    if (!c) return ''
+    return c.company ? `${c.name} (${c.company})` : c.name
+  }, [formCustomerId, state.customers])
+
+  const canQuickCreateCustomer =
+    customerSearch.trim().length > 0 &&
+    !activeCustomersForForm.some(
+      (c) => c.name.toLowerCase() === customerSearch.toLowerCase().trim(),
+    )
+
+  useEffect(() => {
+    if (!customerDropdownOpen) return
+    function handleMouseDown(e: MouseEvent) {
+      if (
+        customerContainerRef.current &&
+        !customerContainerRef.current.contains(e.target as Node)
+      ) {
+        setCustomerDropdownOpen(false)
+        setCustomerSearch('')
+      }
+    }
+    document.addEventListener('mousedown', handleMouseDown)
+    return () => document.removeEventListener('mousedown', handleMouseDown)
+  }, [customerDropdownOpen])
 
   const summary = useMemo(() => {
     let totalSales = 0
@@ -860,6 +903,9 @@ function TransactionsPageContent() {
     setAmount('')
     setStaffCount('')
     setFormCustomerId('')
+    setCustomerSearch('')
+    setCustomerDropdownOpen(false)
+    setIsCreatingCustomer(false)
     setFormKg('')
     setFormLoads('')
     setShowKgInput(false)
@@ -1193,6 +1239,28 @@ function TransactionsPageContent() {
     if (!canDelete) return
     await deleteTransaction(transactionId)
     await loadTransactions()
+  }
+
+  async function handleQuickCreateCustomer() {
+    const name = customerSearch.trim()
+    if (!name || !user) return
+    setIsCreatingCustomer(true)
+    try {
+      const draft: CustomerDraft = { company: '', email: '', name, phone: '' }
+      await saveCustomer(draft, user.id)
+      const updatedCustomers = await listCustomers({ includeArchived: true })
+      setState((prev) => ({ ...prev, customers: updatedCustomers }))
+      const created = updatedCustomers.find(
+        (c) => !c.isArchived && c.name.toLowerCase() === name.toLowerCase(),
+      )
+      if (created) setFormCustomerId(String(created.id))
+      setCustomerSearch('')
+      setCustomerDropdownOpen(false)
+    } catch {
+      // leave dropdown open so the user can retry
+    } finally {
+      setIsCreatingCustomer(false)
+    }
   }
 
   function handleEdit(transaction: LedgerTransaction) {
@@ -2191,29 +2259,94 @@ function TransactionsPageContent() {
 
                 {showCustomerField ? (
                   <ModalField dataTutorial="tutorial-tx-customer" label="Customer">
-                    <select
-                      className={modalSelectClass}
-                      onChange={(event) => setFormCustomerId(event.target.value)}
-                      value={formCustomerId}
-                    >
-                      <option value="">No customer</option>
-                      {formCustomerId &&
-                      !activeCustomersForForm.some((c) => String(c.id) === formCustomerId)
-                        ? state.customers
-                            .filter((c) => String(c.id) === formCustomerId)
-                            .map((c) => (
-                              <option key={c.id} value={c.id}>
+                    <div className="relative" ref={customerContainerRef}>
+                      <div className="relative">
+                        <input
+                          className={`${modalInputClass} pr-8`}
+                          onChange={(e) => {
+                            setCustomerSearch(e.target.value)
+                            if (!customerDropdownOpen) setCustomerDropdownOpen(true)
+                          }}
+                          onFocus={() => {
+                            setCustomerSearch('')
+                            setCustomerDropdownOpen(true)
+                          }}
+                          placeholder="Search or type a name…"
+                          type="text"
+                          value={customerDropdownOpen ? customerSearch : selectedCustomerLabel}
+                        />
+                        {formCustomerId ? (
+                          <button
+                            className="absolute right-2 top-1/2 -translate-y-1/2 text-gray-400 hover:text-gray-600"
+                            onClick={() => {
+                              setFormCustomerId('')
+                              setCustomerSearch('')
+                            }}
+                            tabIndex={-1}
+                            type="button"
+                          >
+                            <X className="h-3.5 w-3.5" />
+                          </button>
+                        ) : null}
+                      </div>
+                      {customerDropdownOpen ? (
+                        <div className="absolute z-50 mt-1 max-h-56 w-full overflow-y-auto rounded-md border border-gray-200 bg-white shadow-lg">
+                          <button
+                            className="w-full px-3 py-2 text-left text-sm text-gray-500 hover:bg-gray-50"
+                            onMouseDown={(e) => {
+                              e.preventDefault()
+                              setFormCustomerId('')
+                              setCustomerSearch('')
+                              setCustomerDropdownOpen(false)
+                            }}
+                            type="button"
+                          >
+                            No customer
+                          </button>
+                          {filteredCustomersForForm.length > 0 ? (
+                            filteredCustomersForForm.map((c) => (
+                              <button
+                                className={[
+                                  'w-full px-3 py-2 text-left text-sm',
+                                  String(c.id) === formCustomerId
+                                    ? 'bg-blue-50 font-medium text-blue-700'
+                                    : 'text-gray-900 hover:bg-gray-50',
+                                ].join(' ')}
+                                key={c.id}
+                                onMouseDown={(e) => {
+                                  e.preventDefault()
+                                  setFormCustomerId(String(c.id))
+                                  setCustomerSearch('')
+                                  setCustomerDropdownOpen(false)
+                                }}
+                                type="button"
+                              >
                                 {c.company ? `${c.name} (${c.company})` : c.name}
-                                {c.isArchived ? ' (archived)' : ''}
-                              </option>
+                              </button>
                             ))
-                        : null}
-                      {activeCustomersForForm.map((c) => (
-                        <option key={c.id} value={c.id}>
-                          {c.company ? `${c.name} (${c.company})` : c.name}
-                        </option>
-                      ))}
-                    </select>
+                          ) : customerSearch.trim() ? (
+                            <div className="px-3 py-2 text-xs text-gray-400">
+                              No matches found
+                            </div>
+                          ) : null}
+                          {canQuickCreateCustomer ? (
+                            <button
+                              className="w-full border-t border-gray-100 px-3 py-2 text-left text-sm font-medium text-blue-600 hover:bg-blue-50 disabled:opacity-50"
+                              disabled={isCreatingCustomer}
+                              onMouseDown={(e) => {
+                                e.preventDefault()
+                                void handleQuickCreateCustomer()
+                              }}
+                              type="button"
+                            >
+                              {isCreatingCustomer
+                                ? 'Saving…'
+                                : `+ Save "${customerSearch.trim()}" as new customer`}
+                            </button>
+                          ) : null}
+                        </div>
+                      ) : null}
+                    </div>
                   </ModalField>
                 ) : null}
 
@@ -2261,7 +2394,7 @@ function TransactionsPageContent() {
                   </div>
                 ) : null}
 
-                {loyaltyStatus && formCustomerId && showCustomerField ? (
+                {!isCleaningBusiness && loyaltyStatus && formCustomerId && showCustomerField ? (
                   <p className="text-xs text-gray-600">
                     {loyaltyStatus.isEligibleForReward ? (
                       <span className="font-medium text-violet-600">
