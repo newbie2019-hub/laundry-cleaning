@@ -8,6 +8,7 @@ import {
   ArrowUpDown,
   Banknote,
   Building2,
+  CalendarDays,
   CreditCard,
   Download,
   Minus,
@@ -287,7 +288,7 @@ function TransactionsPageContent() {
   const customerPrefillConsumed = useRef<string | null>(null)
   const customerContainerRef = useRef<HTMLDivElement>(null)
   const currentMonthKey = format(new Date(), 'yyyy-MM')
-  const [filterPeriodMode, setFilterPeriodMode] = useState<FilterPeriodMode>('dateRange')
+  const [filterPeriodMode, setFilterPeriodMode] = useState<FilterPeriodMode>('month')
   const [filterMonthKey, setFilterMonthKey] = useState(currentMonthKey)
   const [filterDateFrom, setFilterDateFrom] = useState('')
   const [filterDateTo, setFilterDateTo] = useState('')
@@ -297,7 +298,7 @@ function TransactionsPageContent() {
   const [searchQuery, setSearchQuery] = useState('')
   const [isModalOpen, setIsModalOpen] = useState(false)
   const [isFilterOpen, setIsFilterOpen] = useState(false)
-  const [draftPeriodMode, setDraftPeriodMode] = useState<FilterPeriodMode>('dateRange')
+  const [draftPeriodMode, setDraftPeriodMode] = useState<FilterPeriodMode>('month')
   const [draftMonthKey, setDraftMonthKey] = useState(currentMonthKey)
   const [draftDateFrom, setDraftDateFrom] = useState('')
   const [draftDateTo, setDraftDateTo] = useState('')
@@ -326,6 +327,7 @@ function TransactionsPageContent() {
   const [isSubmitting, setIsSubmitting] = useState(false)
   const [tableSortKey, setTableSortKey] = useState<TableSortKey>('date')
   const [tableSortDir, setTableSortDir] = useState<'asc' | 'desc'>('desc')
+  const [txPage, setTxPage] = useState(0)
 
   const canCreate = hasPermission('manage_transactions')
   const canEdit = hasPermission('edit_transaction')
@@ -538,6 +540,8 @@ function TransactionsPageContent() {
     }
   }, [state.transactions])
 
+  const TX_PAGE_SIZE = 50
+
   const displayedTransactions = useMemo(() => {
     const q = searchQuery.trim().toLowerCase()
     const filtered = !q
@@ -552,6 +556,16 @@ function TransactionsPageContent() {
         )
     return [...filtered].sort((a, b) => compareTransactionsForSort(a, b, tableSortKey, tableSortDir))
   }, [state.transactions, searchQuery, tableSortDir, tableSortKey])
+
+  useEffect(() => {
+    setTxPage(0)
+  }, [state.transactions, searchQuery, tableSortKey, tableSortDir])
+
+  const totalTxPages = Math.max(1, Math.ceil(displayedTransactions.length / TX_PAGE_SIZE))
+  const pagedTransactions = useMemo(() => {
+    const start = txPage * TX_PAGE_SIZE
+    return displayedTransactions.slice(start, start + TX_PAGE_SIZE)
+  }, [displayedTransactions, txPage, TX_PAGE_SIZE])
 
   function handleColumnSort(key: TableSortKey) {
     if (key === tableSortKey) {
@@ -1596,31 +1610,52 @@ function TransactionsPageContent() {
       </div>
 
       {/* Search + filter toolbar */}
-      <div className="flex items-center justify-end gap-2">
-        <div className="relative w-64">
-          <Search className="absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-[var(--muted)]" />
-          <input
-            className="h-9 w-full rounded-md border border-[var(--border)] bg-[var(--panel)] pl-8 pr-3 text-sm outline-none focus:border-[var(--accent)] transition"
-            onChange={(event) => setSearchQuery(event.target.value)}
-            placeholder="Search transactions…"
-            type="search"
-            value={searchQuery}
-          />
-        </div>
+      <div className="flex items-center justify-between gap-2">
         <button
           aria-label="Open filters"
-          className="relative inline-flex h-9 items-center gap-1.5 rounded-md border border-[var(--border)] bg-[var(--panel)] px-3 text-sm text-[var(--muted)] transition hover:text-[var(--foreground)]"
+          className="inline-flex items-center gap-1.5 rounded-md px-2 py-1 text-sm font-medium text-[var(--muted)] transition hover:bg-[var(--background)] hover:text-[var(--foreground)]"
           onClick={openFilter}
           type="button"
         >
-          <SlidersHorizontal className="h-3.5 w-3.5" />
-          Filters
-          {activeFilterCount > 0 && (
-            <span className="absolute -right-1.5 -top-1.5 flex h-4 w-4 items-center justify-center rounded-full bg-[var(--accent)] text-[9px] font-bold text-white">
-              {activeFilterCount}
-            </span>
-          )}
+          <CalendarDays className="h-3.5 w-3.5 shrink-0" />
+          <span>
+            {filterPeriodMode === 'month'
+              ? format(new Date(`${filterMonthKey}-01T12:00:00`), 'MMMM yyyy')
+              : filterDateFrom && filterDateTo
+                ? `${format(new Date(`${filterDateFrom}T00:00:00`), 'MMM d, yyyy')} – ${format(new Date(`${filterDateTo}T00:00:00`), 'MMM d, yyyy')}`
+                : filterDateFrom
+                  ? `From ${format(new Date(`${filterDateFrom}T00:00:00`), 'MMM d, yyyy')}`
+                  : filterDateTo
+                    ? `Until ${format(new Date(`${filterDateTo}T00:00:00`), 'MMM d, yyyy')}`
+                    : 'All dates'}
+          </span>
         </button>
+        <div className="flex items-center gap-2">
+          <div className="relative w-64">
+            <Search className="absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-[var(--muted)]" />
+            <input
+              className="h-9 w-full rounded-md border border-[var(--border)] bg-[var(--panel)] pl-8 pr-3 text-sm outline-none focus:border-[var(--accent)] transition"
+              onChange={(event) => setSearchQuery(event.target.value)}
+              placeholder="Search transactions…"
+              type="search"
+              value={searchQuery}
+            />
+          </div>
+          <button
+            aria-label="Open filters"
+            className="relative inline-flex h-9 items-center gap-1.5 rounded-md border border-[var(--border)] bg-[var(--panel)] px-3 text-sm text-[var(--muted)] transition hover:text-[var(--foreground)]"
+            onClick={openFilter}
+            type="button"
+          >
+            <SlidersHorizontal className="h-3.5 w-3.5" />
+            Filters
+            {activeFilterCount > 0 && (
+              <span className="absolute -right-1.5 -top-1.5 flex h-4 w-4 items-center justify-center rounded-full bg-[var(--accent)] text-[9px] font-bold text-white">
+                {activeFilterCount}
+              </span>
+            )}
+          </button>
+        </div>
       </div>
 
       {/* Transaction list */}
@@ -1698,7 +1733,7 @@ function TransactionsPageContent() {
           </div>
         ) : (
           <div className="divide-y divide-[var(--border)]">
-            {displayedTransactions.map((transaction) => {
+            {pagedTransactions.map((transaction) => {
               const displayDescription = transaction.description.trim()
                 ? transaction.description
                 : transaction.categoryLabel
@@ -1848,11 +1883,35 @@ function TransactionsPageContent() {
           </div>
         )}
 
-        {/* Footer count */}
+        {/* Footer count + pagination */}
         {displayedTransactions.length > 0 && (
-          <div className="border-t border-[var(--border)] bg-[var(--background)]/40 px-4 py-2 text-xs text-[var(--muted)]">
-            {displayedTransactions.length} transaction{displayedTransactions.length !== 1 ? 's' : ''}
-            {searchQuery && ` matching "${searchQuery}"`}
+          <div className="border-t border-[var(--border)] bg-[var(--background)]/40 px-4 py-2">
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <span className="text-xs text-[var(--muted)]">
+                Showing {txPage * TX_PAGE_SIZE + 1} to {Math.min((txPage + 1) * TX_PAGE_SIZE, displayedTransactions.length)} out of {displayedTransactions.length} {searchQuery ? `results matching "${searchQuery}"` : 'transactions'}
+              </span>
+              {displayedTransactions.length > TX_PAGE_SIZE && (
+                <div className="flex items-center gap-2 text-xs">
+                  <span className="text-[var(--muted)]">Page {txPage + 1} of {totalTxPages}</span>
+                  <button
+                    className="rounded-md border border-[var(--border)] px-2.5 py-1 font-medium text-[var(--foreground)] transition hover:bg-[var(--background)] disabled:opacity-40"
+                    disabled={txPage <= 0}
+                    onClick={() => setTxPage((p) => Math.max(0, p - 1))}
+                    type="button"
+                  >
+                    Previous
+                  </button>
+                  <button
+                    className="rounded-md border border-[var(--border)] px-2.5 py-1 font-medium text-[var(--foreground)] transition hover:bg-[var(--background)] disabled:opacity-40"
+                    disabled={txPage >= totalTxPages - 1}
+                    onClick={() => setTxPage((p) => Math.min(totalTxPages - 1, p + 1))}
+                    type="button"
+                  >
+                    Next
+                  </button>
+                </div>
+              )}
+            </div>
           </div>
         )}
       </div>
@@ -2095,6 +2154,50 @@ function TransactionsPageContent() {
                     ))}
                   </select>
                 </ModalField>
+
+                {showLoadFields ? (
+                  <div className="space-y-2">
+                    <div className={showKgInput ? 'grid grid-cols-2 gap-3' : ''}>
+                      <ModalField label="Loads" required={!formRedeemReward}>
+                        <input
+                          className={modalInputClass}
+                          min="0"
+                          onChange={(event) => setFormLoads(event.target.value)}
+                          placeholder="e.g. 1"
+                          step="0.01"
+                          type="number"
+                          value={formLoads}
+                        />
+                      </ModalField>
+                      {showKgInput ? (
+                        <ModalField label="Kilograms (optional)">
+                          <input
+                            className={modalInputClass}
+                            min="0"
+                            onChange={(event) => handleKgChange(event.target.value)}
+                            placeholder={`e.g. ${state.loyaltySettings.kgPerLoad}`}
+                            step="0.01"
+                            type="number"
+                            value={formKg}
+                          />
+                        </ModalField>
+                      ) : null}
+                    </div>
+                    <button
+                      className="text-xs font-medium text-[var(--accent)] underline decoration-[var(--accent)]/40 hover:decoration-[var(--accent)]"
+                      onClick={() => {
+                        setShowKgInput((prev) => {
+                          const next = !prev
+                          if (!next) setFormKg('')
+                          return next
+                        })
+                      }}
+                      type="button"
+                    >
+                      {showKgInput ? 'Hide kilograms' : 'Specify kilograms'}
+                    </button>
+                  </div>
+                ) : null}
 
                 {isCashAdvanceCategory ? (
                   <ModalField
@@ -2348,50 +2451,6 @@ function TransactionsPageContent() {
                       ) : null}
                     </div>
                   </ModalField>
-                ) : null}
-
-                {showLoadFields ? (
-                  <div className="space-y-2">
-                    <div className={showKgInput ? 'grid grid-cols-2 gap-3' : ''}>
-                      <ModalField label="Loads" required={!formRedeemReward}>
-                        <input
-                          className={modalInputClass}
-                          min="0"
-                          onChange={(event) => setFormLoads(event.target.value)}
-                          placeholder="e.g. 1"
-                          step="0.01"
-                          type="number"
-                          value={formLoads}
-                        />
-                      </ModalField>
-                      {showKgInput ? (
-                        <ModalField label="Kilograms (optional)">
-                          <input
-                            className={modalInputClass}
-                            min="0"
-                            onChange={(event) => handleKgChange(event.target.value)}
-                            placeholder={`e.g. ${state.loyaltySettings.kgPerLoad}`}
-                            step="0.01"
-                            type="number"
-                            value={formKg}
-                          />
-                        </ModalField>
-                      ) : null}
-                    </div>
-                    <button
-                      className="text-xs font-medium text-[var(--accent)] underline decoration-[var(--accent)]/40 hover:decoration-[var(--accent)]"
-                      onClick={() => {
-                        setShowKgInput((prev) => {
-                          const next = !prev
-                          if (!next) setFormKg('')
-                          return next
-                        })
-                      }}
-                      type="button"
-                    >
-                      {showKgInput ? 'Hide kilograms' : 'Specify kilograms'}
-                    </button>
-                  </div>
                 ) : null}
 
                 {!isCleaningBusiness && loyaltyStatus && formCustomerId && showCustomerField ? (
