@@ -89,9 +89,9 @@ const emptyState: LoadState = {
 }
 
 const TX_TABLE_GRID_WITH_LOADS =
-  'sm:grid sm:grid-cols-[150px_120px_140px_72px_minmax(0,120px)_minmax(0,1fr)_96px_128px_80px] sm:items-center sm:gap-3'
+  'sm:grid sm:grid-cols-[100px_120px_140px_72px_minmax(0,120px)_minmax(0,1fr)_96px_128px_150px_80px] sm:items-center sm:gap-3'
 const TX_TABLE_GRID_NO_LOADS =
-  'sm:grid sm:grid-cols-[150px_120px_140px_minmax(0,120px)_minmax(0,1fr)_96px_128px_80px] sm:items-center sm:gap-3'
+  'sm:grid sm:grid-cols-[100px_120px_140px_minmax(0,120px)_minmax(0,1fr)_96px_128px_150px_80px] sm:items-center sm:gap-3'
 
 function formatLoadsCell(transaction: LedgerTransaction) {
   if (transaction.isLoyaltyReward) {
@@ -133,7 +133,7 @@ function formatTransactionDisplayDate(entryDate: string) {
   return format(new Date(`${entryDate}T00:00:00`), 'MMM d, yyyy')
 }
 
-type TableSortKey = 'amount' | 'category' | 'customer' | 'date' | 'loads' | 'staff' | 'type'
+type TableSortKey = 'amount' | 'category' | 'createdAt' | 'customer' | 'date' | 'loads' | 'staff' | 'type'
 
 function compareTransactionsForSort(
   a: LedgerTransaction,
@@ -144,7 +144,10 @@ function compareTransactionsForSort(
   const sign = dir === 'asc' ? 1 : -1
   let cmp = 0
   switch (key) {
-    case 'date': {
+    case 'date':
+      cmp = a.entryDate.localeCompare(b.entryDate)
+      break
+    case 'createdAt': {
       const aKey = a.createdAt || a.entryDate
       const bKey = b.createdAt || b.entryDate
       cmp = aKey.localeCompare(bKey)
@@ -572,7 +575,7 @@ function TransactionsPageContent() {
       setTableSortDir((d) => (d === 'asc' ? 'desc' : 'asc'))
     } else {
       setTableSortKey(key)
-      setTableSortDir(key === 'date' || key === 'amount' || key === 'loads' ? 'desc' : 'asc')
+      setTableSortDir(key === 'date' || key === 'createdAt' || key === 'amount' || key === 'loads' ? 'desc' : 'asc')
     }
   }
 
@@ -1670,7 +1673,7 @@ function TransactionsPageContent() {
           <SortableColumnHeader
             activeKey={tableSortKey}
             dir={tableSortDir}
-            label="Created At"
+            label="Date"
             onSort={handleColumnSort}
             sortKey="date"
           />
@@ -1723,6 +1726,13 @@ function TransactionsPageContent() {
             onSort={handleColumnSort}
             sortKey="amount"
           />
+          <SortableColumnHeader
+            activeKey={tableSortKey}
+            dir={tableSortDir}
+            label="Created At"
+            onSort={handleColumnSort}
+            sortKey="createdAt"
+          />
           <span className="sr-only">Actions</span>
         </div>
 
@@ -1766,11 +1776,16 @@ function TransactionsPageContent() {
                           </p>
                         ) : null}
                       </div>
-                      <span className="shrink-0 text-right text-xs tabular-nums text-[var(--muted)]">
-                        {transaction.createdAt
-                          ? formatDateTime(transaction.createdAt)
-                          : formatTransactionDisplayDate(transaction.entryDate)}
-                      </span>
+                      <div className="shrink-0 text-right">
+                        <p className="text-xs tabular-nums text-[var(--muted)]">
+                          {formatTransactionDisplayDate(transaction.entryDate)}
+                        </p>
+                        {transaction.createdAt ? (
+                          <p className="text-[10px] tabular-nums text-[var(--muted)] opacity-60">
+                            {formatDateTime(transaction.createdAt)}
+                          </p>
+                        ) : null}
+                      </div>
                     </div>
                     <div className="flex flex-wrap items-center justify-between gap-2">
                       <div className="flex flex-wrap items-center gap-2">
@@ -1827,9 +1842,7 @@ function TransactionsPageContent() {
                     tabIndex={0}
                   >
                     <span className="whitespace-nowrap text-xs tabular-nums text-[var(--foreground)]">
-                      {transaction.createdAt
-                        ? formatDateTime(transaction.createdAt)
-                        : formatTransactionDisplayDate(transaction.entryDate)}
+                      {formatTransactionDisplayDate(transaction.entryDate)}
                     </span>
                     <div className="flex justify-center">
                       <span className={typeBadgeClass(transaction.transactionTypeCode)}>
@@ -1850,6 +1863,9 @@ function TransactionsPageContent() {
                     <p className="whitespace-nowrap text-right text-sm font-semibold tabular-nums">
                       {formatCurrency(transaction.amount)}
                     </p>
+                    <span className="whitespace-nowrap text-xs tabular-nums text-[var(--muted)]">
+                      {transaction.createdAt ? formatDateTime(transaction.createdAt) : '—'}
+                    </span>
                     <div className="flex shrink-0 items-center justify-end gap-0.5">
                       <button
                         aria-label="Edit"
