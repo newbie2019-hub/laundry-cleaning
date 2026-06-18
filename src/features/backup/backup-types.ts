@@ -114,6 +114,14 @@ export type ExportInventoryMovement = {
   notes: string
   movementDate: string
   createdAt: string
+  /**
+   * Fingerprint of the parent transaction when this movement was created by a
+   * sale/transaction (i.e. the DB row has a non-null `transaction_id`).
+   * Optional for backwards compatibility with backup files created before this
+   * field existed — older files will simply import movements without a
+   * `transaction_id` link.
+   */
+  transactionRef?: string | null
 }
 
 export type ExportInventoryMaintenance = {

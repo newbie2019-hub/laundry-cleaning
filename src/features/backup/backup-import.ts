@@ -1458,6 +1458,33 @@ export async function applyImportPlan(
       })
     }
 
+    // ─── Build fingerprint → local DB id map for all transactions in the file.
+    //
+    // Because the autoincrement id is different on every device, inventory
+    // movements cannot use the original transaction_id from the source device.
+    // Instead the export now stores the transaction fingerprint on each
+    // movement, and we resolve the correct local id here — after all
+    // transactions have been inserted/updated/skipped — before applying the
+    // movements.
+    const txFingerprintToLocalId = new Map<string, number>()
+    for (const row of plan.file.entities.transactions) {
+      const localTxn = await findTransactionByIdentity({
+        entryDate: row.entryDate,
+        transactionTypeCode: row.transactionTypeCode,
+        categoryLabel: row.categoryRef.label,
+        amount: row.amount,
+        description: row.description,
+        customerName: row.customerRef?.name ?? null,
+        customerPhone: row.customerRef?.phone ?? null,
+        kg: row.kg,
+        loads: row.loads,
+        isLoyaltyReward: row.isLoyaltyReward,
+      })
+      if (localTxn) {
+        txFingerprintToLocalId.set(row.fingerprint, localTxn.id)
+      }
+    }
+
     // ─── inventory_movements ────────────────────────────────────────────────
     for (const item of plan.perEntity.inventoryMovements.insert) {
       await applyRow(summary.perEntity.inventoryMovements, item, async () => {
@@ -1468,12 +1495,21 @@ export async function applyImportPlan(
           [row.itemRef.name],
         )
         if (itemId == null) throw new Error(`Inventory item "${row.itemRef.name}" not found locally.`)
+
+        // Restore the transaction_id link using the fingerprint-based lookup.
+        // Falls back to NULL for manual stock adjustments (no transactionRef)
+        // and for old backup files that predate the transactionRef field.
+        const transactionId =
+          row.transactionRef != null
+            ? (txFingerprintToLocalId.get(row.transactionRef) ?? null)
+            : null
+
         await db.execute(
           `
-            INSERT INTO inventory_movements (item_id, movement_type, quantity, unit_cost, notes, movement_date, created_by)
-            VALUES ($1, $2, $3, $4, $5, $6, $7)
+            INSERT INTO inventory_movements (item_id, movement_type, quantity, unit_cost, notes, movement_date, created_by, transaction_id)
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
           `,
-          [itemId, row.movementType, row.quantity, row.unitCost, row.notes, row.movementDate, userId],
+          [itemId, row.movementType, row.quantity, row.unitCost, row.notes, row.movementDate, userId, transactionId],
         )
         return 'inserted'
       })

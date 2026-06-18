@@ -180,6 +180,8 @@ type RawInventoryMovement = {
   notes: string
   movementDate: string
   createdAt: string
+  /** DB foreign key to transactions.id — null for manual stock adjustments. */
+  transactionId: number | null
 }
 
 type RawInventoryMaintenance = {
@@ -533,7 +535,8 @@ async function loadEntities(): Promise<BackupEntities> {
           m.unit_cost AS unitCost,
           m.notes AS notes,
           m.movement_date AS movementDate,
-          m.created_at AS createdAt
+          m.created_at AS createdAt,
+          m.transaction_id AS transactionId
         FROM inventory_movements m
         JOIN inventory_items i ON i.id = m.item_id
         ORDER BY m.id
@@ -829,6 +832,17 @@ async function loadEntities(): Promise<BackupEntities> {
 
   // ─── Build the final shape with fingerprints ─────────────────────────────
 
+  // Build a transaction DB-id → fingerprint map so each inventory movement
+  // can record which transaction created it. This lets the importer restore
+  // the transaction_id link even though the DB ids differ across devices.
+  const builtTransactions = await Promise.all(
+    transactions.map((t) => buildTransaction(t, lineItemsByTxn.get(t.id) ?? [])),
+  )
+  const transactionFpByDbId = new Map<number, string>()
+  for (let i = 0; i < transactions.length; i++) {
+    transactionFpByDbId.set(transactions[i].id, builtTransactions[i].fingerprint)
+  }
+
   const out: BackupEntities = {
     transactionTypes: await Promise.all(
       transactionTypes.map(async (r) => buildTransactionType(r)),
@@ -842,7 +856,7 @@ async function loadEntities(): Promise<BackupEntities> {
       inventoryItems.map((r) => buildInventoryItem(r, altUnitsByItemId.get(r.id) ?? [])),
     ),
     inventoryMovements: await Promise.all(
-      inventoryMovements.map(buildInventoryMovement),
+      inventoryMovements.map((r) => buildInventoryMovement(r, transactionFpByDbId)),
     ),
     inventoryMaintenanceRecords: await Promise.all(
       inventoryMaintenanceRecords.map(buildInventoryMaintenance),
@@ -850,9 +864,7 @@ async function loadEntities(): Promise<BackupEntities> {
     transactionTemplates: await Promise.all(
       templates.map((t) => buildTemplate(t, templateItemsById.get(t.id) ?? [])),
     ),
-    transactions: await Promise.all(
-      transactions.map((t) => buildTransaction(t, lineItemsByTxn.get(t.id) ?? [])),
-    ),
+    transactions: builtTransactions,
     staff: await Promise.all(staff.map(buildStaff)),
     staffAttendance: await Promise.all(attendance.map(buildAttendance)),
     staffPayrolls: await Promise.all(
@@ -953,8 +965,11 @@ async function buildInventoryItem(
 
 async function buildInventoryMovement(
   r: RawInventoryMovement,
+  transactionFpByDbId: Map<number, string>,
 ): Promise<ExportInventoryMovement> {
   const ref: InventoryItemRef = { name: r.itemName }
+  const transactionRef =
+    r.transactionId != null ? (transactionFpByDbId.get(r.transactionId) ?? null) : null
   return {
     fingerprint: await fingerprint([
       'inventoryMovement',
@@ -972,6 +987,7 @@ async function buildInventoryMovement(
     notes: asString(r.notes),
     movementDate: r.movementDate,
     createdAt: asString(r.createdAt),
+    transactionRef,
   }
 }
 
