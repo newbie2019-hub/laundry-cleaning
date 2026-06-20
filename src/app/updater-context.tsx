@@ -10,13 +10,8 @@ import { getVersion } from '@tauri-apps/api/app'
 import { check, type Update } from '@tauri-apps/plugin-updater'
 import { relaunch } from '@tauri-apps/plugin-process'
 
-// Updates are only meaningful in production builds. In dev mode the endpoint
-// hasn't been published yet, so any check will always fail.
-const IS_DEV = import.meta.env.DEV
-
 type UpdaterStatus =
   | 'idle'
-  | 'dev'          // running in dev / debug mode — checks are skipped
   | 'checking'
   | 'up-to-date'
   | 'available'
@@ -38,7 +33,7 @@ const UpdaterContext = createContext<UpdaterState | null>(null)
 
 export function UpdaterProvider({ children }: PropsWithChildren) {
   const [appVersion, setAppVersion] = useState<string | null>(null)
-  const [status, setStatus] = useState<UpdaterStatus>(IS_DEV ? 'dev' : 'idle')
+  const [status, setStatus] = useState<UpdaterStatus>('idle')
   const [update, setUpdate] = useState<Update | null>(null)
   const [downloadProgress, setDownloadProgress] = useState<number | null>(null)
   const [error, setError] = useState<string | null>(null)
@@ -48,7 +43,6 @@ export function UpdaterProvider({ children }: PropsWithChildren) {
   }, [])
 
   const checkForUpdates = useCallback(async () => {
-    if (IS_DEV) return
     setStatus('checking')
     setError(null)
     setUpdate(null)
@@ -61,8 +55,9 @@ export function UpdaterProvider({ children }: PropsWithChildren) {
         setStatus('up-to-date')
       }
     } catch (err) {
+      console.error('[updater] check failed:', err)
       setStatus('error')
-      setError(err instanceof Error ? err.message : 'Update check failed.')
+      setError(err instanceof Error ? err.message : String(err))
     }
   }, [])
 
