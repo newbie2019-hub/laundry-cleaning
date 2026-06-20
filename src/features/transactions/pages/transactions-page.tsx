@@ -89,9 +89,11 @@ const emptyState: LoadState = {
 }
 
 const TX_TABLE_GRID_WITH_LOADS =
-  'sm:grid sm:grid-cols-[100px_120px_140px_72px_minmax(0,120px)_minmax(0,1fr)_96px_128px_150px_80px] sm:items-center sm:gap-3'
+  'sm:grid sm:grid-cols-[100px_120px_128px_140px_72px_minmax(120px,160px)_minmax(200px,1fr)_96px_150px] sm:items-center sm:gap-3 sm:flex-1 sm:pl-4'
 const TX_TABLE_GRID_NO_LOADS =
-  'sm:grid sm:grid-cols-[100px_120px_140px_minmax(0,120px)_minmax(0,1fr)_96px_128px_150px_80px] sm:items-center sm:gap-3'
+  'sm:grid sm:grid-cols-[100px_120px_128px_140px_minmax(120px,160px)_minmax(200px,1fr)_96px_150px] sm:items-center sm:gap-3 sm:flex-1 sm:pl-4'
+const TX_ACTIONS_STICKY =
+  'sm:sticky sm:right-0 sm:z-10 sm:flex sm:w-[88px] sm:shrink-0 sm:items-center sm:justify-end sm:gap-0.5 sm:bg-[var(--panel-solid)] sm:pl-3 sm:pr-4 sm:shadow-[-8px_0_8px_-8px_rgba(15,23,42,0.18)]'
 
 function formatLoadsCell(transaction: LedgerTransaction) {
   if (transaction.isLoyaltyReward) {
@@ -271,6 +273,39 @@ function lineItemQtyInputProps(unitType: string | undefined) {
 
 type FilterPeriodMode = 'dateRange' | 'month'
 
+type PersistedTransactionFilters = {
+  periodMode: FilterPeriodMode
+  monthKey: string
+  dateFrom: string
+  dateTo: string
+  typeId: string
+  categoryId: string
+  customerId: string
+  search: string
+  sortKey: TableSortKey
+  sortDir: 'asc' | 'desc'
+}
+
+const TX_FILTERS_STORAGE_PREFIX = 'business-ledger.transactions.filters'
+
+function txFiltersStorageKey(business: string) {
+  return `${TX_FILTERS_STORAGE_PREFIX}.${business}`
+}
+
+function readPersistedTransactionFilters(
+  business: string,
+): Partial<PersistedTransactionFilters> | null {
+  try {
+    const raw = window.localStorage.getItem(txFiltersStorageKey(business))
+    if (!raw) return null
+    const parsed: unknown = JSON.parse(raw)
+    if (!parsed || typeof parsed !== 'object') return null
+    return parsed as Partial<PersistedTransactionFilters>
+  } catch {
+    return null
+  }
+}
+
 export function TransactionsPage() {
   return (
     <FeatureTutorialProvider
@@ -286,19 +321,25 @@ function TransactionsPageContent() {
   const { activeBusiness, hasPermission, user } = useAuth()
   const isCleaningBusiness = activeBusiness === 'cleaning'
   const TX_TABLE_GRID = isCleaningBusiness ? TX_TABLE_GRID_NO_LOADS : TX_TABLE_GRID_WITH_LOADS
+  const TX_TABLE_MIN_WIDTH = isCleaningBusiness ? 'sm:min-w-[1262px]' : 'sm:min-w-[1346px]'
   const navigate = useNavigate()
   const [searchParams, setSearchParams] = useSearchParams()
   const customerPrefillConsumed = useRef<string | null>(null)
   const customerContainerRef = useRef<HTMLDivElement>(null)
   const currentMonthKey = format(new Date(), 'yyyy-MM')
-  const [filterPeriodMode, setFilterPeriodMode] = useState<FilterPeriodMode>('month')
-  const [filterMonthKey, setFilterMonthKey] = useState(currentMonthKey)
-  const [filterDateFrom, setFilterDateFrom] = useState('')
-  const [filterDateTo, setFilterDateTo] = useState('')
-  const [filterTypeId, setFilterTypeId] = useState('')
-  const [filterCategoryId, setFilterCategoryId] = useState('')
-  const [filterCustomerId, setFilterCustomerId] = useState('')
-  const [searchQuery, setSearchQuery] = useState('')
+  const [initialFilters] = useState(() => readPersistedTransactionFilters(activeBusiness))
+  const [filterPeriodMode, setFilterPeriodMode] = useState<FilterPeriodMode>(
+    initialFilters?.periodMode === 'dateRange' || initialFilters?.periodMode === 'month'
+      ? initialFilters.periodMode
+      : 'month',
+  )
+  const [filterMonthKey, setFilterMonthKey] = useState(initialFilters?.monthKey ?? currentMonthKey)
+  const [filterDateFrom, setFilterDateFrom] = useState(initialFilters?.dateFrom ?? '')
+  const [filterDateTo, setFilterDateTo] = useState(initialFilters?.dateTo ?? '')
+  const [filterTypeId, setFilterTypeId] = useState(initialFilters?.typeId ?? '')
+  const [filterCategoryId, setFilterCategoryId] = useState(initialFilters?.categoryId ?? '')
+  const [filterCustomerId, setFilterCustomerId] = useState(initialFilters?.customerId ?? '')
+  const [searchQuery, setSearchQuery] = useState(initialFilters?.search ?? '')
   const [isModalOpen, setIsModalOpen] = useState(false)
   const [isFilterOpen, setIsFilterOpen] = useState(false)
   const [draftPeriodMode, setDraftPeriodMode] = useState<FilterPeriodMode>('month')
@@ -328,8 +369,12 @@ function TransactionsPageContent() {
   const [state, setState] = useState<LoadState>(emptyState)
   const [error, setError] = useState<string | null>(null)
   const [isSubmitting, setIsSubmitting] = useState(false)
-  const [tableSortKey, setTableSortKey] = useState<TableSortKey>('date')
-  const [tableSortDir, setTableSortDir] = useState<'asc' | 'desc'>('desc')
+  const [tableSortKey, setTableSortKey] = useState<TableSortKey>(initialFilters?.sortKey ?? 'date')
+  const [tableSortDir, setTableSortDir] = useState<'asc' | 'desc'>(
+    initialFilters?.sortDir === 'asc' || initialFilters?.sortDir === 'desc'
+      ? initialFilters.sortDir
+      : 'desc',
+  )
   const [txPage, setTxPage] = useState(0)
 
   const canCreate = hasPermission('manage_transactions')
@@ -563,6 +608,40 @@ function TransactionsPageContent() {
   useEffect(() => {
     setTxPage(0)
   }, [state.transactions, searchQuery, tableSortKey, tableSortDir])
+
+  // Persist the applied filters/sort per business so they survive navigating
+  // to a transaction detail and back (the page unmounts in between).
+  useEffect(() => {
+    const data: PersistedTransactionFilters = {
+      periodMode: filterPeriodMode,
+      monthKey: filterMonthKey,
+      dateFrom: filterDateFrom,
+      dateTo: filterDateTo,
+      typeId: filterTypeId,
+      categoryId: filterCategoryId,
+      customerId: filterCustomerId,
+      search: searchQuery,
+      sortKey: tableSortKey,
+      sortDir: tableSortDir,
+    }
+    try {
+      window.localStorage.setItem(txFiltersStorageKey(activeBusiness), JSON.stringify(data))
+    } catch {
+      // Ignore storage write failures (quota, private mode, etc.).
+    }
+  }, [
+    activeBusiness,
+    filterPeriodMode,
+    filterMonthKey,
+    filterDateFrom,
+    filterDateTo,
+    filterTypeId,
+    filterCategoryId,
+    filterCustomerId,
+    searchQuery,
+    tableSortKey,
+    tableSortDir,
+  ])
 
   const totalTxPages = Math.max(1, Math.ceil(displayedTransactions.length / TX_PAGE_SIZE))
   const pagedTransactions = useMemo(() => {
@@ -1666,10 +1745,17 @@ function TransactionsPageContent() {
         className="rounded-lg border border-[var(--border)] bg-[var(--panel)] overflow-hidden"
         data-tutorial="tutorial-tx-table"
       >
+        <div className="sm:overflow-x-auto">
+        {displayedTransactions.length === 0 ? (
+          <div className="flex flex-col items-center justify-center py-14 text-[var(--muted)]">
+            <WalletCards className="mb-3 h-9 w-9 opacity-25" />
+            <p className="text-sm">No transactions found</p>
+          </div>
+        ) : (
+        <div className={TX_TABLE_MIN_WIDTH}>
         {/* Desktop column headers */}
-        <div
-          className={`hidden ${TX_TABLE_GRID} sm:border-b sm:border-[var(--border)] sm:bg-[var(--background)]/40 sm:px-4 sm:py-2 sm:text-[10px] sm:font-semibold sm:uppercase sm:tracking-wider sm:text-[var(--muted)]`}
-        >
+        <div className="hidden sm:flex sm:items-stretch sm:border-b sm:border-[var(--border)] sm:bg-[var(--background)]/40 sm:text-[10px] sm:font-semibold sm:uppercase sm:tracking-wider sm:text-[var(--muted)]">
+        <div className={`${TX_TABLE_GRID} sm:py-2`}>
           <SortableColumnHeader
             activeKey={tableSortKey}
             dir={tableSortDir}
@@ -1684,6 +1770,14 @@ function TransactionsPageContent() {
             label="Type"
             onSort={handleColumnSort}
             sortKey="type"
+          />
+          <SortableColumnHeader
+            activeKey={tableSortKey}
+            align="right"
+            dir={tableSortDir}
+            label="Amount"
+            onSort={handleColumnSort}
+            sortKey="amount"
           />
           <SortableColumnHeader
             activeKey={tableSortKey}
@@ -1720,28 +1814,17 @@ function TransactionsPageContent() {
           />
           <SortableColumnHeader
             activeKey={tableSortKey}
-            align="right"
-            dir={tableSortDir}
-            label="Amount"
-            onSort={handleColumnSort}
-            sortKey="amount"
-          />
-          <SortableColumnHeader
-            activeKey={tableSortKey}
             dir={tableSortDir}
             label="Created At"
             onSort={handleColumnSort}
             sortKey="createdAt"
           />
-          <span className="sr-only">Actions</span>
+        </div>
+          <div className={`${TX_ACTIONS_STICKY} sm:py-2`}>
+            <span className="sr-only">Actions</span>
+          </div>
         </div>
 
-        {displayedTransactions.length === 0 ? (
-          <div className="flex flex-col items-center justify-center py-14 text-[var(--muted)]">
-            <WalletCards className="mb-3 h-9 w-9 opacity-25" />
-            <p className="text-sm">No transactions found</p>
-          </div>
-        ) : (
           <div className="divide-y divide-[var(--border)]">
             {pagedTransactions.map((transaction) => {
               const displayDescription = transaction.description.trim()
@@ -1835,12 +1918,13 @@ function TransactionsPageContent() {
 
                   {/* Desktop: table row */}
                   <div
-                    className={`hidden ${TX_TABLE_GRID} sm:cursor-pointer sm:px-4 sm:py-3 sm:transition sm:hover:bg-[var(--background)]/50`}
+                    className="group hidden sm:flex sm:items-stretch sm:cursor-pointer"
                     onClick={goToDetail}
                     onKeyDown={handleRowKeyDown}
                     role="button"
                     tabIndex={0}
                   >
+                    <div className={`${TX_TABLE_GRID} sm:py-3 sm:transition sm:group-hover:bg-[var(--background)]/50`}>
                     <span className="whitespace-nowrap text-xs tabular-nums text-[var(--foreground)]">
                       {formatTransactionDisplayDate(transaction.entryDate)}
                     </span>
@@ -1849,6 +1933,9 @@ function TransactionsPageContent() {
                         {transaction.transactionTypeCode}
                       </span>
                     </div>
+                    <p className="whitespace-nowrap text-right text-sm font-semibold tabular-nums">
+                      {formatCurrency(transaction.amount)}
+                    </p>
                     <span className="truncate text-sm text-[var(--foreground)]">{transaction.categoryLabel}</span>
                     {!isCleaningBusiness && (
                       <span className="text-right text-xs">{formatLoadsCell(transaction)}</span>
@@ -1860,13 +1947,11 @@ function TransactionsPageContent() {
                     <span className="whitespace-nowrap text-right text-sm tabular-nums text-[var(--muted)]">
                       {transaction.staffCount ?? '—'}
                     </span>
-                    <p className="whitespace-nowrap text-right text-sm font-semibold tabular-nums">
-                      {formatCurrency(transaction.amount)}
-                    </p>
                     <span className="whitespace-nowrap text-xs tabular-nums text-[var(--muted)]">
                       {transaction.createdAt ? formatDateTime(transaction.createdAt) : '—'}
                     </span>
-                    <div className="flex shrink-0 items-center justify-end gap-0.5">
+                    </div>
+                    <div className={`${TX_ACTIONS_STICKY} sm:py-3`}>
                       <button
                         aria-label="Edit"
                         className="rounded p-1.5 text-[var(--muted)] transition hover:bg-[var(--accent-soft)] hover:text-[var(--accent-strong)] disabled:opacity-30"
@@ -1897,7 +1982,9 @@ function TransactionsPageContent() {
               )
             })}
           </div>
+        </div>
         )}
+        </div>
 
         {/* Footer count + pagination */}
         {displayedTransactions.length > 0 && (

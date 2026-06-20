@@ -13,6 +13,7 @@ import {
   Trash2,
   X,
 } from 'lucide-react'
+import { EditTransactionModal } from '../components/edit-transaction-modal'
 import { formatCurrency, formatDateTime, formatTimeOfDay } from '../../../lib/format'
 import {
   deleteInventoryMovement,
@@ -98,6 +99,7 @@ export function TransactionDetailPage() {
   const [movements, setMovements] = useState<InventoryMovement[]>([])
   const [lineItems, setLineItems] = useState<TransactionLineItem[]>([])
   const [loading, setLoading] = useState(true)
+  const [editOpen, setEditOpen] = useState(false)
 
   const [addOpen, setAddOpen] = useState(false)
   const [formItemId, setFormItemId] = useState('')
@@ -318,14 +320,14 @@ export function TransactionDetailPage() {
           ) : null}
         </div>
         {canEditTransaction ? (
-          <Link
+          <button
             className="inline-flex shrink-0 items-center gap-2 rounded-lg border border-[var(--border)] bg-[var(--panel)] px-4 py-2 text-sm font-medium text-[var(--foreground)] transition hover:bg-[var(--background)]"
-            to="/transactions"
-            title="Use the list page to edit this transaction"
+            onClick={() => setEditOpen(true)}
+            type="button"
           >
             <Pencil className="h-4 w-4" />
-            Edit on list
-          </Link>
+            Edit
+          </button>
         ) : null}
       </header>
 
@@ -637,6 +639,17 @@ export function TransactionDetailPage() {
             </form>
           </div>
         </div>
+      )}
+
+      {editOpen && (
+        <EditTransactionModal
+          transactionId={transactionId}
+          onClose={() => setEditOpen(false)}
+          onSaved={() => {
+            setEditOpen(false)
+            void loadAll()
+          }}
+        />
       )}
     </section>
   )
