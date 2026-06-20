@@ -1,7 +1,7 @@
 {
   "$schema": "../node_modules/@tauri-apps/cli/config.schema.json",
   "productName": "Business Ledger App",
-  "version": "0.1.0",
+  "version": "1.0.0",
   "identifier": "com.business.ledger",
   "build": {
     "frontendDist": "../dist",
@@ -24,6 +24,12 @@
     }
   },
   "plugins": {
+    "updater": {
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IENDMTdBOTEyN0E5QTAwNzUKUldSMUFKcDZFcWtYekFOVUZTbHRZMndMa0xySW9LQ1BGRDBsQUMwbWV5cjNQSVlnTHhKbFBEZU0K%",
+      "endpoints": [
+        "https://github.com/newbie2019-hub/laundry-cleaning/releases/latest/download/latest.json"
+      ]
+    },
     "sql": {
       "preload": [
         "sqlite:business-ledger.db",

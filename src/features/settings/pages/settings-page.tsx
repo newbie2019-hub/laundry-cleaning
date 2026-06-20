@@ -4,10 +4,13 @@ import { format } from "date-fns"
 import {
   AlertTriangle,
   Check,
+  CheckCircle2,
   Database,
   Download,
   Gift,
   ImagePlus,
+  Info,
+  Loader2,
   Monitor,
   Moon,
   RefreshCw,
@@ -19,6 +22,7 @@ import {
   Wallet,
   X,
 } from "lucide-react"
+import { useUpdater } from "../../../app/updater-context"
 import { downloadDir } from "@tauri-apps/api/path"
 import { useNavigate } from "react-router-dom"
 import { useTheme } from "next-themes"
@@ -68,6 +72,15 @@ export function SettingsPage() {
   const canManageMasterData = hasPermission("manage_master_data")
   const isAdmin = user?.roles.includes("admin") ?? false
   const { theme, setTheme } = useTheme()
+  const {
+    appVersion,
+    checkForUpdates,
+    downloadProgress,
+    error: updaterError,
+    installUpdate,
+    status: updaterStatus,
+    update,
+  } = useUpdater()
 
   const [resetDialogOpen, setResetDialogOpen] = useState(false)
   const [resetConfirmText, setResetConfirmText] = useState("")
@@ -810,6 +823,108 @@ export function SettingsPage() {
               <Database className="h-4 w-4" />
               {isExporting ? "Exporting…" : "Download backup"}
             </button>
+          </div>
+        </div>
+
+        {/* About & Updates */}
+        <div className="grid grid-cols-1 gap-x-10 gap-y-4 py-8 md:grid-cols-[280px_1fr]">
+          <div>
+            <div className="flex items-center gap-2">
+              <Info className="h-4 w-4 text-[var(--muted)]" />
+              <h2 className="text-sm font-semibold">About &amp; Updates</h2>
+            </div>
+            <p className="mt-1 text-xs leading-relaxed text-[var(--muted)]">
+              Current version and software updates. The app checks for updates
+              automatically on startup.
+            </p>
+          </div>
+          <div className="w-full max-w-[480px] space-y-4 md:justify-self-end">
+            <div className="flex items-center justify-between rounded-lg border border-[var(--border)] bg-[var(--panel)] px-4 py-3">
+              <span className="text-xs font-medium text-[var(--muted)] uppercase tracking-wider">
+                Version
+              </span>
+              <span className="font-mono text-sm font-medium">
+                {appVersion ? `v${appVersion}` : '—'}
+              </span>
+            </div>
+
+            {/* Update status card */}
+            {updaterStatus === 'available' && update && (
+              <div className="rounded-lg border border-[var(--accent)]/40 bg-[var(--accent-soft)] px-4 py-3 space-y-3">
+                <div className="flex items-start gap-2">
+                  <Download className="mt-0.5 h-4 w-4 shrink-0 text-[var(--accent-strong)]" />
+                  <div className="flex-1 min-w-0">
+                    <p className="text-sm font-semibold text-[var(--accent-strong)]">
+                      v{update.version} available
+                    </p>
+                    {update.body && (
+                      <p className="mt-0.5 text-xs text-[var(--muted)] line-clamp-3">
+                        {update.body}
+                      </p>
+                    )}
+                  </div>
+                </div>
+                <button
+                  className="inline-flex w-full items-center justify-center gap-2 rounded-lg bg-[var(--accent)] px-4 py-2 text-sm font-medium text-white transition hover:opacity-90 disabled:opacity-50"
+                  disabled={updaterStatus !== 'available'}
+                  onClick={() => void installUpdate()}
+                  type="button"
+                >
+                  <Download className="h-4 w-4" />
+                  Install &amp; Restart
+                </button>
+              </div>
+            )}
+
+            {(updaterStatus === 'downloading' || updaterStatus === 'installing') && (
+              <div className="rounded-lg border border-[var(--border)] bg-[var(--panel)] px-4 py-3 space-y-2">
+                <div className="flex items-center justify-between text-xs">
+                  <span className="font-medium">
+                    {updaterStatus === 'installing' ? 'Installing…' : 'Downloading…'}
+                  </span>
+                  {downloadProgress !== null && (
+                    <span className="tabular-nums text-[var(--muted)]">{downloadProgress}%</span>
+                  )}
+                </div>
+                <div className="h-1.5 w-full overflow-hidden rounded-full bg-[var(--border)]">
+                  <div
+                    className="h-full rounded-full bg-[var(--accent)] transition-all duration-300"
+                    style={{ width: `${downloadProgress ?? 0}%` }}
+                  />
+                </div>
+              </div>
+            )}
+
+            {updaterStatus === 'up-to-date' && (
+              <div className="flex items-center gap-2 text-sm text-emerald-500">
+                <CheckCircle2 className="h-4 w-4" />
+                You're on the latest version.
+              </div>
+            )}
+
+            {updaterStatus === 'error' && updaterError && (
+              <p className="text-xs text-red-500">{updaterError}</p>
+            )}
+
+            {updaterStatus === 'dev' ? (
+              <p className="text-xs text-[var(--muted)]">
+                Update checks are disabled in development mode.
+              </p>
+            ) : (
+              <button
+                className="inline-flex items-center gap-2 rounded-lg border border-[var(--border)] bg-[var(--background)] px-4 py-2.5 text-sm font-medium text-[var(--foreground)] transition hover:border-[var(--accent)]/50 hover:text-[var(--accent)] disabled:opacity-50"
+                disabled={updaterStatus === 'checking' || updaterStatus === 'downloading' || updaterStatus === 'installing'}
+                onClick={() => void checkForUpdates()}
+                type="button"
+              >
+                {updaterStatus === 'checking' ? (
+                  <Loader2 className="h-4 w-4 animate-spin" />
+                ) : (
+                  <RefreshCw className="h-4 w-4" />
+                )}
+                {updaterStatus === 'checking' ? 'Checking…' : 'Check for updates'}
+              </button>
+            )}
           </div>
         </div>
 
