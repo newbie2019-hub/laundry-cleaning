@@ -906,12 +906,7 @@ export function SettingsPage() {
               <p className="text-xs text-red-500">{updaterError}</p>
             )}
 
-            {updaterStatus === 'dev' ? (
-              <p className="text-xs text-[var(--muted)]">
-                Update checks are disabled in development mode.
-              </p>
-            ) : (
-              <button
+            <button
                 className="inline-flex items-center gap-2 rounded-lg border border-[var(--border)] bg-[var(--background)] px-4 py-2.5 text-sm font-medium text-[var(--foreground)] transition hover:border-[var(--accent)]/50 hover:text-[var(--accent)] disabled:opacity-50"
                 disabled={updaterStatus === 'checking' || updaterStatus === 'downloading' || updaterStatus === 'installing'}
                 onClick={() => void checkForUpdates()}
@@ -924,7 +919,6 @@ export function SettingsPage() {
                 )}
                 {updaterStatus === 'checking' ? 'Checking…' : 'Check for updates'}
               </button>
-            )}
           </div>
         </div>
 
