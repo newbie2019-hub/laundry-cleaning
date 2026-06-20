@@ -29,7 +29,6 @@ import {
   type CustomerDraft,
   type CustomerLoyaltyStatus,
   type InventoryItem,
-  type LedgerTransaction,
   type LoyaltySettings,
   type Staff,
   type TransactionTemplateSummary,
