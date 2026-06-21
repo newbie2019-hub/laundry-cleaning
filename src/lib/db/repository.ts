@@ -170,6 +170,7 @@ export type CustomerDraft = {
 }
 
 export type CustomerSummary = Customer & {
+  createdAt: string
   freeAfterLoads: number
   isEligibleForReward: boolean
   lastTransactionAmount: number | null
@@ -848,9 +849,7 @@ export async function saveTransaction(input: TransactionDraft, userId: number, t
     if (!isSale || !categoryLoadable) {
       throw new Error('Loyalty rewards can only be recorded on loadable sale categories.')
     }
-    if (input.amount !== 0) {
-      throw new Error('Loyalty reward transactions must have amount 0.')
-    }
+
     if (input.customerId == null) {
       throw new Error('Customer is required to redeem a loyalty reward.')
     }
@@ -1316,6 +1315,7 @@ export async function listCustomers(filters?: { includeArchived?: boolean; searc
 }
 
 type CustomerSummaryRow = CustomerRow & {
+  createdAt: string
   lastTransactionAmount: number | null
   lastTransactionDate: string | null
   lastRewardId: number | null
@@ -1359,6 +1359,7 @@ export async function listCustomerSummaries(filters?: {
         c.phone AS phone,
         c.is_archived AS isArchived,
         c.is_loyalty_enabled AS isLoyaltyEnabled,
+        c.created_at AS createdAt,
         last_tx.last_date AS lastTransactionDate,
         last_tx.last_amount AS lastTransactionAmount,
         reward.last_reward_id AS lastRewardId,
@@ -1411,6 +1412,7 @@ export async function listCustomerSummaries(filters?: {
     const isLoyaltyEnabled = Boolean(row.isLoyaltyEnabled)
     return {
       company: row.company,
+      createdAt: row.createdAt ?? '',
       email: row.email,
       freeAfterLoads,
       id: row.id,
@@ -6337,6 +6339,7 @@ export type AttendanceDaySummary = {
   overtimeCount: number
   presentCount: number
   totalCount: number
+  totalPay: number
 }
 
 export type PayrollPayDateSummary = {
@@ -6361,6 +6364,7 @@ export async function listAttendanceDaySummaries(from: string, to: string): Prom
       overtimeCount: number
       presentCount: number
       totalCount: number
+      totalPay: number
     }>
   >(
     `
@@ -6371,7 +6375,8 @@ export async function listAttendanceDaySummaries(from: string, to: string): Prom
         SUM(CASE WHEN status = 'half' THEN 1 ELSE 0 END) AS halfCount,
         SUM(CASE WHEN status = 'overtime' THEN 1 ELSE 0 END) AS overtimeCount,
         SUM(CASE WHEN status = 'holiday' THEN 1 ELSE 0 END) AS holidayCount,
-        COUNT(*) AS totalCount
+        COUNT(*) AS totalCount,
+        SUM(computed_pay) AS totalPay
       FROM staff_attendance
       WHERE attendance_date >= $1 AND attendance_date <= $2
       GROUP BY attendance_date
@@ -6387,6 +6392,7 @@ export async function listAttendanceDaySummaries(from: string, to: string): Prom
     overtimeCount: Number(r.overtimeCount),
     presentCount: Number(r.presentCount),
     totalCount: Number(r.totalCount),
+    totalPay: toNumber(r.totalPay),
   }))
 }
 
@@ -6419,6 +6425,70 @@ export async function listPayrollPayDateSummaries(from: string, to: string): Pro
     totalGross: toNumber(r.totalGross),
     totalNet: toNumber(r.totalNet),
   }))
+}
+
+export type AttendanceEntryWithStaff = AttendanceEntry & {
+  staffDisplayName: string
+}
+
+export async function listAttendanceForDate(date: string): Promise<AttendanceEntryWithStaff[]> {
+  const database = await getDatabase()
+  const rows = await database.select<
+    Array<{
+      id: number
+      staffId: number
+      attendanceDate: string
+      status: string
+      multiplier: number
+      rateOverride: number | null
+      computedPay: number
+      notes: string
+      isPaid: number
+      firstName: string
+      middleName: string
+      lastName: string
+    }>
+  >(
+    `
+      SELECT
+        a.id,
+        a.staff_id AS staffId,
+        a.attendance_date AS attendanceDate,
+        a.status,
+        a.multiplier,
+        a.rate_override AS rateOverride,
+        a.computed_pay AS computedPay,
+        a.notes,
+        CASE WHEN EXISTS (
+          SELECT 1 FROM staff_payroll_items i
+          JOIN staff_payrolls p ON p.id = i.payroll_id
+          WHERE i.attendance_id = a.id AND p.status = 'paid'
+        ) THEN 1 ELSE 0 END AS isPaid,
+        s.first_name AS firstName,
+        s.middle_name AS middleName,
+        s.last_name AS lastName
+      FROM staff_attendance a
+      JOIN staff s ON s.id = a.staff_id
+      WHERE a.attendance_date = $1
+      ORDER BY s.first_name ASC, s.last_name ASC
+    `,
+    [date],
+  )
+  return rows.map((r) => {
+    const parts = [r.firstName, r.middleName, r.lastName].filter((p) => p && p.trim().length > 0)
+    return {
+      attendanceDate: r.attendanceDate,
+      computedPay: toNumber(r.computedPay),
+      id: r.id,
+      isPaid: Boolean(r.isPaid),
+      multiplier: toNumber(r.multiplier),
+      notes: r.notes,
+      rateOverride: r.rateOverride == null ? null : toNumber(r.rateOverride),
+      staffDisplayName: parts.join(' '),
+      staffId: r.staffId,
+      status: r.status as AttendanceStatus,
+    }
+  })
 }
 
 export async function listPayrollsByPayDate(payDate: string): Promise<AllStaffPayrollItem[]> {

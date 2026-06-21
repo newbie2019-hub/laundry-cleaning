@@ -1,6 +1,6 @@
 import type { FormEvent } from 'react'
-import { useCallback, useEffect, useState } from 'react'
-import { Pencil, Plus, Search, Trash2, X } from 'lucide-react'
+import { useCallback, useEffect, useMemo, useState } from 'react'
+import { Pencil, Plus, Search, SlidersHorizontal, Trash2, X } from 'lucide-react'
 import { useNavigate } from 'react-router-dom'
 import { format } from 'date-fns'
 import { toast } from 'sonner'
@@ -16,8 +16,64 @@ import { useAuth } from '../../auth/use-auth'
 
 const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/
 
-function formatShortDate(entryDate: string) {
-  return format(new Date(`${entryDate}T00:00:00`), 'MMM d, yyyy')
+const CUST_STORAGE_PREFIX = 'business-ledger.customers'
+
+function custPerPageKey(business: string) {
+  return `${CUST_STORAGE_PREFIX}.perPage.${business}`
+}
+
+function custFiltersKey(business: string) {
+  return `${CUST_STORAGE_PREFIX}.filters.${business}`
+}
+
+type CustFilters = {
+  addedFrom: string
+  addedTo: string
+  lastTxFrom: string
+  lastTxTo: string
+  loyaltyMin: number
+}
+
+const DEFAULT_CUST_FILTERS: CustFilters = {
+  addedFrom: '',
+  addedTo: '',
+  lastTxFrom: '',
+  lastTxTo: '',
+  loyaltyMin: 0,
+}
+
+const PER_PAGE_OPTIONS = [10, 25, 50, 100]
+
+function readCustPerPage(business: string): number {
+  try {
+    const raw = window.localStorage.getItem(custPerPageKey(business))
+    if (!raw) return 25
+    const n = Number(raw)
+    return PER_PAGE_OPTIONS.includes(n) ? n : 25
+  } catch {
+    return 25
+  }
+}
+
+function readCustFilters(business: string): CustFilters {
+  try {
+    const raw = window.localStorage.getItem(custFiltersKey(business))
+    if (!raw) return { ...DEFAULT_CUST_FILTERS }
+    const parsed = JSON.parse(raw) as Partial<CustFilters>
+    return { ...DEFAULT_CUST_FILTERS, ...parsed }
+  } catch {
+    return { ...DEFAULT_CUST_FILTERS }
+  }
+}
+
+function formatShortDate(dateStr: string) {
+  if (!dateStr) return '—'
+  try {
+    const datePart = dateStr.slice(0, 10)
+    return format(new Date(`${datePart}T00:00:00`), 'MMM d, yyyy')
+  } catch {
+    return dateStr
+  }
 }
 
 function LoyaltyCell({
@@ -97,6 +153,16 @@ export function CustomersPage() {
   const [search, setSearch] = useState('')
   const [debouncedSearch, setDebouncedSearch] = useState('')
 
+  // Pagination
+  const [custPage, setCustPage] = useState(0)
+  const [custPerPage, setCustPerPage] = useState(() => readCustPerPage(activeBusiness))
+
+  // Filters
+  const [isFilterOpen, setIsFilterOpen] = useState(false)
+  const [appliedFilters, setAppliedFilters] = useState<CustFilters>(() => readCustFilters(activeBusiness))
+  const [draftFilters, setDraftFilters] = useState<CustFilters>({ ...DEFAULT_CUST_FILTERS })
+
+  // Add / edit modal
   const [modalOpen, setModalOpen] = useState(false)
   const [editingId, setEditingId] = useState<number | null>(null)
   const [formName, setFormName] = useState('')
@@ -128,6 +194,87 @@ export function CustomersPage() {
   useEffect(() => {
     void load()
   }, [load])
+
+  // Persist per-page setting
+  useEffect(() => {
+    try {
+      window.localStorage.setItem(custPerPageKey(activeBusiness), String(custPerPage))
+    } catch {
+      // ignore storage errors
+    }
+  }, [activeBusiness, custPerPage])
+
+  // Persist applied filters
+  useEffect(() => {
+    try {
+      window.localStorage.setItem(custFiltersKey(activeBusiness), JSON.stringify(appliedFilters))
+    } catch {
+      // ignore storage errors
+    }
+  }, [activeBusiness, appliedFilters])
+
+  // Derive freeAfterLoads for the loyalty slider max value
+  const freeAfterLoads = useMemo(() => {
+    const found = customers.find((c) => c.freeAfterLoads > 0)
+    return found?.freeAfterLoads ?? 9
+  }, [customers])
+
+  // Apply client-side filters on top of server-side search results
+  const filteredCustomers = useMemo(() => {
+    return customers.filter((c) => {
+      if (appliedFilters.addedFrom) {
+        const added = c.createdAt.slice(0, 10)
+        if (added < appliedFilters.addedFrom) return false
+      }
+      if (appliedFilters.addedTo) {
+        const added = c.createdAt.slice(0, 10)
+        if (added > appliedFilters.addedTo) return false
+      }
+      if (appliedFilters.lastTxFrom || appliedFilters.lastTxTo) {
+        if (!c.lastTransactionDate) return false
+        if (appliedFilters.lastTxFrom && c.lastTransactionDate < appliedFilters.lastTxFrom) return false
+        if (appliedFilters.lastTxTo && c.lastTransactionDate > appliedFilters.lastTxTo) return false
+      }
+      if (appliedFilters.loyaltyMin > 0) {
+        if (!c.isLoyaltyEnabled) return false
+        if (c.paidLoadsSinceLastReward < appliedFilters.loyaltyMin) return false
+      }
+      return true
+    })
+  }, [customers, appliedFilters])
+
+  // Reset to page 0 when filtered set or page size changes
+  useEffect(() => {
+    setCustPage(0)
+  }, [filteredCustomers, custPerPage])
+
+  const totalCustPages = Math.max(1, Math.ceil(filteredCustomers.length / custPerPage))
+  const pagedCustomers = useMemo(() => {
+    const start = custPage * custPerPage
+    return filteredCustomers.slice(start, start + custPerPage)
+  }, [filteredCustomers, custPage, custPerPage])
+
+  const activeFilterCount = useMemo(() => {
+    let n = 0
+    if (appliedFilters.addedFrom || appliedFilters.addedTo) n++
+    if (appliedFilters.lastTxFrom || appliedFilters.lastTxTo) n++
+    if (appliedFilters.loyaltyMin > 0) n++
+    return n
+  }, [appliedFilters])
+
+  function openFilter() {
+    setDraftFilters({ ...appliedFilters })
+    setIsFilterOpen(true)
+  }
+
+  function applyFilter() {
+    setAppliedFilters({ ...draftFilters })
+    setIsFilterOpen(false)
+  }
+
+  function clearDraftFilters() {
+    setDraftFilters({ ...DEFAULT_CUST_FILTERS })
+  }
 
   function openNew() {
     setEditingId(null)
@@ -224,142 +371,364 @@ export function CustomersPage() {
             Manage customer details for sales transactions
           </p>
         </div>
-        {canManage && (
+
+        <div className="flex flex-wrap items-center gap-2">
+          {/* Search bar */}
+          <div className="relative">
+            <Search className="absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-[var(--muted)]" />
+            <input
+              className="h-9 w-56 rounded-md border border-[var(--border)] bg-[var(--panel)] pl-8 pr-3 text-sm outline-none focus:border-[var(--accent)] transition"
+              onChange={(e) => setSearch(e.target.value)}
+              placeholder="Search customers…"
+              type="search"
+              value={search}
+            />
+          </div>
+
+          {/* Filter button */}
           <button
-            className="inline-flex items-center gap-1.5 rounded-md bg-[var(--accent)] px-3 py-2 text-sm font-medium text-white transition hover:opacity-90"
-            onClick={openNew}
+            className={`relative inline-flex h-9 items-center gap-1.5 rounded-md border px-3 text-sm font-medium transition ${
+              activeFilterCount > 0
+                ? 'border-[var(--accent)] bg-[var(--accent-soft)] text-[var(--accent-strong)]'
+                : 'border-[var(--border)] bg-[var(--panel)] text-[var(--foreground)] hover:bg-[var(--background)]'
+            }`}
+            onClick={openFilter}
             type="button"
           >
-            <Plus className="h-4 w-4" />
-            Add customer
+            <SlidersHorizontal className="h-3.5 w-3.5" />
+            Filter
+            {activeFilterCount > 0 && (
+              <span className="flex h-4 w-4 items-center justify-center rounded-full bg-[var(--accent)] text-[10px] font-bold text-white">
+                {activeFilterCount}
+              </span>
+            )}
           </button>
-        )}
-      </header>
 
-      <div className="relative max-w-md">
-        <Search className="absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-[var(--muted)]" />
-        <input
-          className="h-9 w-full rounded-md border border-[var(--border)] bg-[var(--panel)] pl-8 pr-3 text-sm outline-none focus:border-[var(--accent)] transition"
-          onChange={(e) => setSearch(e.target.value)}
-          placeholder="Search by name, company, email, phone…"
-          type="search"
-          value={search}
-        />
-      </div>
+          {canManage && (
+            <button
+              className="inline-flex h-9 items-center gap-1.5 rounded-md bg-[var(--accent)] px-3 text-sm font-medium text-white transition hover:opacity-90"
+              onClick={openNew}
+              type="button"
+            >
+              <Plus className="h-4 w-4" />
+              Add customer
+            </button>
+          )}
+        </div>
+      </header>
 
       {loading ? (
         <div className="flex items-center justify-center py-16 text-sm text-[var(--muted)]">Loading…</div>
-      ) : customers.length === 0 ? (
+      ) : filteredCustomers.length === 0 ? (
         <div className="rounded-lg border border-[var(--border)] bg-[var(--panel)] py-14 text-center text-sm text-[var(--muted)]">
-          No customers found.
+          {customers.length === 0 ? 'No customers found.' : 'No customers match the current filters.'}
         </div>
       ) : (
-        <div className="overflow-x-auto rounded-lg border border-[var(--border)] bg-[var(--panel)]">
-          <table className="w-full min-w-[960px] text-left text-sm">
-            <thead className="border-b border-[var(--border)] bg-[var(--background)]/50 text-[10px] font-semibold uppercase tracking-wider text-[var(--muted)]">
-              <tr>
-                <th className="px-4 py-3">Name</th>
-                <th className="px-4 py-3">Company</th>
-                <th className="px-4 py-3">Contact</th>
-                <th className="px-4 py-3">Last transaction</th>
-                {!isCleaningBusiness && <th className="px-4 py-3">Loyalty</th>}
-                <th className="w-32 px-4 py-3 text-right">Actions</th>
-              </tr>
-            </thead>
-            <tbody className="divide-y divide-[var(--border)]">
-              {customers.map((c) => (
-                <tr
-                  key={c.id}
-                  className="cursor-pointer transition hover:bg-[var(--background)]/40"
-                  onClick={() => handleRowClick(c.id)}
-                >
-                  <td className="px-4 py-3 font-medium">
-                    <span className="text-[var(--accent-strong)]">{c.name}</span>
-                  </td>
-                  <td className="px-4 py-3 text-[var(--muted)]">{c.company || '—'}</td>
-                  <td className="px-4 py-3 text-[var(--muted)]">
-                    <div className="flex flex-col leading-tight">
-                      <span>{c.email || '—'}</span>
-                      <span className="text-xs">{c.phone || ''}</span>
-                    </div>
-                  </td>
-                  <td className="px-4 py-3">
-                    {c.lastTransactionDate ? (
-                      <div className="flex flex-col leading-tight">
-                        <span className="text-[var(--foreground)]">
-                          {formatShortDate(c.lastTransactionDate)}
-                        </span>
-                        <span className="text-xs tabular-nums text-[var(--muted)]">
-                          {c.lastTransactionAmount != null
-                            ? formatCurrency(c.lastTransactionAmount)
-                            : '—'}
-                        </span>
-                      </div>
-                    ) : (
-                      <span className="text-xs text-[var(--muted)]">No transactions</span>
-                    )}
-                  </td>
-                  {!isCleaningBusiness && (
-                    <td className="px-4 py-3">
-                      <LoyaltyCell
-                        canManage={canManage}
-                        customer={c}
-                        onToggle={(customer, next) => {
-                          void handleToggleLoyalty(customer, next)
-                        }}
-                      />
+        <div className="overflow-hidden rounded-lg border border-[var(--border)] bg-[var(--panel)]">
+          <div className="overflow-x-auto">
+            <table className="w-full min-w-[1080px] text-left text-sm">
+              <thead className="border-b border-[var(--border)] bg-[var(--background)]/50 text-[10px] font-semibold uppercase tracking-wider text-[var(--muted)]">
+                <tr>
+                  <th className="px-4 py-3">Name</th>
+                  <th className="px-4 py-3">Company</th>
+                  <th className="px-4 py-3">Email</th>
+                  <th className="px-4 py-3">Phone</th>
+                  <th className="px-4 py-3">Last Transaction</th>
+                  {!isCleaningBusiness && <th className="px-4 py-3">Loyalty</th>}
+                  <th className="w-32 px-4 py-3 text-right">Actions</th>
+                  <th className="px-4 py-3">Date Added</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-[var(--border)]">
+                {pagedCustomers.map((c) => (
+                  <tr
+                    key={c.id}
+                    className="cursor-pointer transition hover:bg-[var(--background)]/40"
+                    onClick={() => handleRowClick(c.id)}
+                  >
+                    <td className="px-4 py-3 font-medium">
+                      <span className="text-[var(--accent-strong)]">{c.name}</span>
                     </td>
-                  )}
-                  <td className="px-4 py-3 text-right" onClick={(e) => e.stopPropagation()}>
-                    {canManage ? (
-                      <div className="flex flex-wrap items-center justify-end gap-1">
-                        <button
-                          aria-label="Edit"
-                          className="rounded p-1.5 text-[var(--muted)] transition hover:bg-[var(--accent-soft)] hover:text-[var(--accent-strong)]"
-                          onClick={() => openEdit(c)}
-                          type="button"
-                        >
-                          <Pencil className="h-4 w-4" />
-                        </button>
-                        {confirmArchiveId === c.id ? (
-                          <span className="flex items-center gap-1">
-                            <button
-                              className="rounded bg-red-500 px-2 py-1 text-xs font-medium text-white hover:bg-red-600"
-                              onClick={() => { void handleArchive(c.id) }}
-                              type="button"
-                            >
-                              Confirm
-                            </button>
-                            <button
-                              className="rounded border border-[var(--border)] px-2 py-1 text-xs"
-                              onClick={() => setConfirmArchiveId(null)}
-                              type="button"
-                            >
-                              Cancel
-                            </button>
+                    <td className="px-4 py-3 text-[var(--muted)]">{c.company || '—'}</td>
+                    <td className="px-4 py-3 text-[var(--muted)]">{c.email || '—'}</td>
+                    <td className="px-4 py-3 text-[var(--muted)]">{c.phone || '—'}</td>
+                    <td className="px-4 py-3">
+                      {c.lastTransactionDate ? (
+                        <div className="flex flex-col leading-tight">
+                          <span className="text-[var(--foreground)]">
+                            {formatShortDate(c.lastTransactionDate)}
                           </span>
-                        ) : (
+                          <span className="text-xs tabular-nums text-[var(--muted)]">
+                            {c.lastTransactionAmount != null
+                              ? formatCurrency(c.lastTransactionAmount)
+                              : '—'}
+                          </span>
+                        </div>
+                      ) : (
+                        <span className="text-xs text-[var(--muted)]">No transactions</span>
+                      )}
+                    </td>
+                    {!isCleaningBusiness && (
+                      <td className="px-4 py-3">
+                        <LoyaltyCell
+                          canManage={canManage}
+                          customer={c}
+                          onToggle={(customer, next) => {
+                            void handleToggleLoyalty(customer, next)
+                          }}
+                        />
+                      </td>
+                    )}
+                    <td className="px-4 py-3 text-right" onClick={(e) => e.stopPropagation()}>
+                      {canManage ? (
+                        <div className="flex flex-wrap items-center justify-end gap-1">
                           <button
-                            aria-label="Archive"
-                            className="rounded p-1.5 text-[var(--muted)] transition hover:bg-red-500/10 hover:text-red-400"
-                            onClick={() => setConfirmArchiveId(c.id)}
+                            aria-label="Edit"
+                            className="rounded p-1.5 text-[var(--muted)] transition hover:bg-[var(--accent-soft)] hover:text-[var(--accent-strong)]"
+                            onClick={() => openEdit(c)}
                             type="button"
                           >
-                            <Trash2 className="h-4 w-4" />
+                            <Pencil className="h-4 w-4" />
                           </button>
-                        )}
-                      </div>
-                    ) : (
-                      <span className="text-xs text-[var(--muted)]">—</span>
-                    )}
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
+                          {confirmArchiveId === c.id ? (
+                            <span className="flex items-center gap-1">
+                              <button
+                                className="rounded bg-red-500 px-2 py-1 text-xs font-medium text-white hover:bg-red-600"
+                                onClick={() => { void handleArchive(c.id) }}
+                                type="button"
+                              >
+                                Confirm
+                              </button>
+                              <button
+                                className="rounded border border-[var(--border)] px-2 py-1 text-xs"
+                                onClick={() => setConfirmArchiveId(null)}
+                                type="button"
+                              >
+                                Cancel
+                              </button>
+                            </span>
+                          ) : (
+                            <button
+                              aria-label="Archive"
+                              className="rounded p-1.5 text-[var(--muted)] transition hover:bg-red-500/10 hover:text-red-400"
+                              onClick={() => setConfirmArchiveId(c.id)}
+                              type="button"
+                            >
+                              <Trash2 className="h-4 w-4" />
+                            </button>
+                          )}
+                        </div>
+                      ) : (
+                        <span className="text-xs text-[var(--muted)]">—</span>
+                      )}
+                    </td>
+                    <td className="px-4 py-3 text-[var(--muted)]">
+                      {c.createdAt ? formatShortDate(c.createdAt) : '—'}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+
+          {/* Pagination footer */}
+          <div className="border-t border-[var(--border)] bg-[var(--background)]/40 px-4 py-2">
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <span className="text-xs text-[var(--muted)]">
+                {filteredCustomers.length === 0
+                  ? 'No customers'
+                  : `Showing ${custPage * custPerPage + 1}–${Math.min((custPage + 1) * custPerPage, filteredCustomers.length)} of ${filteredCustomers.length} customer${filteredCustomers.length !== 1 ? 's' : ''}`}
+                {activeFilterCount > 0 ? ' (filtered)' : ''}
+              </span>
+
+              <div className="flex items-center gap-3 text-xs">
+                <label className="flex items-center gap-1.5 text-[var(--muted)]">
+                  Rows per page
+                  <select
+                    className="h-7 rounded border border-[var(--border)] bg-[var(--panel)] px-1.5 text-xs text-[var(--foreground)] outline-none focus:border-[var(--accent)]"
+                    onChange={(e) => {
+                      setCustPerPage(Number(e.target.value))
+                    }}
+                    value={custPerPage}
+                  >
+                    {PER_PAGE_OPTIONS.map((n) => (
+                      <option key={n} value={n}>{n}</option>
+                    ))}
+                  </select>
+                </label>
+
+                {filteredCustomers.length > custPerPage && (
+                  <div className="flex items-center gap-2">
+                    <span className="text-[var(--muted)]">
+                      Page {custPage + 1} of {totalCustPages}
+                    </span>
+                    <button
+                      className="rounded-md border border-[var(--border)] px-2.5 py-1 font-medium text-[var(--foreground)] transition hover:bg-[var(--background)] disabled:opacity-40"
+                      disabled={custPage <= 0}
+                      onClick={() => setCustPage((p) => Math.max(0, p - 1))}
+                      type="button"
+                    >
+                      Previous
+                    </button>
+                    <button
+                      className="rounded-md border border-[var(--border)] px-2.5 py-1 font-medium text-[var(--foreground)] transition hover:bg-[var(--background)] disabled:opacity-40"
+                      disabled={custPage >= totalCustPages - 1}
+                      onClick={() => setCustPage((p) => Math.min(totalCustPages - 1, p + 1))}
+                      type="button"
+                    >
+                      Next
+                    </button>
+                  </div>
+                )}
+              </div>
+            </div>
+          </div>
         </div>
       )}
 
+      {/* Filter modal */}
+      {isFilterOpen && (
+        <div
+          aria-modal="true"
+          className="fixed inset-0 z-50 flex items-center justify-center p-4"
+          role="dialog"
+        >
+          <div
+            className="absolute inset-0 bg-black/60 backdrop-blur-sm"
+            onClick={() => setIsFilterOpen(false)}
+          />
+          <div className="relative z-10 w-full max-w-sm rounded-xl border border-[var(--border)] bg-[var(--panel)] shadow-2xl">
+            <div className="flex items-center justify-between border-b border-[var(--border)] px-5 py-4">
+              <h2 className="text-base font-semibold">Filter Customers</h2>
+              <button
+                className="rounded p-1.5 text-[var(--muted)] transition hover:bg-[var(--background)] hover:text-[var(--foreground)]"
+                onClick={() => setIsFilterOpen(false)}
+                type="button"
+              >
+                <X className="h-4 w-4" />
+              </button>
+            </div>
+
+            <div className="space-y-5 p-5">
+              {/* Date Added range */}
+              <div className="space-y-2">
+                <p className="text-xs font-semibold uppercase tracking-wider text-[var(--muted)]">
+                  Date Added
+                </p>
+                <div className="grid grid-cols-2 gap-2">
+                  <div className="space-y-1">
+                    <label className="text-[11px] text-[var(--muted)]">From</label>
+                    <input
+                      className="h-9 w-full rounded-md border border-[var(--border)] bg-[var(--background)] px-3 text-sm text-[var(--foreground)] focus:border-[var(--accent)] focus:outline-none"
+                      onChange={(e) => setDraftFilters((f) => ({ ...f, addedFrom: e.target.value }))}
+                      type="date"
+                      value={draftFilters.addedFrom}
+                    />
+                  </div>
+                  <div className="space-y-1">
+                    <label className="text-[11px] text-[var(--muted)]">To</label>
+                    <input
+                      className="h-9 w-full rounded-md border border-[var(--border)] bg-[var(--background)] px-3 text-sm text-[var(--foreground)] focus:border-[var(--accent)] focus:outline-none"
+                      onChange={(e) => setDraftFilters((f) => ({ ...f, addedTo: e.target.value }))}
+                      type="date"
+                      value={draftFilters.addedTo}
+                    />
+                  </div>
+                </div>
+              </div>
+
+              {/* Last Transaction range */}
+              <div className="space-y-2">
+                <p className="text-xs font-semibold uppercase tracking-wider text-[var(--muted)]">
+                  Last Transaction
+                </p>
+                <div className="grid grid-cols-2 gap-2">
+                  <div className="space-y-1">
+                    <label className="text-[11px] text-[var(--muted)]">From</label>
+                    <input
+                      className="h-9 w-full rounded-md border border-[var(--border)] bg-[var(--background)] px-3 text-sm text-[var(--foreground)] focus:border-[var(--accent)] focus:outline-none"
+                      onChange={(e) => setDraftFilters((f) => ({ ...f, lastTxFrom: e.target.value }))}
+                      type="date"
+                      value={draftFilters.lastTxFrom}
+                    />
+                  </div>
+                  <div className="space-y-1">
+                    <label className="text-[11px] text-[var(--muted)]">To</label>
+                    <input
+                      className="h-9 w-full rounded-md border border-[var(--border)] bg-[var(--background)] px-3 text-sm text-[var(--foreground)] focus:border-[var(--accent)] focus:outline-none"
+                      onChange={(e) => setDraftFilters((f) => ({ ...f, lastTxTo: e.target.value }))}
+                      type="date"
+                      value={draftFilters.lastTxTo}
+                    />
+                  </div>
+                </div>
+              </div>
+
+              {/* Loyalty slider (hidden for cleaning business) */}
+              {!isCleaningBusiness && (
+                <div className="space-y-2">
+                  <div className="flex items-center justify-between">
+                    <p className="text-xs font-semibold uppercase tracking-wider text-[var(--muted)]">
+                      Min. Loyalty Progress
+                    </p>
+                    <span className="rounded-md bg-[var(--accent-soft)] px-2 py-0.5 text-xs font-semibold text-[var(--accent-strong)]">
+                      {draftFilters.loyaltyMin === 0
+                        ? 'Any'
+                        : `≥ ${draftFilters.loyaltyMin} load${draftFilters.loyaltyMin !== 1 ? 's' : ''}`}
+                    </span>
+                  </div>
+                  <input
+                    className="h-2 w-full cursor-pointer appearance-none rounded-full bg-[var(--border)] accent-[var(--accent)]"
+                    max={freeAfterLoads}
+                    min={0}
+                    onChange={(e) =>
+                      setDraftFilters((f) => ({ ...f, loyaltyMin: Number(e.target.value) }))
+                    }
+                    step={1}
+                    type="range"
+                    value={draftFilters.loyaltyMin}
+                  />
+                  <div className="flex justify-between text-[10px] text-[var(--muted)]">
+                    <span>0</span>
+                    <span>{freeAfterLoads} (max)</span>
+                  </div>
+                  <p className="text-[11px] text-[var(--muted)]">
+                    Only shows customers enrolled in loyalty. Set to 0 to include all.
+                  </p>
+                </div>
+              )}
+            </div>
+
+            <div className="flex items-center justify-between border-t border-[var(--border)] px-5 py-4">
+              <button
+                className="text-sm font-medium text-[var(--muted)] transition hover:text-[var(--foreground)]"
+                onClick={clearDraftFilters}
+                type="button"
+              >
+                Clear all
+              </button>
+              <div className="flex gap-2">
+                <button
+                  className="h-9 rounded-md border border-[var(--border)] px-4 text-sm font-medium transition hover:bg-[var(--background)]"
+                  onClick={() => setIsFilterOpen(false)}
+                  type="button"
+                >
+                  Cancel
+                </button>
+                <button
+                  className="h-9 rounded-md bg-[var(--accent)] px-4 text-sm font-medium text-white transition hover:opacity-90"
+                  onClick={applyFilter}
+                  type="button"
+                >
+                  Apply
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Add / edit modal */}
       {modalOpen && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4">
           <div className="w-full max-w-md rounded-xl border border-[var(--border)] bg-[var(--panel)] shadow-xl">

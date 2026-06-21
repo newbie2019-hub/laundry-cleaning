@@ -19,6 +19,7 @@ type Props = {
   daySummaries: Map<string, AttendanceDaySummary>
   monthKey: string
   onMonthChange: (monthKey: string) => void
+  onPickDay: (date: string) => void
   onPickPayDate: (payDate: string) => void
   payDateSummaries: Map<string, PayrollPayDateSummary>
 }
@@ -27,6 +28,7 @@ export function PayrollCalendar({
   daySummaries,
   monthKey,
   onMonthChange,
+  onPickDay,
   onPickPayDate,
   payDateSummaries,
 }: Props) {
@@ -72,14 +74,23 @@ export function PayrollCalendar({
           const inMonth = isSameMonth(day, monthStart)
           const summary = daySummaries.get(iso)
           const payroll = payDateSummaries.get(iso)
+          const hasAttendance = Boolean(summary && summary.totalCount > 0)
+          // Day cell is clickable when it has attendance records
+          const isClickable = inMonth && hasAttendance
 
           return (
             <div
               key={iso}
+              aria-label={isClickable ? `View attendance for ${iso}` : undefined}
+              role={isClickable ? 'button' : undefined}
+              tabIndex={isClickable ? 0 : undefined}
               className={[
-                'relative min-h-[5.5rem] rounded-md border border-[var(--border)] p-1.5',
+                'relative min-h-[5.5rem] rounded-md border border-[var(--border)] p-1.5 transition',
                 inMonth ? 'bg-[var(--background)]/60' : 'bg-transparent opacity-35',
+                isClickable ? 'cursor-pointer hover:border-[var(--accent)]/50 hover:bg-[var(--background)]' : '',
               ].join(' ')}
+              onClick={() => { if (isClickable) onPickDay(iso) }}
+              onKeyDown={(e) => { if (isClickable && (e.key === 'Enter' || e.key === ' ')) onPickDay(iso) }}
             >
               <span className="text-xs font-semibold tabular-nums text-[var(--foreground)]">
                 {format(day, 'd')}
@@ -127,6 +138,14 @@ export function PayrollCalendar({
                       </span>
                     </div>
                   )}
+                  {/* Total day pay */}
+                  {summary.totalPay > 0 && (
+                    <div className="mt-1 pt-1 border-t border-[var(--border)]/50">
+                      <span className="text-[10px] font-semibold tabular-nums text-[var(--foreground)]/70">
+                        {formatCurrency(summary.totalPay)}
+                      </span>
+                    </div>
+                  )}
                 </div>
               ) : (
                 inMonth && (
@@ -138,7 +157,7 @@ export function PayrollCalendar({
                 <button
                   aria-label={`View payroll processed on ${iso}`}
                   className="absolute bottom-1 right-1 inline-flex items-center gap-0.5 rounded bg-blue-600 px-1.5 py-0.5 text-[10px] font-semibold text-white shadow-sm transition hover:bg-blue-700"
-                  onClick={() => onPickPayDate(iso)}
+                  onClick={(e) => { e.stopPropagation(); onPickPayDate(iso) }}
                   title={`${payroll.count} payroll${payroll.count !== 1 ? 's' : ''} · ${formatCurrency(payroll.totalNet)} net`}
                   type="button"
                 >

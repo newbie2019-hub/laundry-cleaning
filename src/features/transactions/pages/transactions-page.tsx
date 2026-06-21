@@ -1171,8 +1171,8 @@ function TransactionsPageContent() {
       }
     }
 
-    const baseAmount = redeem ? 0 : Number(amount)
-    if (!redeem && (!Number.isFinite(baseAmount) || baseAmount < 0)) {
+    const baseAmount = Number(amount)
+    if (!Number.isFinite(baseAmount) || baseAmount < 0) {
       setError('Amount must be a valid non-negative number.')
       return
     }
@@ -1220,7 +1220,7 @@ function TransactionsPageContent() {
     }
 
     const lineItemsSum = normalizedLineItems.reduce((acc, li) => acc + li.price, 0)
-    const amountNum = redeem ? 0 : baseAmount + lineItemsSum
+    const amountNum = baseAmount + lineItemsSum
 
     let resolvedStaffCount: number | null = null
     if (showStaffCountField) {
@@ -2595,7 +2595,6 @@ function TransactionsPageContent() {
                 <ModalField dataTutorial="tutorial-tx-amount" label="Amount" required>
                   <input
                     className={modalInputClass}
-                    disabled={showLoadFields && formRedeemReward}
                     min="0"
                     onChange={(event) => setAmount(event.target.value)}
                     placeholder="0.00"

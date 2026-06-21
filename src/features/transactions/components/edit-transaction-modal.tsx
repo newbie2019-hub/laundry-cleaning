@@ -747,8 +747,8 @@ export function EditTransactionModal({ transactionId, onClose, onSaved }: EditTr
       }
     }
 
-    const baseAmount = redeem ? 0 : Number(amount)
-    if (!redeem && (!Number.isFinite(baseAmount) || baseAmount < 0)) {
+    const baseAmount = Number(amount)
+    if (!Number.isFinite(baseAmount) || baseAmount < 0) {
       setError('Amount must be a valid non-negative number.')
       return
     }
@@ -795,7 +795,7 @@ export function EditTransactionModal({ transactionId, onClose, onSaved }: EditTr
     }
 
     const lineItemsSum = normalizedLineItems.reduce((acc, li) => acc + li.price, 0)
-    const amountNum = redeem ? 0 : baseAmount + lineItemsSum
+    const amountNum = baseAmount + lineItemsSum
 
     let resolvedStaffCount: number | null = null
     if (showStaffCountField) {
@@ -1325,7 +1325,6 @@ export function EditTransactionModal({ transactionId, onClose, onSaved }: EditTr
               <ModalField label="Amount" required>
                 <input
                   className={inputClass}
-                  disabled={showLoadFields && formRedeemReward}
                   min="0"
                   onChange={(e) => setAmount(e.target.value)}
                   placeholder="0.00"

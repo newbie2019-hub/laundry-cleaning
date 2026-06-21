@@ -1,44 +1,43 @@
-import { useEffect, useMemo, useState } from 'react'
-import {
-  endOfMonth,
-  format,
-  parseISO,
-  startOfMonth,
-} from 'date-fns'
-import { Loader2, Plus, Wallet } from 'lucide-react'
+import { useEffect, useMemo, useState } from "react"
+import { endOfMonth, format, parseISO, startOfMonth } from "date-fns"
+import { Loader2, Plus, Wallet } from "lucide-react"
+import { useNavigate } from "react-router-dom"
 import {
   listAttendanceDaySummaries,
   listPayrollPayDateSummaries,
   type AttendanceDaySummary,
   type PayrollPayDateSummary,
-} from '../../../lib/db/repository'
-import { formatCurrency } from '../../../lib/format'
-import { useAuth } from '../../auth/use-auth'
-import { PayrollCalendar } from '../components/payroll-calendar'
-import { PayrollDateBreakdownDialog } from '../components/payroll-date-breakdown-dialog'
-import { ProcessPayrollDialog } from '../components/process-payroll-dialog'
+} from "../../../lib/db/repository"
+import { formatCurrency } from "../../../lib/format"
+import { useAuth } from "../../auth/use-auth"
+import { AttendanceDaySummaryDialog } from "../components/attendance-day-summary-dialog"
+import { PayrollCalendar } from "../components/payroll-calendar"
+import { ProcessPayrollDialog } from "../components/process-payroll-dialog"
 
 export function BulkPayrollPage() {
   const { hasPermission } = useAuth()
-  const canProcess = hasPermission('process_payroll')
+  const canProcess = hasPermission("process_payroll")
+  const navigate = useNavigate()
 
-  const [monthKey, setMonthKey] = useState(() => format(new Date(), 'yyyy-MM'))
-  const [daySummaries, setDaySummaries] = useState<Map<string, AttendanceDaySummary>>(new Map())
-  const [payDateSummaries, setPayDateSummaries] = useState<Map<string, PayrollPayDateSummary>>(
-    new Map(),
-  )
+  const [monthKey, setMonthKey] = useState(() => format(new Date(), "yyyy-MM"))
+  const [daySummaries, setDaySummaries] = useState<
+    Map<string, AttendanceDaySummary>
+  >(new Map())
+  const [payDateSummaries, setPayDateSummaries] = useState<
+    Map<string, PayrollPayDateSummary>
+  >(new Map())
   const [loadingCalendar, setLoadingCalendar] = useState(false)
 
   const [processDialogOpen, setProcessDialogOpen] = useState(false)
-  const [breakdownPayDate, setBreakdownPayDate] = useState<string | null>(null)
+  const [daySummaryDate, setDaySummaryDate] = useState<string | null>(null)
 
   // Derived month range
   const { from, to } = useMemo(() => {
     const start = startOfMonth(parseISO(`${monthKey}-01`))
     const end = endOfMonth(start)
     return {
-      from: format(start, 'yyyy-MM-dd'),
-      to: format(end, 'yyyy-MM-dd'),
+      from: format(start, "yyyy-MM-dd"),
+      to: format(end, "yyyy-MM-dd"),
     }
   }, [monthKey])
 
@@ -91,7 +90,9 @@ export function BulkPayrollPage() {
     return (
       <section className="space-y-4">
         <h1 className="text-xl font-semibold tracking-tight">Payroll</h1>
-        <p className="text-sm text-[var(--muted)]">You do not have permission to process payroll.</p>
+        <p className="text-sm text-[var(--muted)]">
+          You do not have permission to process payroll.
+        </p>
       </section>
     )
   }
@@ -99,7 +100,9 @@ export function BulkPayrollPage() {
   // Sorted pay dates for the history table
   const payDateList = useMemo(
     () =>
-      [...payDateSummaries.values()].sort((a, b) => b.payDate.localeCompare(a.payDate)),
+      [...payDateSummaries.values()].sort((a, b) =>
+        b.payDate.localeCompare(a.payDate),
+      ),
     [payDateSummaries],
   )
 
@@ -110,7 +113,8 @@ export function BulkPayrollPage() {
           <div>
             <h1 className="text-xl font-semibold tracking-tight">Payroll</h1>
             <p className="mt-0.5 text-sm text-[var(--muted)]">
-              View attendance and payroll history by month. Click a payroll badge to see the breakdown.
+              View attendance and payroll history by month. Click a payroll
+              badge to see the breakdown.
             </p>
           </div>
           <button
@@ -134,18 +138,19 @@ export function BulkPayrollPage() {
             daySummaries={daySummaries}
             monthKey={monthKey}
             onMonthChange={setMonthKey}
-            onPickPayDate={(d) => setBreakdownPayDate(d)}
+            onPickDay={(d) => setDaySummaryDate(d)}
+            onPickPayDate={(d) => navigate(`/payroll/${d}`)}
             payDateSummaries={payDateSummaries}
           />
         </div>
 
         {/* Payroll history table for this month */}
         <div>
-          <h2 className="mb-3 text-sm font-semibold uppercase tracking-wider text-[var(--muted)]">
+          <h2 className="text-sm font-semibold uppercase tracking-wider text-[var(--muted)]">
             Processed this month
           </h2>
           {loadingCalendar ? (
-            <div className="flex items-center justify-center py-10 text-sm text-[var(--muted)]">
+            <div className="flex items-center justify-center py-10 text-sm text-[var(--muted)] mt-4">
               <Loader2 className="mr-2 h-4 w-4 animate-spin" />
               Loading…
             </div>
@@ -154,7 +159,7 @@ export function BulkPayrollPage() {
               No payrolls processed in this month.
             </div>
           ) : (
-            <div className="overflow-x-auto rounded-lg border border-[var(--border)] bg-[var(--panel)]">
+            <div className="overflow-x-auto rounded-lg border border-[var(--border)] bg-[var(--panel)] mt-3">
               <table className="w-full min-w-[480px] text-left text-sm">
                 <thead className="border-b border-[var(--border)] bg-[var(--background)]/50 text-[10px] font-semibold uppercase tracking-wider text-[var(--muted)]">
                   <tr>
@@ -170,10 +175,10 @@ export function BulkPayrollPage() {
                     <tr
                       key={pd.payDate}
                       className="cursor-pointer transition hover:bg-[var(--background)]/40"
-                      onClick={() => setBreakdownPayDate(pd.payDate)}
+                      onClick={() => navigate(`/payroll/${pd.payDate}`)}
                     >
                       <td className="px-4 py-3 font-medium text-[var(--foreground)]">
-                        {format(parseISO(pd.payDate), 'MMM d, yyyy')}
+                        {format(parseISO(pd.payDate), "MMM d, yyyy")}
                       </td>
                       <td className="px-4 py-3 text-right tabular-nums text-[var(--muted)]">
                         {pd.count}
@@ -205,10 +210,10 @@ export function BulkPayrollPage() {
         onProcessed={handleProcessed}
         open={processDialogOpen}
       />
-      <PayrollDateBreakdownDialog
-        onClose={() => setBreakdownPayDate(null)}
-        open={breakdownPayDate !== null}
-        payDate={breakdownPayDate}
+      <AttendanceDaySummaryDialog
+        date={daySummaryDate}
+        onClose={() => setDaySummaryDate(null)}
+        open={daySummaryDate !== null}
       />
     </>
   )
