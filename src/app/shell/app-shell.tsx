@@ -19,6 +19,8 @@ import {
   Wallet,
   WalletCards,
 } from "lucide-react"
+import { AssistantProvider } from "../../features/assistant/assistant-provider"
+import { AssistantLauncher } from "../../features/assistant/components/assistant-launcher"
 import { useCallback, useEffect, useState } from "react"
 import { NavLink, Outlet, useLocation, useNavigate } from "react-router-dom"
 import { loadAppSettings, type AppSettings } from "../../lib/app-settings"
@@ -281,6 +283,7 @@ export function AppShell() {
     : "User"
 
   return (
+    <AssistantProvider>
     <div className="flex h-screen overflow-hidden bg-[var(--background)] text-[var(--foreground)]">
       {/* Sidebar */}
       <aside
@@ -497,6 +500,8 @@ export function AppShell() {
           <Outlet />
         </main>
       </div>
+      <AssistantLauncher />
     </div>
+    </AssistantProvider>
   )
 }

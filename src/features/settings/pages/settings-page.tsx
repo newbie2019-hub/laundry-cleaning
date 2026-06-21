@@ -3,6 +3,7 @@ import { useEffect, useRef, useState } from "react"
 import { format } from "date-fns"
 import {
   AlertTriangle,
+  Bot,
   Check,
   CheckCircle2,
   Database,
@@ -44,6 +45,13 @@ import {
   updateUserProfile,
   vacuumInto,
 } from "../../../lib/db/repository"
+import {
+  loadAssistantSettings,
+  saveAssistantSettings,
+  type AiProvider,
+  type AssistantSettings,
+} from "../../../lib/assistant-settings"
+import { testApiKey } from "../../assistant/lib/cloud-parser"
 
 const inputClass =
   "h-10 w-full rounded-lg border border-[var(--border)] bg-[var(--background)] px-3 text-sm focus:outline-none focus:ring-2 focus:ring-[var(--accent)]/30"
@@ -120,6 +128,16 @@ export function SettingsPage() {
   const [loyaltyFreeAfterLoads, setLoyaltyFreeAfterLoads] = useState(9)
   const [loyaltySettingsLoading, setLoyaltySettingsLoading] = useState(true)
   const [loyaltySettingsSaving, setLoyaltySettingsSaving] = useState(false)
+
+  // AI Assistant settings
+  const [assistantSettings, setAssistantSettings] = useState<AssistantSettings>(loadAssistantSettings)
+  const [assistantSaved, setAssistantSaved] = useState(false)
+  const [assistantTesting, setAssistantTesting] = useState(false)
+  const [assistantTestResult, setAssistantTestResult] = useState<{ ok: boolean; msg: string } | null>(null)
+  const [showKeys, setShowKeys] = useState<Record<string, boolean>>({})
+  const [geminiModels, setGeminiModels] = useState<Array<{ id: string; displayName: string }>>([])
+  const [fetchingGeminiModels, setFetchingGeminiModels] = useState(false)
+  const [geminiModelError, setGeminiModelError] = useState<string | null>(null)
 
   useEffect(() => {
     if (!canManagePayrollSettings) {
@@ -273,6 +291,83 @@ export function SettingsPage() {
       toast.error(err instanceof Error ? err.message : "Unable to save loyalty settings.")
     } finally {
       setLoyaltySettingsSaving(false)
+    }
+  }
+
+  function handleSaveAssistantSettings(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault()
+    saveAssistantSettings(assistantSettings)
+    setAssistantSaved(true)
+    setAssistantTestResult(null)
+    setTimeout(() => setAssistantSaved(false), 2000)
+  }
+
+  async function handleTestConnection() {
+    setAssistantTesting(true)
+    setAssistantTestResult(null)
+    try {
+      const provider = assistantSettings.provider === 'auto' ? 'claude' : assistantSettings.provider
+      const key = assistantSettings.apiKeys[provider as Exclude<AiProvider, 'auto'>]
+      if (!key) {
+        setAssistantTestResult({ ok: false, msg: 'No API key entered for this provider.' })
+        return
+      }
+      const error = await testApiKey({
+        provider: provider as Exclude<AiProvider, 'auto'>,
+        apiKey: key,
+        model: assistantSettings.models[provider as Exclude<AiProvider, 'auto'>],
+      })
+      if (error) {
+        setAssistantTestResult({ ok: false, msg: error })
+      } else {
+        setAssistantTestResult({ ok: true, msg: 'Connection successful!' })
+      }
+    } catch (err) {
+      setAssistantTestResult({ ok: false, msg: err instanceof Error ? err.message : 'Test failed' })
+    } finally {
+      setAssistantTesting(false)
+    }
+  }
+
+  async function handleFetchGeminiModels() {
+    const key = assistantSettings.apiKeys.gemini.trim()
+    if (!key) {
+      setGeminiModelError('Enter your Gemini API key first.')
+      return
+    }
+    setFetchingGeminiModels(true)
+    setGeminiModelError(null)
+    try {
+      const res = await fetch(
+        `https://generativelanguage.googleapis.com/v1beta/models?key=${key}&pageSize=50`,
+      )
+      if (!res.ok) {
+        let detail = ''
+        try { detail = `: ${((await res.json()) as { error?: { message?: string } }).error?.message ?? res.status}` } catch { /* ignore */ }
+        throw new Error(`Failed to fetch models${detail}`)
+      }
+      const data = (await res.json()) as {
+        models: Array<{ name: string; displayName: string; supportedGenerationMethods?: string[] }>
+      }
+      const filtered = (data.models ?? [])
+        .filter((m) => m.supportedGenerationMethods?.includes('generateContent') ?? true)
+        .map((m) => ({
+          id: m.name.replace('models/', ''),
+          displayName: m.displayName,
+        }))
+      if (!filtered.length) throw new Error('No generateContent models found for this key.')
+      setGeminiModels(filtered)
+      // Auto-select current model if it exists in the list, otherwise pick first
+      const current = assistantSettings.models.gemini
+      const exists = filtered.some((m) => m.id === current)
+      if (!exists) {
+        const preferred = filtered.find((m) => m.id.includes('flash')) ?? filtered[0]
+        setAssistantSettings((prev) => ({ ...prev, models: { ...prev.models, gemini: preferred.id } }))
+      }
+    } catch (err) {
+      setGeminiModelError(err instanceof Error ? err.message : 'Failed to fetch models')
+    } finally {
+      setFetchingGeminiModels(false)
     }
   }
 
@@ -490,6 +585,200 @@ export function SettingsPage() {
             </form>
           </div>
         )}
+
+        {/* AI Assistant */}
+        <div className="grid grid-cols-1 gap-x-10 gap-y-4 py-8 md:grid-cols-[280px_1fr]">
+          <div>
+            <div className="flex items-center gap-2">
+              <Bot className="h-4 w-4 text-[var(--muted)]" />
+              <h2 className="text-sm font-semibold">AI Assistant</h2>
+            </div>
+            <p className="mt-1 text-xs leading-relaxed text-[var(--muted)]">
+              Connect an AI provider to get better natural language understanding. When offline or no key is set, the assistant uses a built-in local parser.
+            </p>
+            <p className="mt-2 text-xs leading-relaxed text-amber-500/80">
+              API keys are stored locally on this device only.
+            </p>
+          </div>
+          <form
+            className="w-full max-w-[480px] space-y-4 md:justify-self-end"
+            onSubmit={handleSaveAssistantSettings}
+          >
+            {/* Enable toggle */}
+            <label className="flex cursor-pointer items-start gap-3 rounded-md border border-[var(--border)] bg-[var(--panel)] px-3 py-2.5">
+              <input
+                checked={assistantSettings.enabled}
+                className="mt-0.5 h-4 w-4 rounded border-[var(--border)]"
+                onChange={(e) => setAssistantSettings((prev) => ({ ...prev, enabled: e.target.checked }))}
+                type="checkbox"
+              />
+              <span className="flex-1">
+                <span className="block text-sm font-medium">Enable AI Assistant</span>
+                <span className="mt-0.5 block text-xs text-[var(--muted)]">Show the floating assistant button on all pages.</span>
+              </span>
+            </label>
+
+            {/* Provider */}
+            <label className="block space-y-1.5">
+              <span className="text-xs font-medium text-[var(--muted)] uppercase tracking-wider">Provider</span>
+              <select
+                className={inputClass}
+                onChange={(e) => setAssistantSettings((prev) => ({ ...prev, provider: e.target.value as AiProvider }))}
+                value={assistantSettings.provider}
+              >
+                <option value="auto">Auto (first available key)</option>
+                <option value="claude">Claude (Anthropic)</option>
+                <option value="gpt">GPT (OpenAI)</option>
+                <option value="gemini">Gemini (Google)</option>
+              </select>
+            </label>
+
+            {/* Claude key */}
+            <label className="block space-y-1.5">
+              <span className="text-xs font-medium text-[var(--muted)] uppercase tracking-wider">Claude API Key</span>
+              <div className="relative">
+                <input
+                  className={inputClass}
+                  onChange={(e) => setAssistantSettings((prev) => ({ ...prev, apiKeys: { ...prev.apiKeys, claude: e.target.value } }))}
+                  placeholder="sk-ant-…"
+                  type={showKeys['claude'] ? 'text' : 'password'}
+                  value={assistantSettings.apiKeys.claude}
+                />
+                <button
+                  className="absolute right-2.5 top-1/2 -translate-y-1/2 text-[10px] text-[var(--muted)] hover:text-[var(--foreground)]"
+                  onClick={() => setShowKeys((p) => ({ ...p, claude: !p['claude'] }))}
+                  type="button"
+                >
+                  {showKeys['claude'] ? 'hide' : 'show'}
+                </button>
+              </div>
+              <input
+                className={`${inputClass} mt-1`}
+                onChange={(e) => setAssistantSettings((prev) => ({ ...prev, models: { ...prev.models, claude: e.target.value } }))}
+                placeholder="Model (e.g. claude-3-5-haiku-20241022)"
+                value={assistantSettings.models.claude}
+              />
+            </label>
+
+            {/* GPT key */}
+            <label className="block space-y-1.5">
+              <span className="text-xs font-medium text-[var(--muted)] uppercase tracking-wider">OpenAI (GPT) API Key</span>
+              <div className="relative">
+                <input
+                  className={inputClass}
+                  onChange={(e) => setAssistantSettings((prev) => ({ ...prev, apiKeys: { ...prev.apiKeys, gpt: e.target.value } }))}
+                  placeholder="sk-…"
+                  type={showKeys['gpt'] ? 'text' : 'password'}
+                  value={assistantSettings.apiKeys.gpt}
+                />
+                <button
+                  className="absolute right-2.5 top-1/2 -translate-y-1/2 text-[10px] text-[var(--muted)] hover:text-[var(--foreground)]"
+                  onClick={() => setShowKeys((p) => ({ ...p, gpt: !p['gpt'] }))}
+                  type="button"
+                >
+                  {showKeys['gpt'] ? 'hide' : 'show'}
+                </button>
+              </div>
+              <input
+                className={`${inputClass} mt-1`}
+                onChange={(e) => setAssistantSettings((prev) => ({ ...prev, models: { ...prev.models, gpt: e.target.value } }))}
+                placeholder="Model (e.g. gpt-4o-mini)"
+                value={assistantSettings.models.gpt}
+              />
+            </label>
+
+            {/* Gemini key */}
+            <div className="space-y-1.5">
+              <span className="text-xs font-medium text-[var(--muted)] uppercase tracking-wider">Gemini (Google) API Key</span>
+              <div className="relative">
+                <input
+                  className={inputClass}
+                  onChange={(e) => {
+                    setAssistantSettings((prev) => ({ ...prev, apiKeys: { ...prev.apiKeys, gemini: e.target.value } }))
+                    setGeminiModels([])
+                    setGeminiModelError(null)
+                  }}
+                  placeholder="AIza…"
+                  type={showKeys['gemini'] ? 'text' : 'password'}
+                  value={assistantSettings.apiKeys.gemini}
+                />
+                <button
+                  className="absolute right-2.5 top-1/2 -translate-y-1/2 text-[10px] text-[var(--muted)] hover:text-[var(--foreground)]"
+                  onClick={() => setShowKeys((p) => ({ ...p, gemini: !p['gemini'] }))}
+                  type="button"
+                >
+                  {showKeys['gemini'] ? 'hide' : 'show'}
+                </button>
+              </div>
+
+              {/* Gemini model selector */}
+              <div className="flex items-center gap-2 mt-1">
+                {geminiModels.length > 0 ? (
+                  <select
+                    className={`${inputClass} flex-1`}
+                    onChange={(e) => setAssistantSettings((prev) => ({ ...prev, models: { ...prev.models, gemini: e.target.value } }))}
+                    value={assistantSettings.models.gemini}
+                  >
+                    {geminiModels.map((m) => (
+                      <option key={m.id} value={m.id}>{m.displayName} ({m.id})</option>
+                    ))}
+                  </select>
+                ) : (
+                  <input
+                    className={`${inputClass} flex-1`}
+                    onChange={(e) => setAssistantSettings((prev) => ({ ...prev, models: { ...prev.models, gemini: e.target.value } }))}
+                    placeholder="Model (e.g. gemini-2.0-flash)"
+                    value={assistantSettings.models.gemini}
+                  />
+                )}
+                <button
+                  className="inline-flex shrink-0 items-center gap-1.5 rounded-lg border border-[var(--border)] bg-[var(--background)] px-3 py-2 text-xs font-medium text-[var(--foreground)] transition hover:border-[var(--accent)]/50 disabled:opacity-50"
+                  disabled={fetchingGeminiModels || !assistantSettings.apiKeys.gemini.trim()}
+                  onClick={() => { void handleFetchGeminiModels() }}
+                  title="Fetch available models from your API key"
+                  type="button"
+                >
+                  {fetchingGeminiModels
+                    ? <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                    : <RefreshCw className="h-3.5 w-3.5" />}
+                  {geminiModels.length > 0 ? 'Refresh' : 'Fetch models'}
+                </button>
+              </div>
+              {geminiModelError && (
+                <p className="text-xs text-red-500 mt-1">{geminiModelError}</p>
+              )}
+              {geminiModels.length > 0 && (
+                <p className="text-[10px] text-[var(--muted)]">{geminiModels.length} models loaded from your API key.</p>
+              )}
+            </div>
+
+            {assistantTestResult && (
+              <span className={`inline-flex items-center gap-1 text-xs font-medium ${assistantTestResult.ok ? 'text-emerald-500' : 'text-red-500'}`}>
+                {assistantTestResult.ok && <Check className="h-3 w-3" />}
+                {assistantTestResult.msg}
+              </span>
+            )}
+
+            <div className="flex items-center justify-end gap-2">
+              <button
+                className="inline-flex items-center gap-1.5 rounded-lg border border-[var(--border)] bg-[var(--background)] px-4 py-2 text-sm font-medium text-[var(--foreground)] transition hover:border-[var(--accent)]/50 disabled:opacity-50"
+                disabled={assistantTesting}
+                onClick={() => { void handleTestConnection() }}
+                type="button"
+              >
+                {assistantTesting ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Info className="h-3.5 w-3.5" />}
+                Test connection
+              </button>
+              <button
+                className="inline-flex items-center gap-1.5 rounded-lg bg-[var(--accent)] px-4 py-2 text-sm font-medium text-white transition hover:opacity-90"
+                type="submit"
+              >
+                <Save className="h-3.5 w-3.5" />
+                {assistantSaved ? 'Saved!' : 'Save AI settings'}
+              </button>
+            </div>
+          </form>
+        </div>
 
         {/* App information */}
         <div className="grid grid-cols-1 gap-x-10 gap-y-4 py-8 md:grid-cols-[280px_1fr]">
