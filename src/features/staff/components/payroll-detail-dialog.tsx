@@ -3,6 +3,7 @@ import { format, parseISO } from 'date-fns'
 import { Lock, Wallet, X } from 'lucide-react'
 import { getPayrollDetail, type PayrollDetail } from '../../../lib/db/repository'
 import { formatCurrency } from '../../../lib/format'
+import { categoryLabel } from '../lib/attendance'
 
 type Props = {
   onClose: () => void
@@ -54,10 +55,8 @@ export function PayrollDetailDialog({ onClose, open, payrollId, staffDisplayName
 
   if (!open) return null
 
-  const bonuses = detail?.adjustments.filter((a) => a.kind === 'bonus') ?? []
-  const deductions = detail?.adjustments.filter((a) => a.kind === 'deduction') ?? []
-  const bonusTotal = bonuses.reduce((sum, a) => sum + a.amount, 0)
-  const deductionTotal = deductions.reduce((sum, a) => sum + a.amount, 0)
+  const earningTotal = detail?.payroll.totalEarnings ?? 0
+  const deductionTotal = detail?.payroll.totalDeductions ?? 0
 
   return (
     <div
@@ -182,21 +181,26 @@ export function PayrollDetailDialog({ onClose, open, payrollId, staffDisplayName
                         <span className="flex items-center gap-2">
                           <span
                             className={
-                              a.kind === 'bonus'
+                              a.kind === 'earning'
                                 ? 'rounded bg-emerald-50 px-1.5 py-0.5 text-[10px] font-semibold uppercase text-emerald-700'
                                 : 'rounded bg-red-50 px-1.5 py-0.5 text-[10px] font-semibold uppercase text-red-700'
                             }
                           >
-                            {a.kind}
+                            {categoryLabel(a.category)}
                           </span>
                           <span className="text-gray-800">{a.label}</span>
+                          {a.category === 'overtime' && a.quantity != null ? (
+                            <span className="text-xs text-gray-500">
+                              {a.quantity}h × {formatCurrency(a.rate ?? 0)}
+                            </span>
+                          ) : null}
                         </span>
                         <span
                           className={`font-medium tabular-nums ${
-                            a.kind === 'bonus' ? 'text-emerald-700' : 'text-red-700'
+                            a.kind === 'earning' ? 'text-emerald-700' : 'text-red-700'
                           }`}
                         >
-                          {a.kind === 'bonus' ? '+' : '−'}
+                          {a.kind === 'earning' ? '+' : '−'}
                           {formatCurrency(a.amount)}
                         </span>
                       </li>
@@ -208,18 +212,18 @@ export function PayrollDetailDialog({ onClose, open, payrollId, staffDisplayName
               <div className="grid gap-2 rounded-md border border-gray-200 bg-gray-50 p-3 text-sm sm:grid-cols-4">
                 <div>
                   <p className="text-[10px] font-semibold uppercase tracking-wider text-gray-500">
-                    Gross
+                    Base pay
                   </p>
                   <p className="mt-0.5 font-medium tabular-nums text-gray-900">
-                    {formatCurrency(detail.payroll.grossPay)}
+                    {formatCurrency(detail.payroll.basePay)}
                   </p>
                 </div>
                 <div>
                   <p className="text-[10px] font-semibold uppercase tracking-wider text-gray-500">
-                    Bonuses
+                    Earnings
                   </p>
                   <p className="mt-0.5 font-medium tabular-nums text-emerald-700">
-                    +{formatCurrency(bonusTotal)}
+                    +{formatCurrency(earningTotal)}
                   </p>
                 </div>
                 <div>

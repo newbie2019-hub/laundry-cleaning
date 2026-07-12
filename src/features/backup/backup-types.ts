@@ -225,7 +225,10 @@ export type ExportStaffPayrollItem = {
 
 export type ExportStaffPayrollAdjustment = {
   label: string
-  kind: 'bonus' | 'deduction'
+  // Current exports write 'earning' | 'deduction'. Backups produced before the
+  // export was fixed carry the legacy 'bonus' (== earning); the importer
+  // normalizes it. See migration 25 in src-tauri/src/db.rs.
+  kind: 'earning' | 'deduction' | 'bonus'
   amount: number
 }
 

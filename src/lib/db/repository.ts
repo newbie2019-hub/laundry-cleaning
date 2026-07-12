@@ -1,6 +1,8 @@
 import type Database from '@tauri-apps/plugin-sql'
 import { differenceInCalendarDays, format, isValid, parseISO, subDays, subMonths } from 'date-fns'
 import {
+  type AdjustmentKind,
+  type AdjustmentSource,
   type AttendanceStatus,
   computeDayPay,
   defaultMultiplierForStatus,
@@ -176,6 +178,8 @@ export type CustomerSummary = Customer & {
   lastTransactionAmount: number | null
   lastTransactionDate: string | null
   paidLoadsSinceLastReward: number
+  totalSpent: number
+  transactionCount: number
 }
 
 export type UserListItem = {
@@ -1320,6 +1324,8 @@ type CustomerSummaryRow = CustomerRow & {
   lastTransactionDate: string | null
   lastRewardId: number | null
   paidLoadsSinceLastReward: number | null
+  totalSpent: number | null
+  transactionCount: number | null
 }
 
 export async function listCustomerSummaries(filters?: {
@@ -1363,7 +1369,9 @@ export async function listCustomerSummaries(filters?: {
         last_tx.last_date AS lastTransactionDate,
         last_tx.last_amount AS lastTransactionAmount,
         reward.last_reward_id AS lastRewardId,
-        COALESCE(progress.paid_loads, 0) AS paidLoadsSinceLastReward
+        COALESCE(progress.paid_loads, 0) AS paidLoadsSinceLastReward,
+        COALESCE(spend.total_spent, 0) AS totalSpent,
+        COALESCE(spend.tx_count, 0) AS transactionCount
       FROM customers c
       LEFT JOIN (
         SELECT t.customer_id,
@@ -1401,6 +1409,15 @@ export async function listCustomerSummaries(filters?: {
           AND (r.last_reward_id IS NULL OR t.id > r.last_reward_id)
         GROUP BY t.customer_id
       ) progress ON progress.customer_id = c.id
+      LEFT JOIN (
+        SELECT t.customer_id,
+               SUM(CASE WHEN tt.code = 'SALE' THEN t.amount ELSE 0 END) AS total_spent,
+               COUNT(*) AS tx_count
+        FROM transactions t
+        JOIN transaction_types tt ON tt.id = t.transaction_type_id
+        WHERE t.customer_id IS NOT NULL
+        GROUP BY t.customer_id
+      ) spend ON spend.customer_id = c.id
       ${whereClause}
       ORDER BY c.name COLLATE NOCASE ASC
     `,
@@ -1425,6 +1442,8 @@ export async function listCustomerSummaries(filters?: {
       name: row.name,
       paidLoadsSinceLastReward: paidLoads,
       phone: row.phone,
+      totalSpent: row.totalSpent != null ? toNumber(row.totalSpent) : 0,
+      transactionCount: row.transactionCount != null ? toNumber(row.transactionCount) : 0,
     }
   })
 }
@@ -1829,10 +1848,17 @@ export async function saveUser(input: SaveUserInput) {
   await database.execute('DELETE FROM user_roles WHERE user_id = $1', [userId])
 
   for (const roleId of input.roleIds) {
+    // Deterministic sync uuid from the (username, role) natural key so the same
+    // assignment made on two devices dedupes instead of colliding on the
+    // (user_id, role_id) primary key during sync. Mirrors the migration backfill.
     await database.execute(
       `
-        INSERT INTO user_roles (user_id, role_id)
-        VALUES ($1, $2)
+        INSERT INTO user_roles (user_id, role_id, uuid)
+        VALUES (
+          $1, $2,
+          'seed:userrole:' || (SELECT username FROM users WHERE id = $1)
+            || ':' || (SELECT name FROM roles WHERE id = $2)
+        )
       `,
       [userId, roleId],
     )
@@ -3398,6 +3424,9 @@ export type InventoryItem = {
   status: string
   stockValue: number
   supplier: string
+  /** FK to the suppliers table. Null when no supplier is set. The free-text
+   * `supplier` name is kept alongside for display/backup compatibility. */
+  supplierId: number | null
   unitLabel: string
   unitType: string
 }
@@ -3440,6 +3469,9 @@ export type InventoryItemDraft = {
   sellingPrice: number
   status: string
   supplier: string
+  /** Optional explicit supplier FK. When omitted, saveInventoryItem derives it
+   * from the free-text `supplier` name (find-or-create). */
+  supplierId?: number | null
   unitLabel: string
   unitType: string
 }
@@ -3488,6 +3520,7 @@ type InventoryItemRow = {
   sellingPrice: number
   status: string
   supplier: string
+  supplierId: number | null
   unitLabel: string
   unitType: string
 }
@@ -3753,20 +3786,15 @@ export async function listInventoryItems(filters?: {
         COALESCE(c.code, lc.code, 'other') AS categoryCode,
         COALESCE(c.label, lc.label, 'Other') AS categoryLabel,
         i.supplier,
+        i.supplier_id AS supplierId,
         i.status,
         i.last_maintenance_date AS lastMaintenanceDate,
-        COALESCE(SUM(
-          CASE WHEN m.movement_type = 'IN' THEN m.quantity
-               WHEN m.movement_type = 'OUT' THEN -m.quantity
-               ELSE 0 END
-        ), 0) AS currentStock,
+        i.current_stock AS currentStock,
         (SELECT MAX(m2.movement_date) FROM inventory_movements m2 WHERE m2.item_id = i.id AND m2.movement_type = 'IN') AS lastRestockedDate
       FROM inventory_items i
       LEFT JOIN inventory_categories c ON c.id = i.category_id
       LEFT JOIN inventory_categories lc ON lc.code = i.category
-      LEFT JOIN inventory_movements m ON m.item_id = i.id
       ${where}
-      GROUP BY i.id
       ORDER BY i.name
     `,
     params,
@@ -3837,6 +3865,7 @@ export async function listInventoryItems(filters?: {
       status: row.status,
       stockValue: currentStock * costPerUnit,
       supplier: row.supplier,
+      supplierId: row.supplierId,
       unitLabel: row.unitLabel,
       unitType: row.unitType,
     }
@@ -3886,12 +3915,38 @@ export async function backfillZeroUnitCostMovements(
   return count
 }
 
+/**
+ * Resolve a free-text supplier name to a supplier id, creating the supplier row
+ * if it doesn't exist yet. Returns null for an empty name. This keeps the item
+ * form's free-text supplier field working while populating the supplier_id FK.
+ */
+async function resolveSupplierIdByName(
+  database: Database,
+  name: string,
+): Promise<number | null> {
+  const trimmed = name.trim()
+  if (!trimmed) return null
+  const existing = await database.select<Array<{ id: number }>>(
+    `SELECT id FROM suppliers WHERE name = $1 LIMIT 1`,
+    [trimmed],
+  )
+  if (existing[0]) return Number(existing[0].id)
+  const res = await database.execute(`INSERT INTO suppliers (name) VALUES ($1)`, [trimmed])
+  return res.lastInsertId as number
+}
+
 export async function saveInventoryItem(draft: InventoryItemDraft, id?: number): Promise<number> {
   const database = await getDatabase()
   const resolvedCategory = await resolveInventoryCategory(database, draft.categoryId, draft.category)
 
   const sellingPrice =
     Number.isFinite(draft.sellingPrice) && draft.sellingPrice >= 0 ? draft.sellingPrice : 0
+
+  // An explicit supplierId wins; otherwise derive one from the free-text name.
+  const supplierId =
+    draft.supplierId !== undefined
+      ? draft.supplierId
+      : await resolveSupplierIdByName(database, draft.supplier)
 
   if (id) {
     await database.execute(
@@ -3910,8 +3965,9 @@ export async function saveInventoryItem(draft: InventoryItemDraft, id?: number):
           status = $11,
           last_maintenance_date = $12,
           selling_price = $13,
+          supplier_id = $14,
           updated_at = CURRENT_TIMESTAMP
-        WHERE id = $14
+        WHERE id = $15
       `,
       [
         draft.name,
@@ -3927,6 +3983,7 @@ export async function saveInventoryItem(draft: InventoryItemDraft, id?: number):
         draft.status,
         draft.lastMaintenanceDate,
         sellingPrice,
+        supplierId,
         id,
       ],
     )
@@ -3957,9 +4014,10 @@ export async function saveInventoryItem(draft: InventoryItemDraft, id?: number):
         supplier,
         status,
         last_maintenance_date,
-        selling_price
+        selling_price,
+        supplier_id
       )
-      VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
+      VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
     `,
     [
       draft.name,
@@ -3975,6 +4033,7 @@ export async function saveInventoryItem(draft: InventoryItemDraft, id?: number):
       draft.status,
       draft.lastMaintenanceDate,
       sellingPrice,
+      supplierId,
     ],
   )
   const newId = result.lastInsertId as number
@@ -4454,6 +4513,423 @@ export async function deleteInventoryMovement(id: number): Promise<void> {
   await database.execute('DELETE FROM inventory_movements WHERE id = $1', [id])
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// Suppliers
+// ─────────────────────────────────────────────────────────────────────────────
+
+export type Supplier = {
+  id: number
+  name: string
+  contactName: string
+  phone: string
+  email: string
+  notes: string
+  isActive: boolean
+  /** Number of active inventory items pointing at this supplier. */
+  itemCount: number
+  /** Purchase orders referencing this supplier that are not yet closed. */
+  openPoCount: number
+}
+
+export type SupplierDraft = {
+  name: string
+  contactName: string
+  phone: string
+  email: string
+  notes: string
+  isActive: boolean
+}
+
+export async function listSuppliers(includeInactive = false): Promise<Supplier[]> {
+  const database = await getDatabase()
+  const where = includeInactive ? '' : 'WHERE s.is_active = 1'
+  const rows = await database.select<
+    Array<{
+      id: number
+      name: string
+      contact_name: string
+      phone: string
+      email: string
+      notes: string
+      is_active: number
+      item_count: number
+      open_po_count: number
+    }>
+  >(
+    `
+      SELECT
+        s.id, s.name, s.contact_name, s.phone, s.email, s.notes, s.is_active,
+        (SELECT COUNT(*) FROM inventory_items i WHERE i.supplier_id = s.id) AS item_count,
+        (SELECT COUNT(*) FROM purchase_orders p WHERE p.supplier_id = s.id AND p.status IN ('draft', 'ordered')) AS open_po_count
+      FROM suppliers s
+      ${where}
+      ORDER BY s.name COLLATE NOCASE
+    `,
+  )
+  return rows.map((r) => ({
+    id: Number(r.id),
+    name: String(r.name ?? ''),
+    contactName: String(r.contact_name ?? ''),
+    phone: String(r.phone ?? ''),
+    email: String(r.email ?? ''),
+    notes: String(r.notes ?? ''),
+    isActive: Boolean(r.is_active),
+    itemCount: Number(r.item_count ?? 0),
+    openPoCount: Number(r.open_po_count ?? 0),
+  }))
+}
+
+export async function saveSupplier(draft: SupplierDraft, id?: number): Promise<number> {
+  const database = await getDatabase()
+  const name = draft.name.trim()
+  if (!name) throw new Error('Supplier name is required.')
+  if (id) {
+    await database.execute(
+      `
+        UPDATE suppliers SET
+          name = $1, contact_name = $2, phone = $3, email = $4, notes = $5,
+          is_active = $6, updated_at = CURRENT_TIMESTAMP
+        WHERE id = $7
+      `,
+      [name, draft.contactName.trim(), draft.phone.trim(), draft.email.trim(), draft.notes.trim(), draft.isActive ? 1 : 0, id],
+    )
+    return id
+  }
+  const res = await database.execute(
+    `
+      INSERT INTO suppliers (name, contact_name, phone, email, notes, is_active)
+      VALUES ($1, $2, $3, $4, $5, $6)
+    `,
+    [name, draft.contactName.trim(), draft.phone.trim(), draft.email.trim(), draft.notes.trim(), draft.isActive ? 1 : 0],
+  )
+  return res.lastInsertId as number
+}
+
+/**
+ * Delete a supplier. Refuses when it is still referenced by items or POs so the
+ * caller can prompt the user to reassign/deactivate first (mirrors the category
+ * delete guard). Deactivating via saveSupplier is the soft alternative.
+ */
+export async function deleteSupplier(id: number): Promise<void> {
+  const database = await getDatabase()
+  const refs = await database.select<Array<{ item_count: number; po_count: number }>>(
+    `
+      SELECT
+        (SELECT COUNT(*) FROM inventory_items WHERE supplier_id = $1) AS item_count,
+        (SELECT COUNT(*) FROM purchase_orders WHERE supplier_id = $1) AS po_count
+    `,
+    [id],
+  )
+  const itemCount = Number(refs[0]?.item_count ?? 0)
+  const poCount = Number(refs[0]?.po_count ?? 0)
+  if (itemCount > 0 || poCount > 0) {
+    throw new Error(
+      `This supplier is used by ${itemCount} item(s) and ${poCount} purchase order(s). Reassign or deactivate it instead.`,
+    )
+  }
+  await database.execute('DELETE FROM suppliers WHERE id = $1', [id])
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Purchase orders
+// ─────────────────────────────────────────────────────────────────────────────
+
+export type PurchaseOrderStatus = 'draft' | 'ordered' | 'received' | 'cancelled'
+
+export type PurchaseOrderLine = {
+  id: number
+  purchaseOrderId: number
+  itemId: number
+  itemName: string
+  unitLabel: string
+  quantity: number
+  unitCost: number
+  receivedQuantity: number
+}
+
+export type PurchaseOrder = {
+  id: number
+  supplierId: number | null
+  supplierName: string | null
+  status: PurchaseOrderStatus
+  reference: string
+  orderDate: string
+  expectedDate: string
+  receivedDate: string
+  notes: string
+  createdByName: string | null
+  createdAt: string
+  lineCount: number
+  totalCost: number
+  /** Populated by getPurchaseOrder; empty in the list view. */
+  lines: PurchaseOrderLine[]
+}
+
+export type PurchaseOrderLineDraft = {
+  id?: number
+  itemId: number
+  quantity: number
+  unitCost: number
+}
+
+export type PurchaseOrderDraft = {
+  supplierId: number | null
+  status?: PurchaseOrderStatus
+  reference: string
+  orderDate: string
+  expectedDate: string
+  notes: string
+  lines: PurchaseOrderLineDraft[]
+}
+
+const PO_STATUSES: PurchaseOrderStatus[] = ['draft', 'ordered', 'received', 'cancelled']
+
+function normalizePoStatus(value: string): PurchaseOrderStatus {
+  return (PO_STATUSES as string[]).includes(value) ? (value as PurchaseOrderStatus) : 'draft'
+}
+
+export async function listPurchaseOrders(filters?: {
+  status?: PurchaseOrderStatus
+  supplierId?: number
+}): Promise<PurchaseOrder[]> {
+  const database = await getDatabase()
+  const conditions: string[] = []
+  const params: unknown[] = []
+  if (filters?.status) {
+    params.push(filters.status)
+    conditions.push(`p.status = $${params.length}`)
+  }
+  if (filters?.supplierId != null) {
+    params.push(filters.supplierId)
+    conditions.push(`p.supplier_id = $${params.length}`)
+  }
+  const where = conditions.length ? `WHERE ${conditions.join(' AND ')}` : ''
+
+  const rows = await database.select<
+    Array<{
+      id: number
+      supplier_id: number | null
+      supplier_name: string | null
+      status: string
+      reference: string
+      order_date: string
+      expected_date: string
+      received_date: string
+      notes: string
+      created_by_name: string | null
+      created_at: string
+      line_count: number
+      total_cost: number
+    }>
+  >(
+    `
+      SELECT
+        p.id, p.supplier_id, s.name AS supplier_name, p.status, p.reference,
+        p.order_date, p.expected_date, p.received_date, p.notes, p.created_at,
+        u.name AS created_by_name,
+        (SELECT COUNT(*) FROM purchase_order_items pi WHERE pi.purchase_order_id = p.id) AS line_count,
+        (SELECT COALESCE(SUM(pi.quantity * pi.unit_cost), 0) FROM purchase_order_items pi WHERE pi.purchase_order_id = p.id) AS total_cost
+      FROM purchase_orders p
+      LEFT JOIN suppliers s ON s.id = p.supplier_id
+      LEFT JOIN users u ON u.id = p.created_by
+      ${where}
+      ORDER BY (p.order_date = '') ASC, p.order_date DESC, p.id DESC
+    `,
+    params,
+  )
+  return rows.map((r) => ({
+    id: Number(r.id),
+    supplierId: r.supplier_id != null ? Number(r.supplier_id) : null,
+    supplierName: r.supplier_name ?? null,
+    status: normalizePoStatus(r.status),
+    reference: String(r.reference ?? ''),
+    orderDate: String(r.order_date ?? ''),
+    expectedDate: String(r.expected_date ?? ''),
+    receivedDate: String(r.received_date ?? ''),
+    notes: String(r.notes ?? ''),
+    createdByName: r.created_by_name ?? null,
+    createdAt: String(r.created_at ?? ''),
+    lineCount: Number(r.line_count ?? 0),
+    totalCost: toNumber(r.total_cost),
+    lines: [],
+  }))
+}
+
+export async function getPurchaseOrder(id: number): Promise<PurchaseOrder | null> {
+  const database = await getDatabase()
+  const headers = await listPurchaseOrders()
+  const header = headers.find((h) => h.id === id)
+  if (!header) return null
+  const lineRows = await database.select<
+    Array<{
+      id: number
+      purchase_order_id: number
+      item_id: number
+      item_name: string
+      unit_label: string
+      quantity: number
+      unit_cost: number
+      received_quantity: number
+    }>
+  >(
+    `
+      SELECT
+        pi.id, pi.purchase_order_id, pi.item_id, i.name AS item_name,
+        i.unit_label, pi.quantity, pi.unit_cost, pi.received_quantity
+      FROM purchase_order_items pi
+      JOIN inventory_items i ON i.id = pi.item_id
+      WHERE pi.purchase_order_id = $1
+      ORDER BY pi.id
+    `,
+    [id],
+  )
+  header.lines = lineRows.map((r) => ({
+    id: Number(r.id),
+    purchaseOrderId: Number(r.purchase_order_id),
+    itemId: Number(r.item_id),
+    itemName: String(r.item_name ?? ''),
+    unitLabel: String(r.unit_label ?? ''),
+    quantity: toNumber(r.quantity),
+    unitCost: toNumber(r.unit_cost),
+    receivedQuantity: toNumber(r.received_quantity),
+  }))
+  return header
+}
+
+export async function savePurchaseOrder(
+  draft: PurchaseOrderDraft,
+  id?: number,
+  userId?: number | null,
+): Promise<number> {
+  const database = await getDatabase()
+  const status = draft.status ? normalizePoStatus(draft.status) : 'draft'
+  let poId: number
+  if (id) {
+    await database.execute(
+      `
+        UPDATE purchase_orders SET
+          supplier_id = $1, status = $2, reference = $3, order_date = $4,
+          expected_date = $5, notes = $6, updated_at = CURRENT_TIMESTAMP
+        WHERE id = $7
+      `,
+      [draft.supplierId, status, draft.reference.trim(), draft.orderDate, draft.expectedDate, draft.notes.trim(), id],
+    )
+    poId = id
+    await database.execute('DELETE FROM purchase_order_items WHERE purchase_order_id = $1', [poId])
+  } else {
+    const res = await database.execute(
+      `
+        INSERT INTO purchase_orders (supplier_id, status, reference, order_date, expected_date, notes, created_by)
+        VALUES ($1, $2, $3, $4, $5, $6, $7)
+      `,
+      [draft.supplierId, status, draft.reference.trim(), draft.orderDate, draft.expectedDate, draft.notes.trim(), userId ?? null],
+    )
+    poId = res.lastInsertId as number
+  }
+  for (const line of draft.lines) {
+    if (!line.itemId || !(line.quantity > 0)) continue
+    await database.execute(
+      `
+        INSERT INTO purchase_order_items (purchase_order_id, item_id, quantity, unit_cost)
+        VALUES ($1, $2, $3, $4)
+      `,
+      [poId, line.itemId, line.quantity, line.unitCost],
+    )
+  }
+  return poId
+}
+
+export async function setPurchaseOrderStatus(id: number, status: PurchaseOrderStatus): Promise<void> {
+  const database = await getDatabase()
+  await database.execute(
+    `UPDATE purchase_orders SET status = $1, updated_at = CURRENT_TIMESTAMP WHERE id = $2`,
+    [normalizePoStatus(status), id],
+  )
+}
+
+export async function deletePurchaseOrder(id: number): Promise<void> {
+  const database = await getDatabase()
+  await database.execute('DELETE FROM purchase_orders WHERE id = $1', [id])
+}
+
+/**
+ * Receive a purchase order: for each line with a positive received quantity,
+ * record an IN inventory movement (which the stock-cache triggers apply) and
+ * update the line's received_quantity. Flips the PO to 'received' and stamps
+ * the received date. `movementDate` defaults to today.
+ */
+export async function receivePurchaseOrder(
+  id: number,
+  receipts: Array<{ lineId: number; receivedQuantity: number }>,
+  userId: number,
+  movementDate?: string,
+): Promise<void> {
+  const database = await getDatabase()
+  const po = await getPurchaseOrder(id)
+  if (!po) throw new Error('Purchase order not found.')
+  const date = movementDate ?? format(new Date(), 'yyyy-MM-dd')
+  const refLabel = po.reference.trim() || `PO #${po.id}`
+
+  for (const receipt of receipts) {
+    const line = po.lines.find((l) => l.id === receipt.lineId)
+    if (!line) continue
+    const qty = receipt.receivedQuantity
+    if (!(qty > 0)) continue
+    await saveInventoryMovement(
+      {
+        itemId: line.itemId,
+        movementDate: date,
+        movementType: 'IN',
+        notes: `Received from ${refLabel}`,
+        quantity: qty,
+        unitCost: line.unitCost,
+      },
+      userId,
+    )
+    await database.execute(
+      `UPDATE purchase_order_items SET received_quantity = received_quantity + $1, updated_at = CURRENT_TIMESTAMP WHERE id = $2`,
+      [qty, line.id],
+    )
+  }
+  await database.execute(
+    `UPDATE purchase_orders SET status = 'received', received_date = $1, updated_at = CURRENT_TIMESTAMP WHERE id = $2`,
+    [date, id],
+  )
+}
+
+export type ReorderDraftGroup = {
+  supplierId: number | null
+  supplierName: string | null
+  lines: Array<PurchaseOrderLineDraft & { itemName: string; unitLabel: string }>
+}
+
+/**
+ * Build one draft-PO group per supplier from the coverage report, containing the
+ * items whose suggested reorder quantity is positive. Items with no supplier are
+ * grouped under a null supplier. Powers "create PO from reorder suggestions".
+ */
+export async function buildReorderDraftsFromCoverage(usageWindowDays = 30): Promise<ReorderDraftGroup[]> {
+  const coverage = await getInventoryCoverage(usageWindowDays)
+  const needing = coverage.filter((c) => c.suggestedReorderQty > 0)
+  const groups = new Map<string, ReorderDraftGroup>()
+  for (const row of needing) {
+    const key = row.supplierId == null ? 'none' : String(row.supplierId)
+    let group = groups.get(key)
+    if (!group) {
+      group = { supplierId: row.supplierId, supplierName: row.supplierName, lines: [] }
+      groups.set(key, group)
+    }
+    group.lines.push({
+      itemId: row.id,
+      itemName: row.name,
+      unitLabel: row.unitLabel,
+      quantity: row.suggestedReorderQty,
+      unitCost: row.costPerUnit,
+    })
+  }
+  return [...groups.values()]
+}
+
 export type InventoryItemSummary = {
   category: string
   categoryLabel: string
@@ -4765,6 +5241,8 @@ export type InventoryCoverageRow = {
   lowStockThreshold: number
   name: string
   suggestedReorderQty: number
+  supplierId: number | null
+  supplierName: string | null
   unitLabel: string
 }
 
@@ -4781,6 +5259,8 @@ export async function getInventoryCoverage(usageWindowDays = 30): Promise<Invent
       id: number
       lowStockThreshold: number
       name: string
+      supplierId: number | null
+      supplierName: string | null
       unitLabel: string
     }>
   >(
@@ -4791,10 +5271,9 @@ export async function getInventoryCoverage(usageWindowDays = 30): Promise<Invent
         i.unit_label AS unitLabel,
         i.low_stock_threshold AS lowStockThreshold,
         i.cost_per_unit AS costPerUnit,
-        COALESCE((
-          SELECT SUM(CASE WHEN m.movement_type = 'IN' THEN m.quantity ELSE -m.quantity END)
-          FROM inventory_movements m WHERE m.item_id = i.id
-        ), 0) AS currentStock,
+        i.supplier_id AS supplierId,
+        s.name AS supplierName,
+        i.current_stock AS currentStock,
         COALESCE((
           SELECT SUM(m.quantity)
           FROM inventory_movements m
@@ -4805,6 +5284,7 @@ export async function getInventoryCoverage(usageWindowDays = 30): Promise<Invent
       FROM inventory_items i
       LEFT JOIN inventory_categories c ON c.id = i.category_id
       LEFT JOIN inventory_categories lc ON lc.code = i.category
+      LEFT JOIN suppliers s ON s.id = i.supplier_id
       WHERE i.is_active = 1
         AND COALESCE(c.code, lc.code, 'other') != 'equipment'
       ORDER BY i.name
@@ -4836,6 +5316,8 @@ export async function getInventoryCoverage(usageWindowDays = 30): Promise<Invent
       lowStockThreshold: threshold,
       name: row.name,
       suggestedReorderQty,
+      supplierId: row.supplierId != null ? Number(row.supplierId) : null,
+      supplierName: row.supplierName ?? null,
       unitLabel: row.unitLabel,
     }
   })
@@ -5443,6 +5925,50 @@ export async function getTotalInventoryValue(): Promise<number> {
   return toNumber(rows[0]?.totalValue)
 }
 
+export type TopCustomer = {
+  customerId: number
+  name: string
+  total: number
+  transactionCount: number
+}
+
+/** Top customers by SALE amount for the given month (yyyy-MM). */
+export async function getTopCustomersForMonth(monthKey: string, limit = 5): Promise<TopCustomer[]> {
+  const database = await getDatabase()
+  const rows = await database.select<
+    Array<{
+      customerId: number
+      name: string
+      total: number
+      transactionCount: number
+    }>
+  >(
+    `
+      SELECT
+        c.id AS customerId,
+        c.name AS name,
+        COALESCE(SUM(transactions.amount), 0) AS total,
+        COUNT(*) AS transactionCount
+      FROM transactions
+      JOIN transaction_types ON transaction_types.id = transactions.transaction_type_id
+      JOIN customers c ON c.id = transactions.customer_id
+      WHERE transaction_types.code = 'SALE'
+        AND substr(transactions.entry_date, 1, 7) = $1
+        AND transactions.customer_id IS NOT NULL
+      GROUP BY c.id, c.name
+      ORDER BY total DESC
+      LIMIT $2
+    `,
+    [monthKey, limit],
+  )
+  return rows.map((row) => ({
+    customerId: Number(row.customerId),
+    name: row.name,
+    total: toNumber(row.total),
+    transactionCount: Number(row.transactionCount),
+  }))
+}
+
 export async function getTransactionCountForMonth(monthKey: string): Promise<number> {
   const database = await getDatabase()
   const rows = await database.select<CountRow[]>(
@@ -5502,6 +6028,8 @@ export type PayrollSettings = {
   autoDeductCashAdvances: boolean
   cutoffDay: number
   holidayDefaultMultiplier: number
+  overtimeMultiplier: number
+  standardDayHours: number
 }
 
 export type CashAdvanceStatus = 'outstanding' | 'settled' | 'void'
@@ -5526,6 +6054,7 @@ export type CashAdvanceDraft = {
 }
 
 export type PayrollListItem = {
+  basePay: number
   cutoffDay: number
   grossPay: number
   id: number
@@ -5537,13 +6066,51 @@ export type PayrollListItem = {
   staffId: number
   status: 'paid' | 'void'
   totalAdjustments: number
+  totalDeductions: number
+  totalEarnings: number
   transactionId: number | null
 }
 
 export type PayrollAdjustmentDraft = {
   amount: number
-  kind: 'bonus' | 'deduction'
+  category: string
+  kind: AdjustmentKind
   label: string
+  quantity?: number | null
+  rate?: number | null
+  recurringId?: number | null
+  source?: AdjustmentSource
+  taxable?: boolean
+}
+
+export type PayrollAdjustment = {
+  amount: number
+  category: string
+  id: number
+  kind: AdjustmentKind
+  label: string
+  quantity: number | null
+  rate: number | null
+  recurringId: number | null
+  source: AdjustmentSource
+  taxable: boolean
+}
+
+/** A single applied adjustment line, joined with the payroll run it belongs to. */
+export type StaffAdjustmentHistoryEntry = {
+  amount: number
+  category: string
+  id: number
+  kind: AdjustmentKind
+  label: string
+  payDate: string
+  payrollId: number
+  periodEnd: string
+  periodStart: string
+  quantity: number | null
+  rate: number | null
+  source: AdjustmentSource
+  taxable: boolean
 }
 
 export type PayrollPreviewItem = {
@@ -5556,16 +6123,18 @@ export type PayrollPreviewItem = {
 }
 
 export type PayrollPreview = {
+  basePay: number
   cutoffDay: number
-  grossPay: number
   items: PayrollPreviewItem[]
+  overtimeMultiplier: number
   periodEnd: string
   periodStart: string
   staffDefaultRate: number
+  standardDayHours: number
 }
 
 export type PayrollDetail = {
-  adjustments: Array<{ amount: number; id: number; kind: 'bonus' | 'deduction'; label: string }>
+  adjustments: PayrollAdjustment[]
   items: PayrollPreviewItem[]
   payroll: PayrollListItem
 }
@@ -5578,6 +6147,41 @@ export type FinalizePayrollInput = {
   periodEnd: string
   periodStart: string
   staffId: number
+}
+
+// ─── Recurring payroll adjustments (defined per staff) ───────────────────────
+
+export type RecurringAdjustment = {
+  amount: number
+  category: string
+  endDate: string
+  hasBalance: boolean
+  id: number
+  isActive: boolean
+  kind: AdjustmentKind
+  label: string
+  notes: string
+  /** One-time: applied to the next payroll, then auto-deactivated. */
+  oneTime: boolean
+  originalBalance: number | null
+  remainingBalance: number | null
+  staffId: number
+  startDate: string
+  taxable: boolean
+}
+
+export type RecurringAdjustmentDraft = {
+  amount: number
+  category: string
+  endDate: string
+  hasBalance: boolean
+  kind: AdjustmentKind
+  label: string
+  notes: string
+  oneTime: boolean
+  originalBalance: number | null
+  startDate: string
+  taxable: boolean
 }
 
 type StaffRow = {
@@ -5806,25 +6410,37 @@ export async function getPayrollSettings(): Promise<PayrollSettings> {
       autoDeductCashAdvances: number
       cutoffDay: number
       holidayDefaultMultiplier: number
+      overtimeMultiplier: number
+      standardDayHours: number
     }>
   >(
     `
       SELECT
         cutoff_day AS cutoffDay,
         holiday_default_multiplier AS holidayDefaultMultiplier,
-        auto_deduct_cash_advances AS autoDeductCashAdvances
+        auto_deduct_cash_advances AS autoDeductCashAdvances,
+        standard_day_hours AS standardDayHours,
+        overtime_multiplier AS overtimeMultiplier
       FROM payroll_settings
       WHERE id = 1
     `,
   )
   const row = rows[0]
   if (!row) {
-    return { autoDeductCashAdvances: true, cutoffDay: 6, holidayDefaultMultiplier: 1 }
+    return {
+      autoDeductCashAdvances: true,
+      cutoffDay: 6,
+      holidayDefaultMultiplier: 1,
+      overtimeMultiplier: 1.25,
+      standardDayHours: 8,
+    }
   }
   return {
     autoDeductCashAdvances: Boolean(row.autoDeductCashAdvances),
     cutoffDay: Number(row.cutoffDay),
     holidayDefaultMultiplier: toNumber(row.holidayDefaultMultiplier),
+    overtimeMultiplier: toNumber(row.overtimeMultiplier),
+    standardDayHours: toNumber(row.standardDayHours),
   }
 }
 
@@ -5836,16 +6452,30 @@ export async function savePayrollSettings(input: PayrollSettings): Promise<void>
   if (input.holidayDefaultMultiplier < 0) {
     throw new Error('Holiday multiplier cannot be negative.')
   }
+  if (input.standardDayHours <= 0) {
+    throw new Error('Standard day hours must be greater than zero.')
+  }
+  if (input.overtimeMultiplier < 0) {
+    throw new Error('Overtime multiplier cannot be negative.')
+  }
   await database.execute(
     `
       UPDATE payroll_settings
       SET
         cutoff_day = $1,
         holiday_default_multiplier = $2,
-        auto_deduct_cash_advances = $3
+        auto_deduct_cash_advances = $3,
+        standard_day_hours = $4,
+        overtime_multiplier = $5
       WHERE id = 1
     `,
-    [input.cutoffDay, input.holidayDefaultMultiplier, input.autoDeductCashAdvances ? 1 : 0],
+    [
+      input.cutoffDay,
+      input.holidayDefaultMultiplier,
+      input.autoDeductCashAdvances ? 1 : 0,
+      input.standardDayHours,
+      input.overtimeMultiplier,
+    ],
   )
 }
 
@@ -6065,15 +6695,17 @@ export async function buildPayrollPreview(
     status: r.status,
   }))
 
-  const grossPay = roundMoney(items.reduce((s, it) => s + it.payAmount, 0))
+  const basePay = roundMoney(items.reduce((s, it) => s + it.payAmount, 0))
 
   return {
+    basePay,
     cutoffDay: settings.cutoffDay,
-    grossPay,
     items,
+    overtimeMultiplier: settings.overtimeMultiplier,
     periodEnd,
     periodStart,
     staffDefaultRate: staff.defaultRate,
+    standardDayHours: settings.standardDayHours,
   }
 }
 
@@ -6125,22 +6757,52 @@ export async function finalizePayroll(input: FinalizePayrollInput, userId: numbe
     }
   }
 
-  let bonusTotal = 0
-  let deductionTotal = 0
+  // Normalise the incoming line items. Cash advances selected above are
+  // appended as deduction lines so the payslip records them like any other
+  // deduction (and so a later void can revert them alongside the rest).
+  const adjustmentLines: PayrollAdjustmentDraft[] = []
   for (const adj of input.adjustments) {
     if (!adj.label.trim()) continue
     if (adj.amount < 0) throw new Error('Adjustment amounts must be zero or positive.')
-    if (adj.kind === 'bonus') bonusTotal += adj.amount
-    else deductionTotal += adj.amount
+    adjustmentLines.push({
+      amount: roundMoney(adj.amount),
+      category: adj.category?.trim() || 'other',
+      kind: adj.kind,
+      label: adj.label.trim(),
+      quantity: adj.quantity ?? null,
+      rate: adj.rate ?? null,
+      recurringId: adj.recurringId ?? null,
+      source: adj.source ?? 'manual',
+      taxable: adj.taxable ?? false,
+    })
   }
   for (const adv of cashAdvancesToSettle) {
-    deductionTotal += adv.amount
+    adjustmentLines.push({
+      amount: roundMoney(adv.amount),
+      category: 'cash_advance',
+      kind: 'deduction',
+      label: `Cash advance · ${adv.advanceDate}`,
+      quantity: null,
+      rate: null,
+      recurringId: null,
+      source: 'cash_advance',
+      taxable: false,
+    })
   }
-  bonusTotal = roundMoney(bonusTotal)
+
+  let earningTotal = 0
+  let deductionTotal = 0
+  for (const line of adjustmentLines) {
+    if (line.kind === 'earning') earningTotal += line.amount
+    else deductionTotal += line.amount
+  }
+  earningTotal = roundMoney(earningTotal)
   deductionTotal = roundMoney(deductionTotal)
-  const netPay = roundMoney(preview.grossPay + bonusTotal - deductionTotal)
+  const basePay = preview.basePay
+  const grossPay = roundMoney(basePay + earningTotal)
+  const netPay = roundMoney(grossPay - deductionTotal)
   if (netPay < 0) {
-    throw new Error('Net pay cannot be negative. Reduce deductions or increase bonuses.')
+    throw new Error('Net pay cannot be negative. Reduce deductions or increase earnings.')
   }
 
   const staff = await getStaff(input.staffId)
@@ -6175,13 +6837,14 @@ export async function finalizePayroll(input: FinalizePayrollInput, userId: numbe
       throw new Error('Failed to record salary expense transaction.')
     }
 
-    const totalAdjustments = roundMoney(bonusTotal - deductionTotal)
+    const totalAdjustments = roundMoney(earningTotal - deductionTotal)
     const payrollResult = await database.execute(
       `
         INSERT INTO staff_payrolls (
           staff_id, period_start, period_end, pay_date, cutoff_day,
-          gross_pay, total_adjustments, net_pay, status, transaction_id, notes
-        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, 'paid', $9, $10)
+          gross_pay, total_adjustments, net_pay, status, transaction_id, notes,
+          base_pay, total_earnings, total_deductions
+        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, 'paid', $9, $10, $11, $12, $13)
       `,
       [
         input.staffId,
@@ -6189,11 +6852,14 @@ export async function finalizePayroll(input: FinalizePayrollInput, userId: numbe
         input.periodEnd,
         input.payDate,
         preview.cutoffDay,
-        preview.grossPay,
+        grossPay,
         totalAdjustments,
         netPay,
         transactionId,
         input.notes.trim(),
+        basePay,
+        earningTotal,
+        deductionTotal,
       ],
     )
     payrollId = typeof payrollResult.lastInsertId === 'number' ? payrollResult.lastInsertId : null
@@ -6220,25 +6886,54 @@ export async function finalizePayroll(input: FinalizePayrollInput, userId: numbe
       )
     }
 
-    for (const adj of input.adjustments) {
-      if (!adj.label.trim()) continue
+    for (const line of adjustmentLines) {
       await database.execute(
         `
-          INSERT INTO staff_payroll_adjustments (payroll_id, label, kind, amount)
-          VALUES ($1, $2, $3, $4)
+          INSERT INTO staff_payroll_adjustments (
+            payroll_id, label, kind, category, amount, taxable, quantity, rate, source, recurring_id
+          ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
         `,
-        [payrollId, adj.label.trim(), adj.kind, adj.amount],
+        [
+          payrollId,
+          line.label,
+          line.kind,
+          line.category,
+          line.amount,
+          line.taxable ? 1 : 0,
+          line.quantity ?? null,
+          line.rate ?? null,
+          line.source ?? 'manual',
+          line.recurringId ?? null,
+        ],
       )
+      // Draw down a recurring loan/obligation balance as it is applied, and
+      // deactivate it once fully paid so it stops appearing on future payrolls.
+      // A one-time item is retired after this single application; voiding the
+      // payroll reactivates it (see voidPayroll).
+      if (line.recurringId) {
+        await database.execute(
+          `
+            UPDATE staff_recurring_adjustments
+            SET
+              remaining_balance = CASE
+                WHEN has_balance = 1 THEN MAX(0, COALESCE(remaining_balance, 0) - $1)
+                ELSE remaining_balance
+              END,
+              is_active = CASE
+                WHEN one_time = 1 THEN 0
+                WHEN has_balance = 1 AND COALESCE(remaining_balance, 0) - $1 <= 0 THEN 0
+                ELSE is_active
+              END,
+              updated_by = $2,
+              updated_at = CURRENT_TIMESTAMP
+            WHERE id = $3
+          `,
+          [line.amount, userId, line.recurringId],
+        )
+      }
     }
 
     for (const adv of cashAdvancesToSettle) {
-      await database.execute(
-        `
-          INSERT INTO staff_payroll_adjustments (payroll_id, label, kind, amount)
-          VALUES ($1, $2, 'deduction', $3)
-        `,
-        [payrollId, `Cash advance · ${adv.advanceDate}`, adv.amount],
-      )
       await database.execute(
         `
           UPDATE staff_cash_advances
@@ -6276,46 +6971,46 @@ export async function finalizePayroll(input: FinalizePayrollInput, userId: numbe
   }
 }
 
-export async function listPayrolls(staffId: number): Promise<PayrollListItem[]> {
-  const database = await getDatabase()
-  const rows = await database.select<
-    Array<{
-      cutoffDay: number
-      grossPay: number
-      id: number
-      netPay: number
-      notes: string
-      payDate: string
-      periodEnd: string
-      periodStart: string
-      staffId: number
-      status: string
-      totalAdjustments: number
-      transactionId: number | null
-    }>
-  >(
-    `
-      SELECT
-        id,
-        staff_id AS staffId,
-        period_start AS periodStart,
-        period_end AS periodEnd,
-        pay_date AS payDate,
-        cutoff_day AS cutoffDay,
-        gross_pay AS grossPay,
-        total_adjustments AS totalAdjustments,
-        net_pay AS netPay,
-        status,
-        transaction_id AS transactionId,
-        notes
-      FROM staff_payrolls
-      WHERE staff_id = $1
-      ORDER BY period_end DESC, id DESC
-    `,
-    [staffId],
-  )
+type PayrollHeaderRow = {
+  basePay: number
+  cutoffDay: number
+  grossPay: number
+  id: number
+  netPay: number
+  notes: string
+  payDate: string
+  periodEnd: string
+  periodStart: string
+  staffId: number
+  status: string
+  totalAdjustments: number
+  totalDeductions: number
+  totalEarnings: number
+  transactionId: number | null
+}
 
-  return rows.map((r) => ({
+/** Shared column list for reading a staff_payrolls header row into PayrollListItem. */
+const PAYROLL_HEADER_COLUMNS = `
+  id,
+  staff_id AS staffId,
+  period_start AS periodStart,
+  period_end AS periodEnd,
+  pay_date AS payDate,
+  cutoff_day AS cutoffDay,
+  base_pay AS basePay,
+  gross_pay AS grossPay,
+  total_earnings AS totalEarnings,
+  total_deductions AS totalDeductions,
+  total_adjustments AS totalAdjustments,
+  net_pay AS netPay,
+  status,
+  transaction_id AS transactionId,
+  notes
+`
+
+function payrollHeaderRowToItem(r: PayrollHeaderRow): PayrollListItem {
+  return {
+    basePay: toNumber(r.basePay),
     cutoffDay: Number(r.cutoffDay),
     grossPay: toNumber(r.grossPay),
     id: r.id,
@@ -6327,8 +7022,25 @@ export async function listPayrolls(staffId: number): Promise<PayrollListItem[]> 
     staffId: r.staffId,
     status: r.status as 'paid' | 'void',
     totalAdjustments: toNumber(r.totalAdjustments),
+    totalDeductions: toNumber(r.totalDeductions),
+    totalEarnings: toNumber(r.totalEarnings),
     transactionId: r.transactionId == null ? null : Number(r.transactionId),
-  }))
+  }
+}
+
+export async function listPayrolls(staffId: number): Promise<PayrollListItem[]> {
+  const database = await getDatabase()
+  const rows = await database.select<PayrollHeaderRow[]>(
+    `
+      SELECT ${PAYROLL_HEADER_COLUMNS}
+      FROM staff_payrolls
+      WHERE staff_id = $1
+      ORDER BY period_end DESC, id DESC
+    `,
+    [staffId],
+  )
+
+  return rows.map(payrollHeaderRowToItem)
 }
 
 export type AttendanceDaySummary = {
@@ -6494,23 +7206,7 @@ export async function listAttendanceForDate(date: string): Promise<AttendanceEnt
 export async function listPayrollsByPayDate(payDate: string): Promise<AllStaffPayrollItem[]> {
   const database = await getDatabase()
   const rows = await database.select<
-    Array<{
-      cutoffDay: number
-      firstName: string
-      grossPay: number
-      id: number
-      lastName: string
-      middleName: string
-      netPay: number
-      notes: string
-      payDate: string
-      periodEnd: string
-      periodStart: string
-      staffId: number
-      status: string
-      totalAdjustments: number
-      transactionId: number | null
-    }>
+    Array<PayrollHeaderRow & { firstName: string; lastName: string; middleName: string }>
   >(
     `
       SELECT
@@ -6520,7 +7216,10 @@ export async function listPayrollsByPayDate(payDate: string): Promise<AllStaffPa
         p.period_end AS periodEnd,
         p.pay_date AS payDate,
         p.cutoff_day AS cutoffDay,
+        p.base_pay AS basePay,
         p.gross_pay AS grossPay,
+        p.total_earnings AS totalEarnings,
+        p.total_deductions AS totalDeductions,
         p.total_adjustments AS totalAdjustments,
         p.net_pay AS netPay,
         p.status,
@@ -6539,55 +7238,17 @@ export async function listPayrollsByPayDate(payDate: string): Promise<AllStaffPa
   return rows.map((r) => {
     const parts = [r.firstName, r.middleName, r.lastName].filter((p) => p && p.trim().length > 0)
     return {
-      cutoffDay: Number(r.cutoffDay),
-      grossPay: toNumber(r.grossPay),
-      id: r.id,
-      netPay: toNumber(r.netPay),
-      notes: r.notes,
-      payDate: r.payDate,
-      periodEnd: r.periodEnd,
-      periodStart: r.periodStart,
+      ...payrollHeaderRowToItem(r),
       staffDisplayName: parts.join(' '),
-      staffId: r.staffId,
-      status: r.status as 'paid' | 'void',
-      totalAdjustments: toNumber(r.totalAdjustments),
-      transactionId: r.transactionId == null ? null : Number(r.transactionId),
     }
   })
 }
 
 export async function getPayrollDetail(payrollId: number): Promise<PayrollDetail | null> {
   const database = await getDatabase()
-  const payrollRows = await database.select<
-    Array<{
-      cutoffDay: number
-      grossPay: number
-      id: number
-      netPay: number
-      notes: string
-      payDate: string
-      periodEnd: string
-      periodStart: string
-      staffId: number
-      status: string
-      totalAdjustments: number
-      transactionId: number | null
-    }>
-  >(
+  const payrollRows = await database.select<PayrollHeaderRow[]>(
     `
-      SELECT
-        id,
-        staff_id AS staffId,
-        period_start AS periodStart,
-        period_end AS periodEnd,
-        pay_date AS payDate,
-        cutoff_day AS cutoffDay,
-        gross_pay AS grossPay,
-        total_adjustments AS totalAdjustments,
-        net_pay AS netPay,
-        status,
-        transaction_id AS transactionId,
-        notes
+      SELECT ${PAYROLL_HEADER_COLUMNS}
       FROM staff_payrolls
       WHERE id = $1
     `,
@@ -6596,20 +7257,7 @@ export async function getPayrollDetail(payrollId: number): Promise<PayrollDetail
   const pr = payrollRows[0]
   if (!pr) return null
 
-  const payroll: PayrollListItem = {
-    cutoffDay: Number(pr.cutoffDay),
-    grossPay: toNumber(pr.grossPay),
-    id: pr.id,
-    netPay: toNumber(pr.netPay),
-    notes: pr.notes,
-    payDate: pr.payDate,
-    periodEnd: pr.periodEnd,
-    periodStart: pr.periodStart,
-    staffId: pr.staffId,
-    status: pr.status as 'paid' | 'void',
-    totalAdjustments: toNumber(pr.totalAdjustments),
-    transactionId: pr.transactionId == null ? null : Number(pr.transactionId),
-  }
+  const payroll = payrollHeaderRowToItem(pr)
 
   const items = await database.select<PayrollPreviewItem[]>(
     `
@@ -6628,10 +7276,23 @@ export async function getPayrollDetail(payrollId: number): Promise<PayrollDetail
   )
 
   const adjRows = await database.select<
-    Array<{ amount: number; id: number; kind: string; label: string }>
+    Array<{
+      amount: number
+      category: string
+      id: number
+      kind: string
+      label: string
+      quantity: number | null
+      rate: number | null
+      recurringId: number | null
+      source: string
+      taxable: number
+    }>
   >(
     `
-      SELECT id, label, kind, amount
+      SELECT
+        id, label, kind, category, amount, taxable, quantity, rate, source,
+        recurring_id AS recurringId
       FROM staff_payroll_adjustments
       WHERE payroll_id = $1
       ORDER BY id ASC
@@ -6639,14 +7300,77 @@ export async function getPayrollDetail(payrollId: number): Promise<PayrollDetail
     [payrollId],
   )
 
-  const adjustments = adjRows.map((a) => ({
+  const adjustments: PayrollAdjustment[] = adjRows.map((a) => ({
     amount: toNumber(a.amount),
+    category: a.category,
     id: a.id,
-    kind: a.kind as 'bonus' | 'deduction',
+    kind: a.kind as AdjustmentKind,
     label: a.label,
+    quantity: a.quantity == null ? null : toNumber(a.quantity),
+    rate: a.rate == null ? null : toNumber(a.rate),
+    recurringId: a.recurringId == null ? null : Number(a.recurringId),
+    source: a.source as AdjustmentSource,
+    taxable: Boolean(a.taxable),
   }))
 
   return { adjustments, items, payroll }
+}
+
+/**
+ * All adjustment lines actually applied to a staff member across their paid
+ * payroll runs, newest run first. Voided runs are excluded — their lines never
+ * affected pay. Both the `payroll_id` and `staff_id` join paths are indexed.
+ */
+export async function listStaffAdjustmentHistory(
+  staffId: number,
+): Promise<StaffAdjustmentHistoryEntry[]> {
+  const database = await getDatabase()
+  const rows = await database.select<
+    Array<{
+      amount: number
+      category: string
+      id: number
+      kind: string
+      label: string
+      payDate: string
+      payrollId: number
+      periodEnd: string
+      periodStart: string
+      quantity: number | null
+      rate: number | null
+      source: string
+      taxable: number
+    }>
+  >(
+    `
+      SELECT
+        a.id, a.label, a.kind, a.category, a.amount, a.taxable, a.quantity, a.rate, a.source,
+        p.id AS payrollId,
+        p.pay_date AS payDate,
+        p.period_start AS periodStart,
+        p.period_end AS periodEnd
+      FROM staff_payroll_adjustments a
+      JOIN staff_payrolls p ON p.id = a.payroll_id
+      WHERE p.staff_id = $1 AND p.status = 'paid'
+      ORDER BY p.pay_date DESC, p.id DESC, a.id ASC
+    `,
+    [staffId],
+  )
+  return rows.map((r) => ({
+    amount: toNumber(r.amount),
+    category: r.category,
+    id: r.id,
+    kind: r.kind as AdjustmentKind,
+    label: r.label,
+    payDate: r.payDate,
+    payrollId: r.payrollId,
+    periodEnd: r.periodEnd,
+    periodStart: r.periodStart,
+    quantity: r.quantity == null ? null : toNumber(r.quantity),
+    rate: r.rate == null ? null : toNumber(r.rate),
+    source: r.source as AdjustmentSource,
+    taxable: Boolean(r.taxable),
+  }))
 }
 
 export async function voidPayroll(payrollId: number): Promise<void> {
@@ -6663,6 +7387,29 @@ export async function voidPayroll(payrollId: number): Promise<void> {
   // `execute()` calls (pooled connections), so we delete child rows first and
   // flip the payroll to `void` at the end; if any step fails mid-way the
   // caller can retry safely because each DELETE/UPDATE is idempotent.
+
+  // Restore any recurring balances this payroll drew down (e.g. a loan) so the
+  // obligation is reinstated, and reactivate items that were auto-closed — both
+  // fully-paid balance items and one-time items consumed by this run. Must run
+  // before the adjustments are deleted below.
+  for (const adj of detail.adjustments) {
+    if (adj.recurringId == null) continue
+    await database.execute(
+      `
+        UPDATE staff_recurring_adjustments
+        SET
+          remaining_balance = CASE
+            WHEN has_balance = 1 THEN COALESCE(remaining_balance, 0) + $1
+            ELSE remaining_balance
+          END,
+          is_active = CASE WHEN has_balance = 1 OR one_time = 1 THEN 1 ELSE is_active END,
+          updated_at = CURRENT_TIMESTAMP
+        WHERE id = $2
+      `,
+      [adj.amount, adj.recurringId],
+    )
+  }
+
   await database.execute(`DELETE FROM staff_payroll_items WHERE payroll_id = $1`, [payrollId])
   await database.execute(`DELETE FROM staff_payroll_adjustments WHERE payroll_id = $1`, [payrollId])
   await database.execute(
@@ -6690,6 +7437,242 @@ export async function voidPayroll(payrollId: number): Promise<void> {
     `,
     [payrollId],
   )
+}
+
+// ─── Recurring payroll adjustments ───────────────────────────────────────────
+
+type RecurringAdjustmentRow = {
+  amount: number
+  category: string
+  endDate: string
+  hasBalance: number
+  id: number
+  isActive: number
+  kind: string
+  label: string
+  notes: string
+  oneTime: number
+  originalBalance: number | null
+  remainingBalance: number | null
+  staffId: number
+  startDate: string
+  taxable: number
+}
+
+function recurringRowToModel(row: RecurringAdjustmentRow): RecurringAdjustment {
+  return {
+    amount: toNumber(row.amount),
+    category: row.category,
+    endDate: row.endDate,
+    hasBalance: Boolean(row.hasBalance),
+    id: row.id,
+    isActive: Boolean(row.isActive),
+    kind: row.kind as AdjustmentKind,
+    label: row.label,
+    notes: row.notes,
+    oneTime: Boolean(row.oneTime),
+    originalBalance: row.originalBalance == null ? null : toNumber(row.originalBalance),
+    remainingBalance: row.remainingBalance == null ? null : toNumber(row.remainingBalance),
+    staffId: row.staffId,
+    startDate: row.startDate,
+    taxable: Boolean(row.taxable),
+  }
+}
+
+const RECURRING_COLUMNS = `
+  id,
+  staff_id AS staffId,
+  label,
+  kind,
+  category,
+  amount,
+  taxable,
+  is_active AS isActive,
+  has_balance AS hasBalance,
+  original_balance AS originalBalance,
+  remaining_balance AS remainingBalance,
+  start_date AS startDate,
+  end_date AS endDate,
+  notes,
+  one_time AS oneTime
+`
+
+export async function listStaffRecurringAdjustments(
+  staffId: number,
+  filters?: { activeOnly?: boolean },
+): Promise<RecurringAdjustment[]> {
+  const database = await getDatabase()
+  const conditions = ['staff_id = $1']
+  if (filters?.activeOnly) {
+    // Active, and — for balance-tracked items — not yet fully paid off.
+    conditions.push(`is_active = 1 AND (has_balance = 0 OR COALESCE(remaining_balance, 0) > 0)`)
+  }
+  const rows = await database.select<RecurringAdjustmentRow[]>(
+    `
+      SELECT ${RECURRING_COLUMNS}
+      FROM staff_recurring_adjustments
+      WHERE ${conditions.join(' AND ')}
+      ORDER BY kind ASC, label COLLATE NOCASE ASC
+    `,
+    [staffId],
+  )
+  return rows.map(recurringRowToModel)
+}
+
+function normalizeRecurringDraft(input: RecurringAdjustmentDraft): {
+  amount: number
+  category: string
+  endDate: string
+  hasBalance: number
+  kind: AdjustmentKind
+  label: string
+  notes: string
+  oneTime: number
+  originalBalance: number | null
+  startDate: string
+  taxable: number
+} {
+  const label = input.label.trim()
+  if (!label) throw new Error('A label is required.')
+  if (input.kind !== 'earning' && input.kind !== 'deduction') {
+    throw new Error('Recurring item must be an earning or a deduction.')
+  }
+  if (!Number.isFinite(input.amount) || input.amount < 0) {
+    throw new Error('Amount must be zero or a positive number.')
+  }
+  // A one-time item is applied once and retired, so a running balance is
+  // meaningless for it — the two modes are mutually exclusive.
+  const oneTime = input.oneTime ? 1 : 0
+  const hasBalance = oneTime ? 0 : input.hasBalance ? 1 : 0
+  let originalBalance: number | null = null
+  if (hasBalance) {
+    if (input.originalBalance == null || !Number.isFinite(input.originalBalance) || input.originalBalance <= 0) {
+      throw new Error('A balance-tracked item needs a total balance greater than zero.')
+    }
+    originalBalance = roundMoney(input.originalBalance)
+  }
+  return {
+    amount: roundMoney(input.amount),
+    category: input.category?.trim() || 'other',
+    endDate: input.endDate.trim(),
+    hasBalance,
+    kind: input.kind,
+    label,
+    notes: input.notes.trim(),
+    oneTime,
+    originalBalance,
+    startDate: input.startDate.trim(),
+    taxable: input.taxable ? 1 : 0,
+  }
+}
+
+export async function saveStaffRecurringAdjustment(
+  staffId: number,
+  input: RecurringAdjustmentDraft,
+  userId: number,
+  recurringId?: number,
+): Promise<void> {
+  const database = await getDatabase()
+  const v = normalizeRecurringDraft(input)
+
+  if (recurringId) {
+    // Preserve any progress already made against a balance: when the total is
+    // unchanged keep the remaining balance; otherwise reset it to the new total.
+    const existing = await database.select<Array<{ originalBalance: number | null }>>(
+      `SELECT original_balance AS originalBalance FROM staff_recurring_adjustments WHERE id = $1 AND staff_id = $2`,
+      [recurringId, staffId],
+    )
+    if (existing.length === 0) throw new Error('Recurring item not found.')
+    const prevOriginal = existing[0]?.originalBalance
+    const keepRemaining =
+      v.hasBalance === 1 && prevOriginal != null && roundMoney(toNumber(prevOriginal)) === v.originalBalance
+    await database.execute(
+      `
+        UPDATE staff_recurring_adjustments SET
+          label = $1,
+          kind = $2,
+          category = $3,
+          amount = $4,
+          taxable = $5,
+          has_balance = $6,
+          original_balance = $7,
+          remaining_balance = CASE WHEN $8 = 1 THEN remaining_balance ELSE $7 END,
+          start_date = $9,
+          end_date = $10,
+          notes = $11,
+          one_time = $15,
+          updated_by = $12,
+          updated_at = CURRENT_TIMESTAMP
+        WHERE id = $13 AND staff_id = $14
+      `,
+      [
+        v.label,
+        v.kind,
+        v.category,
+        v.amount,
+        v.taxable,
+        v.hasBalance,
+        v.originalBalance,
+        keepRemaining ? 1 : 0,
+        v.startDate,
+        v.endDate,
+        v.notes,
+        userId,
+        recurringId,
+        staffId,
+        v.oneTime,
+      ],
+    )
+    return
+  }
+
+  await database.execute(
+    `
+      INSERT INTO staff_recurring_adjustments (
+        staff_id, label, kind, category, amount, taxable, is_active,
+        has_balance, original_balance, remaining_balance, start_date, end_date,
+        notes, created_by, updated_by, one_time
+      ) VALUES ($1, $2, $3, $4, $5, $6, 1, $7, $8, $8, $9, $10, $11, $12, $12, $13)
+    `,
+    [
+      staffId,
+      v.label,
+      v.kind,
+      v.category,
+      v.amount,
+      v.taxable,
+      v.hasBalance,
+      v.originalBalance,
+      v.startDate,
+      v.endDate,
+      v.notes,
+      userId,
+      v.oneTime,
+    ],
+  )
+}
+
+export async function setRecurringAdjustmentActive(
+  recurringId: number,
+  active: boolean,
+  userId: number,
+): Promise<void> {
+  const database = await getDatabase()
+  await database.execute(
+    `
+      UPDATE staff_recurring_adjustments
+      SET is_active = $1, updated_by = $2, updated_at = CURRENT_TIMESTAMP
+      WHERE id = $3
+    `,
+    [active ? 1 : 0, userId, recurringId],
+  )
+}
+
+export async function deleteStaffRecurringAdjustment(recurringId: number): Promise<void> {
+  const database = await getDatabase()
+  // Historical payroll adjustments keep their snapshot (recurring_id FK is
+  // ON DELETE SET NULL), so removing the definition never rewrites past pay.
+  await database.execute(`DELETE FROM staff_recurring_adjustments WHERE id = $1`, [recurringId])
 }
 
 // ─── Cash Advances ───────────────────────────────────────────────────────────
@@ -7138,6 +8121,30 @@ export async function resetAllData(): Promise<void> {
       )
     `)
 
+    // Clear the sync deletion log. Every DELETE above fires the per-table
+    // tombstone trigger, so without this a reset would leave one tombstone per
+    // wiped row (and keep every tombstone from previous resets), which then get
+    // pushed as phantom deletions on the next sync. Purging here — after all the
+    // deletes have run — makes a reset a genuine fresh start.
+    await database.execute('DELETE FROM sync_tombstones')
+
+    // Prepare sync so this now-empty database RE-DOWNLOADS the cloud data on the
+    // next sync instead of pushing its emptiness up:
+    //  - rewind the pull high-water (last_pulled_at → NULL) so the next pull
+    //    re-fetches the entire cloud dataset and repopulates this device;
+    //  - raise `reset_pending` so that first sync is PULL-ONLY (the push is
+    //    skipped until the pull has restored the data — see syncBusiness).
+    // The device stays bootstrapped with its role, so sync keeps running
+    // automatically; no manual re-setup is needed.
+    await database.execute(
+      `UPDATE sync_state SET value = NULL
+       WHERE key IN ('last_pulled_at', 'last_synced_at', 'last_error')`,
+    )
+    await database.execute(
+      `INSERT INTO sync_state (key, value) VALUES ('reset_pending', '1')
+       ON CONFLICT(key) DO UPDATE SET value = '1'`,
+    )
+
     // Reset AUTOINCREMENT counters for cleared tables so new rows start at 1.
     await database.execute(`
       DELETE FROM sqlite_sequence
@@ -7157,7 +8164,8 @@ export async function resetAllData(): Promise<void> {
         'customers',
         'incident_reports',
         'income_share_snapshots',
-        'income_share_monthly_versions'
+        'income_share_monthly_versions',
+        'sync_tombstones'
       )
     `)
 

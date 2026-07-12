@@ -31,6 +31,7 @@ import { toast } from "sonner"
 import { useAuth } from "../../auth/use-auth"
 import { BackupImportDialog } from "../../backup/backup-import-dialog"
 import { exportActiveBusinessToJson } from "../../backup/backup-export"
+import { SyncSettingsSection } from "../../sync/components/sync-settings-section"
 import {
   loadAppSettings,
   saveAppSettings,
@@ -242,6 +243,10 @@ export function SettingsPage() {
     setJsonExportMessage(null)
     try {
       const result = await exportActiveBusinessToJson()
+      if (result.status === "cancelled") {
+        setJsonExportMessage("Export cancelled.")
+        return
+      }
       const totalRows = Object.values(result.counts).reduce(
         (acc, n) => acc + (typeof n === "number" ? n : 0),
         0,
@@ -264,7 +269,11 @@ export function SettingsPage() {
     if (!canManagePayrollSettings) return
     setPayrollSettingsSaving(true)
     try {
+      // Preserve fields this form doesn't edit (overtime multiplier, standard
+      // day hours) by merging them from the persisted settings.
+      const current = await getPayrollSettings()
       await savePayrollSettings({
+        ...current,
         autoDeductCashAdvances,
         cutoffDay: payrollCutoffDay,
         holidayDefaultMultiplier: holidayMultiplier,
@@ -634,6 +643,7 @@ export function SettingsPage() {
             </label>
 
             {/* Claude key */}
+            {(assistantSettings.provider === 'claude' || assistantSettings.provider === 'auto') && (
             <label className="block space-y-1.5">
               <span className="text-xs font-medium text-[var(--muted)] uppercase tracking-wider">Claude API Key</span>
               <div className="relative">
@@ -659,8 +669,10 @@ export function SettingsPage() {
                 value={assistantSettings.models.claude}
               />
             </label>
+            )}
 
             {/* GPT key */}
+            {(assistantSettings.provider === 'gpt' || assistantSettings.provider === 'auto') && (
             <label className="block space-y-1.5">
               <span className="text-xs font-medium text-[var(--muted)] uppercase tracking-wider">OpenAI (GPT) API Key</span>
               <div className="relative">
@@ -686,8 +698,10 @@ export function SettingsPage() {
                 value={assistantSettings.models.gpt}
               />
             </label>
+            )}
 
             {/* Gemini key */}
+            {(assistantSettings.provider === 'gemini' || assistantSettings.provider === 'auto') && (
             <div className="space-y-1.5">
               <span className="text-xs font-medium text-[var(--muted)] uppercase tracking-wider">Gemini (Google) API Key</span>
               <div className="relative">
@@ -751,6 +765,7 @@ export function SettingsPage() {
                 <p className="text-[10px] text-[var(--muted)]">{geminiModels.length} models loaded from your API key.</p>
               )}
             </div>
+            )}
 
             {assistantTestResult && (
               <span className={`inline-flex items-center gap-1 text-xs font-medium ${assistantTestResult.ok ? 'text-emerald-500' : 'text-red-500'}`}>
@@ -971,10 +986,8 @@ export function SettingsPage() {
                 <h2 className="text-sm font-semibold">Loyalty</h2>
               </div>
               <p className="mt-1 text-xs leading-relaxed text-[var(--muted)]">
-                Customize the loyalty card. By default, 1 load equals 8 kg — adjust this to
-                match how you charge. The free-load threshold controls how many paid loads
-                a customer needs before earning a free one. Loyalty must be enabled per
-                customer on the Customers page.
+                Set the load size and how many paid loads earn a free one.
+                Loyalty must be enabled per customer on the Customers page.
               </p>
             </div>
             {loyaltySettingsLoading ? (
@@ -1041,11 +1054,9 @@ export function SettingsPage() {
               <h2 className="text-sm font-semibold">Backup &amp; Sync</h2>
             </div>
             <p className="mt-1 text-xs leading-relaxed text-[var(--muted)]">
-              Export every transaction, customer, staff record, inventory item,
-              and incident report from this business as a single JSON file you
-              can copy to another device. The importer skips identical rows and
-              asks you per row whether to overwrite anything that conflicts.
-              User accounts and permissions are intentionally not included.
+              Export this business's data as a single JSON file to move it
+              to another device. Importing skips duplicates and asks before
+              overwriting; user accounts aren't included.
             </p>
           </div>
           <div className="w-full max-w-[480px] space-y-3 md:justify-self-end">
@@ -1083,6 +1094,9 @@ export function SettingsPage() {
             </p>
           </div>
         </div>
+
+        {/* Device sync (cloud) */}
+        <SyncSettingsSection />
 
         {/* Database backup */}
         <div className="grid grid-cols-1 gap-x-10 gap-y-4 py-8 md:grid-cols-[280px_1fr]">
@@ -1220,10 +1234,9 @@ export function SettingsPage() {
                 <h2 className="text-sm font-semibold text-red-500">Danger zone</h2>
               </div>
               <p className="mt-1 text-xs leading-relaxed text-[var(--muted)]">
-                Permanently delete every transaction, customer, staff member,
-                inventory item, incident report, and non-admin user. Your admin
-                account and the app's master data will be kept. This cannot be
-                undone — export a backup first.
+                Permanently delete all business data and non-admin users; your
+                admin account and master data are kept. This can't be undone —
+                export a backup first.
               </p>
             </div>
             <div className="w-full max-w-[480px] md:justify-self-end">
@@ -1321,10 +1334,9 @@ export function SettingsPage() {
       <BackupImportDialog
         key={importRefreshKey}
         onApplied={() => {
-          // Bump the key so the next time the dialog is reopened it starts
-          // fresh; also nudge any other in-memory caches by reloading the
-          // settings the user can see on this page.
-          setImportRefreshKey((k) => k + 1)
+          // Nudge any in-memory caches by reloading the settings the user can
+          // see on this page. Do NOT remount the dialog here — bumping its key
+          // mid-apply would unmount the summary screen before it renders.
           void Promise.all([
             getLoyaltySettings(),
             getPayrollSettings(),
@@ -1338,7 +1350,11 @@ export function SettingsPage() {
             /* refreshing the visible settings is best-effort */
           })
         }}
-        onClose={() => setImportDialogOpen(false)}
+        onClose={() => {
+          setImportDialogOpen(false)
+          // Remount on close so the next open starts from a fresh pick step.
+          setImportRefreshKey((k) => k + 1)
+        }}
         open={importDialogOpen}
       />
     </section>

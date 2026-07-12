@@ -8,6 +8,8 @@ import {
   BarChart,
   CartesianGrid,
   Legend,
+  Line,
+  LineChart,
   ResponsiveContainer,
   Tooltip,
   XAxis,
@@ -20,33 +22,43 @@ import {
   Box,
   CreditCard,
   FileText,
+  Package,
   Receipt,
   TrendingDown,
   TrendingUp,
+  Users,
   Wrench,
 } from 'lucide-react'
 import { useNavigate } from 'react-router-dom'
 import { MonthPicker } from '../../../components/month-picker'
+import { LowStockWidget } from '../../inventory/components/low-stock-widget'
 import { formatCurrency, formatMonthLabel } from '../../../lib/format'
 import {
   getDashboardData,
   getLowStockItems,
   getRecentIncidents,
   getRecentTransactions,
+  getTopCustomersForMonth,
+  getTotalInventoryValue,
+  listPayrollPayDateSummaries,
   type DashboardData,
   type IncidentReport,
   type LedgerTransaction,
   type LowStockItem,
+  type TopCustomer,
 } from '../../../lib/db/repository'
 
 type LoadState =
   | { status: 'loading' }
   | {
       dashboard: DashboardData
+      laborCost: number
       lowStockItems: LowStockItem[]
       recentIncidents: IncidentReport[]
       recentTransactions: LedgerTransaction[]
       status: 'ready'
+      topCustomers: TopCustomer[]
+      totalInventoryValue: number
     }
   | { message: string; status: 'error' }
 
@@ -82,6 +94,9 @@ function currencyFormatter(value: import('recharts/types/component/DefaultToolti
   return [formatCurrency(Number(value) || 0), String(name ?? '')]
 }
 
+/** Max categories charted per transaction type; the rest roll up into "Other". */
+const MAX_CATEGORY_BARS = 7
+
 export function DashboardPage() {
   const navigate = useNavigate()
   const [selectedMonth, setSelectedMonth] = useState(() => format(new Date(), 'yyyy-MM'))
@@ -92,22 +107,37 @@ export function DashboardPage() {
 
     async function load() {
       try {
-        const [dashboard, lowStockItems, recentTransactions, recentIncidents] =
-          await Promise.all([
-            getDashboardData(selectedMonth),
-            getLowStockItems(),
-            getRecentTransactions(5),
-            getRecentIncidents(3),
-          ])
+        const [
+          dashboard,
+          lowStockItems,
+          recentTransactions,
+          recentIncidents,
+          totalInventoryValue,
+          payrollSummaries,
+          topCustomers,
+        ] = await Promise.all([
+          getDashboardData(selectedMonth),
+          getLowStockItems(),
+          getRecentTransactions(5),
+          getRecentIncidents(3),
+          getTotalInventoryValue(),
+          listPayrollPayDateSummaries(`${selectedMonth}-01`, `${selectedMonth}-31`),
+          getTopCustomersForMonth(selectedMonth, 5),
+        ])
 
         if (!isMounted) return
 
+        const laborCost = payrollSummaries.reduce((sum, row) => sum + row.totalGross, 0)
+
         setState({
           dashboard,
+          laborCost,
           lowStockItems,
           recentIncidents,
           recentTransactions,
           status: 'ready',
+          topCustomers,
+          totalInventoryValue,
         })
       } catch (error: unknown) {
         if (!isMounted) return
@@ -151,6 +181,38 @@ export function DashboardPage() {
     }))
   }, [state])
 
+  const monthlyTrend = useMemo(() => {
+    if (state.status !== 'ready') return []
+    return state.dashboard.monthlySeries.map((row) => ({
+      month: formatMonthLabel(row.monthKey),
+      Sales: row.sales,
+      Expenses: row.expense,
+      Net: row.netIncome,
+    }))
+  }, [state])
+
+  const topCustomerData = useMemo(() => {
+    if (state.status !== 'ready') return []
+    return state.topCustomers.map((customer) => ({
+      name: customer.name,
+      Total: customer.total,
+      transactionCount: customer.transactionCount,
+    }))
+  }, [state])
+
+  const dayHighlights = useMemo(() => {
+    if (state.status !== 'ready') return null
+    const withSales = state.dashboard.dailySeries.filter((row) => row.sales > 0)
+    if (withSales.length === 0) return null
+    let peak = withSales[0]
+    let slow = withSales[0]
+    for (const row of withSales) {
+      if (row.sales > peak.sales) peak = row
+      if (row.sales < slow.sales) slow = row
+    }
+    return { peak, slow, activeDays: withSales.length }
+  }, [state])
+
   const previousMonth = state.status === 'ready' ? state.dashboard.previousMonth : null
 
   function kpiDelta(current: number, previous: number | undefined) {
@@ -158,10 +220,14 @@ export function DashboardPage() {
     return ((current - previous) / Math.abs(previous)) * 100
   }
 
+  function formatDayLabel(date: string) {
+    return format(new Date(`${date}T00:00:00`), 'MMM d')
+  }
+
   return (
     <section className="space-y-5">
       {/* Header */}
-      <header className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+      <header className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
         <div>
           <h1 className="text-xl font-semibold tracking-tight">Dashboard</h1>
           <p className="mt-0.5 text-sm text-[var(--muted)]">
@@ -169,7 +235,12 @@ export function DashboardPage() {
           </p>
         </div>
 
-        <MonthPicker value={selectedMonth} onChange={setSelectedMonth} />
+        <div className="flex flex-col items-start gap-1 sm:items-end">
+          <span className="text-[10px] font-semibold uppercase tracking-wide text-[var(--muted)]">
+            Reporting period
+          </span>
+          <MonthPicker value={selectedMonth} onChange={setSelectedMonth} />
+        </div>
       </header>
 
       {state.status === 'error' ? (
@@ -177,6 +248,14 @@ export function DashboardPage() {
           {state.message}
         </div>
       ) : null}
+
+      {/* ── Monthly figures group ── */}
+      <div className="pt-1">
+        <h2 className="text-base font-semibold tracking-tight">Monthly Summary</h2>
+        <p className="mt-0.5 text-sm text-[var(--muted)]">
+          Sales, expenses, and categories for {formatMonthLabel(selectedMonth)}
+        </p>
+      </div>
 
       {/* KPI cards */}
       <div className="grid gap-3 sm:grid-cols-3">
@@ -263,9 +342,55 @@ export function DashboardPage() {
             ))}
       </div>
 
+      {/* Health ratios */}
+      {state.status === 'ready'
+        ? (() => {
+            const { totalSales, netIncome, operatingExpense } = state.dashboard.kpis
+            const margin = totalSales > 0 ? (netIncome / totalSales) * 100 : null
+            const opexRatio = totalSales > 0 ? (operatingExpense / totalSales) * 100 : null
+            const laborRatio = totalSales > 0 ? (state.laborCost / totalSales) * 100 : null
+            const metrics = [
+              {
+                label: 'Profit Margin',
+                value: margin != null ? `${margin.toFixed(1)}%` : '—',
+                hint: 'Net income ÷ gross sales',
+                tone: margin == null ? '' : margin >= 0 ? 'text-emerald-500' : 'text-rose-500',
+              },
+              {
+                label: 'Operating Expense Ratio',
+                value: opexRatio != null ? `${opexRatio.toFixed(1)}%` : '—',
+                hint: 'Operating expense ÷ gross sales',
+                tone: '',
+              },
+              {
+                label: 'Labor Cost',
+                value: formatCurrency(state.laborCost),
+                hint: laborRatio != null ? `${laborRatio.toFixed(1)}% of sales` : 'Payroll paid this month',
+                tone: '',
+              },
+            ]
+            return (
+              <div className="grid gap-3 sm:grid-cols-3">
+                {metrics.map((m) => (
+                  <div
+                    key={m.label}
+                    className="rounded-lg border border-[var(--border)] bg-[var(--panel)] px-4 py-3"
+                  >
+                    <p className="text-[11px] font-medium uppercase tracking-wide text-[var(--muted)]">
+                      {m.label}
+                    </p>
+                    <p className={`mt-1 text-lg font-semibold tabular-nums ${m.tone}`}>{m.value}</p>
+                    <p className="mt-0.5 text-[11px] text-[var(--muted)]">{m.hint}</p>
+                  </div>
+                ))}
+              </div>
+            )
+          })()
+        : null}
+
       {/* Daily area chart */}
       <div className="rounded-lg border border-[var(--border)] bg-[var(--panel)] p-5">
-        <h2 className="text-sm font-semibold">Daily Activity — {formatMonthLabel(selectedMonth)}</h2>
+        <h2 className="text-sm font-semibold">Daily Activity</h2>
         <p className="mt-0.5 text-xs text-[var(--muted)]">Sales vs combined expenses per day</p>
         <div className="mt-5 h-56">
           <ResponsiveContainer width="100%" height="100%">
@@ -318,7 +443,246 @@ export function DashboardPage() {
             </AreaChart>
           </ResponsiveContainer>
         </div>
+        {dayHighlights && (
+          <div className="mt-4 grid gap-3 border-t border-[var(--border)] pt-4 sm:grid-cols-3">
+            <div>
+              <p className="text-[11px] uppercase tracking-wide text-[var(--muted)]">Best day</p>
+              <p className="mt-0.5 text-sm font-semibold">
+                {formatDayLabel(dayHighlights.peak.date)}
+                <span className="ml-1.5 font-normal text-emerald-500 tabular-nums">
+                  {formatCurrency(dayHighlights.peak.sales)}
+                </span>
+              </p>
+            </div>
+            <div>
+              <p className="text-[11px] uppercase tracking-wide text-[var(--muted)]">Slowest day</p>
+              <p className="mt-0.5 text-sm font-semibold">
+                {formatDayLabel(dayHighlights.slow.date)}
+                <span className="ml-1.5 font-normal text-[var(--muted)] tabular-nums">
+                  {formatCurrency(dayHighlights.slow.sales)}
+                </span>
+              </p>
+            </div>
+            <div>
+              <p className="text-[11px] uppercase tracking-wide text-[var(--muted)]">Active days</p>
+              <p className="mt-0.5 text-sm font-semibold tabular-nums">
+                {dayHighlights.activeDays}
+                <span className="ml-1.5 font-normal text-[var(--muted)]">with sales</span>
+              </p>
+            </div>
+          </div>
+        )}
       </div>
+
+      {/* Inventory low-stock alert */}
+      <LowStockWidget />
+
+      {/* Category breakdown per type — one type per row */}
+      {categoryCharts.length > 0 && (
+        <div>
+          <div className="mb-3">
+            <h3 className="text-sm font-semibold">Category Breakdown by Type</h3>
+            <p className="mt-0.5 text-xs text-[var(--muted)]">
+              Where sales and spending went, grouped by transaction type
+            </p>
+          </div>
+          <div className="space-y-4">
+            {categoryCharts.map(({ type, data }) => {
+              const color = TYPE_COLORS[type] ?? '#6366f1'
+              const typeTotal = data.reduce((sum, row) => sum + row.amount, 0)
+              const shown = data.slice(0, MAX_CATEGORY_BARS)
+              const rest = data.slice(MAX_CATEGORY_BARS)
+              const chartData =
+                rest.length > 0
+                  ? [
+                      ...shown,
+                      {
+                        name: `Other (${rest.length})`,
+                        amount: rest.reduce((sum, row) => sum + row.amount, 0),
+                      },
+                    ]
+                  : shown
+              const chartHeight = Math.max(120, chartData.length * 34)
+              return (
+                <div
+                  key={type}
+                  className="rounded-lg border border-[var(--border)] bg-[var(--panel)] p-5"
+                >
+                  <div className="mb-4 flex items-center justify-between">
+                    <div className="flex items-center gap-2">
+                      <span className="h-2 w-2 rounded-full" style={{ backgroundColor: color }} />
+                      <h3 className="text-xs font-semibold uppercase tracking-wide">{type}</h3>
+                      <span className="text-[10px] text-[var(--muted)]">
+                        {data.length} categor{data.length === 1 ? 'y' : 'ies'}
+                      </span>
+                    </div>
+                    <span className="text-sm font-semibold tabular-nums" style={{ color }}>
+                      {formatCurrency(typeTotal)}
+                    </span>
+                  </div>
+                  <ResponsiveContainer width="100%" height={chartHeight}>
+                    <BarChart
+                      data={chartData}
+                      layout="vertical"
+                      margin={{ left: 0, right: 16, top: 0, bottom: 0 }}
+                    >
+                      <CartesianGrid stroke={gridStroke} horizontal={false} />
+                      <XAxis
+                        type="number"
+                        tickFormatter={(v: number) => `₱${(v / 1000).toFixed(0)}k`}
+                        tick={{ ...axisTickProps, fontSize: 10 }}
+                        axisLine={false}
+                        tickLine={false}
+                      />
+                      <YAxis
+                        type="category"
+                        dataKey="name"
+                        tick={{ ...axisTickProps, fontSize: 11 }}
+                        axisLine={false}
+                        tickLine={false}
+                        width={140}
+                      />
+                      <Tooltip
+                        formatter={currencyFormatter}
+                        contentStyle={tooltipStyle}
+                        labelStyle={tooltipLabelStyle}
+                        itemStyle={tooltipItemStyle}
+                        cursor={{ fill: 'rgba(148,163,184,0.08)' }}
+                      />
+                      <Bar
+                        dataKey="amount"
+                        fill={color}
+                        radius={[0, 4, 4, 0]}
+                        maxBarSize={22}
+                        name="Amount"
+                      />
+                    </BarChart>
+                  </ResponsiveContainer>
+                </div>
+              )
+            })}
+          </div>
+        </div>
+      )}
+
+      {/* Top customers this month */}
+      {state.status === 'ready' && state.topCustomers.length > 0 && (
+        <div className="rounded-lg border border-[var(--border)] bg-[var(--panel)] p-5">
+          <div className="mb-4 flex items-center justify-between">
+            <div className="flex items-center gap-2">
+              <Users className="h-4 w-4 text-[var(--muted)]" />
+              <h3 className="text-sm font-semibold">Top Customers</h3>
+            </div>
+            <button
+              className="flex items-center gap-1 text-xs font-medium text-[var(--accent)] hover:underline"
+              onClick={() => navigate('/customers')}
+              type="button"
+            >
+              View all
+              <ArrowRight className="h-3 w-3" />
+            </button>
+          </div>
+          <div className="h-64">
+            <ResponsiveContainer width="100%" height="100%">
+              <BarChart data={topCustomerData} margin={{ left: 0, right: 8, top: 4, bottom: 0 }}>
+                <CartesianGrid stroke={gridStroke} vertical={false} />
+                <XAxis
+                  dataKey="name"
+                  tick={{ ...axisTickProps, fontSize: 10 }}
+                  axisLine={false}
+                  tickLine={false}
+                  interval={0}
+                />
+                <YAxis
+                  tickFormatter={(v: number) => `₱${(v / 1000).toFixed(0)}k`}
+                  tick={axisTickProps}
+                  axisLine={false}
+                  tickLine={false}
+                  width={44}
+                />
+                <Tooltip
+                  formatter={currencyFormatter}
+                  contentStyle={tooltipStyle}
+                  labelStyle={tooltipLabelStyle}
+                  itemStyle={tooltipItemStyle}
+                  cursor={{ fill: 'rgba(148,163,184,0.08)' }}
+                />
+                <Bar
+                  dataKey="Total"
+                  fill={CHART_COLORS.sales}
+                  radius={[4, 4, 0, 0]}
+                  maxBarSize={56}
+                  name="Total"
+                />
+              </BarChart>
+            </ResponsiveContainer>
+          </div>
+        </div>
+      )}
+
+      {/* ── Current status group (always latest, ignores the month filter) ── */}
+      <div className="pt-4">
+        <h2 className="text-base font-semibold tracking-tight">Current Status</h2>
+        <p className="mt-0.5 text-sm text-[var(--muted)]">
+          All-time trend, live inventory, and recent activity — not affected by the selected month
+        </p>
+      </div>
+
+      {/* Monthly trend (all months) */}
+      {monthlyTrend.length > 1 && (
+        <div className="rounded-lg border border-[var(--border)] bg-[var(--panel)] p-5">
+          <h2 className="text-sm font-semibold">Monthly Trend</h2>
+          <p className="mt-0.5 text-xs text-[var(--muted)]">
+            Sales, expenses, and net income across all months
+          </p>
+          <div className="mt-5 h-56">
+            <ResponsiveContainer width="100%" height="100%">
+              <LineChart data={monthlyTrend} margin={{ left: 0, right: 8, top: 4, bottom: 0 }}>
+                <CartesianGrid stroke={gridStroke} vertical={false} />
+                <XAxis dataKey="month" tick={axisTickProps} axisLine={false} tickLine={false} />
+                <YAxis
+                  tickFormatter={(v: number) => `₱${(v / 1000).toFixed(0)}k`}
+                  tick={axisTickProps}
+                  axisLine={false}
+                  tickLine={false}
+                  width={44}
+                />
+                <Tooltip
+                  formatter={currencyFormatter}
+                  contentStyle={tooltipStyle}
+                  labelStyle={tooltipLabelStyle}
+                  itemStyle={tooltipItemStyle}
+                />
+                <Legend wrapperStyle={{ fontSize: 12, paddingTop: 12 }} iconType="circle" iconSize={8} />
+                <Line
+                  type="monotone"
+                  dataKey="Sales"
+                  stroke={CHART_COLORS.sales}
+                  strokeWidth={2}
+                  dot={false}
+                  activeDot={{ r: 4 }}
+                />
+                <Line
+                  type="monotone"
+                  dataKey="Expenses"
+                  stroke={CHART_COLORS.expense}
+                  strokeWidth={2}
+                  dot={false}
+                  activeDot={{ r: 4 }}
+                />
+                <Line
+                  type="monotone"
+                  dataKey="Net"
+                  stroke={CHART_COLORS.netIncome}
+                  strokeWidth={2}
+                  dot={false}
+                  activeDot={{ r: 4 }}
+                />
+              </LineChart>
+            </ResponsiveContainer>
+          </div>
+        </div>
+      )}
 
       {/* Low Stock Alerts */}
       {state.status === 'ready' && (
@@ -337,14 +701,25 @@ export function DashboardPage() {
                 </span>
               )}
             </div>
-            <button
-              className="flex items-center gap-1 text-xs font-medium text-[var(--accent)] hover:underline"
-              onClick={() => navigate('/inventory')}
-              type="button"
-            >
-              View inventory
-              <ArrowRight className="h-3 w-3" />
-            </button>
+            <div className="flex items-center gap-4">
+              <div className="hidden text-right sm:block">
+                <p className="flex items-center justify-end gap-1 text-[10px] uppercase tracking-wide text-[var(--muted)]">
+                  <Package className="h-3 w-3" />
+                  On hand
+                </p>
+                <p className="text-sm font-semibold tabular-nums">
+                  {formatCurrency(state.totalInventoryValue)}
+                </p>
+              </div>
+              <button
+                className="flex items-center gap-1 text-xs font-medium text-[var(--accent)] hover:underline"
+                onClick={() => navigate('/inventory')}
+                type="button"
+              >
+                View inventory
+                <ArrowRight className="h-3 w-3" />
+              </button>
+            </div>
           </div>
 
           {state.lowStockItems.length > 0 ? (
@@ -409,73 +784,6 @@ export function DashboardPage() {
         </div>
       )}
 
-
-      {/* Category breakdown per type */}
-      {categoryCharts.length > 0 && (
-        <div>
-          <div className="mb-4">
-            <h2 className="text-sm font-semibold">Category Breakdown by Type</h2>
-            <p className="mt-0.5 text-xs text-[var(--muted)]">
-              Top categories per transaction type — {formatMonthLabel(selectedMonth)}
-            </p>
-          </div>
-          <div className="grid gap-5 lg:grid-cols-2 xl:grid-cols-3">
-            {categoryCharts.map(({ type, data }) => {
-              const color = TYPE_COLORS[type] ?? '#6366f1'
-              const chartHeight = Math.max(160, data.length * 36)
-              return (
-                <div
-                  key={type}
-                  className="rounded-lg border border-[var(--border)] bg-[var(--panel)] p-5"
-                >
-                  <div className="mb-4 flex items-center gap-2">
-                    <span className="h-2 w-2 rounded-full" style={{ backgroundColor: color }} />
-                    <h3 className="text-xs font-semibold uppercase tracking-wide">{type}</h3>
-                  </div>
-                  <ResponsiveContainer width="100%" height={chartHeight}>
-                    <BarChart
-                      data={data}
-                      layout="vertical"
-                      margin={{ left: 0, right: 16, top: 0, bottom: 0 }}
-                    >
-                      <CartesianGrid stroke={gridStroke} horizontal={false} />
-                      <XAxis
-                        type="number"
-                        tickFormatter={(v: number) => `₱${(v / 1000).toFixed(0)}k`}
-                        tick={{ ...axisTickProps, fontSize: 10 }}
-                        axisLine={false}
-                        tickLine={false}
-                      />
-                      <YAxis
-                        type="category"
-                        dataKey="name"
-                        tick={{ ...axisTickProps, fontSize: 11 }}
-                        axisLine={false}
-                        tickLine={false}
-                        width={88}
-                      />
-                      <Tooltip
-                        formatter={currencyFormatter}
-                        contentStyle={tooltipStyle}
-                        labelStyle={tooltipLabelStyle}
-                        itemStyle={tooltipItemStyle}
-                      />
-                      <Bar
-                        dataKey="amount"
-                        fill={color}
-                        radius={[0, 4, 4, 0]}
-                        maxBarSize={18}
-                        name="Amount"
-                      />
-                    </BarChart>
-                  </ResponsiveContainer>
-                </div>
-              )
-            })}
-          </div>
-        </div>
-      )}
-
       {/* Recent activity */}
       {state.status === 'ready' && (
         <div className="grid gap-5 xl:grid-cols-2">
@@ -485,6 +793,7 @@ export function DashboardPage() {
               <div className="flex items-center gap-2">
                 <Receipt className="h-4 w-4 text-[var(--muted)]" />
                 <h2 className="text-sm font-semibold">Recent Transactions</h2>
+                <span className="text-[10px] text-[var(--muted)]">Latest 5</span>
               </div>
               <button
                 className="flex items-center gap-1 text-xs font-medium text-[var(--accent)] hover:underline"
@@ -538,6 +847,7 @@ export function DashboardPage() {
               <div className="flex items-center gap-2">
                 <FileText className="h-4 w-4 text-[var(--muted)]" />
                 <h2 className="text-sm font-semibold">Recent Incident Reports</h2>
+                <span className="text-[10px] text-[var(--muted)]">Latest 3</span>
               </div>
               <button
                 className="flex items-center gap-1 text-xs font-medium text-[var(--accent)] hover:underline"

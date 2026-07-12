@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { format } from 'date-fns'
-import { CheckSquare, ChevronDown, ChevronUp, Loader2, Plus, Square, Trash2, Wallet, X } from 'lucide-react'
+import { CheckSquare, ChevronDown, ChevronUp, Loader2, Square, Wallet, X } from 'lucide-react'
 import { toast } from 'sonner'
 import {
   buildPayrollPreview,
@@ -8,22 +8,18 @@ import {
   getPayrollSettings,
   listCashAdvances,
   listStaff,
+  listStaffRecurringAdjustments,
   type CashAdvance,
-  type PayrollAdjustmentDraft,
   type PayrollPreview,
   type Staff,
 } from '../../../lib/db/repository'
 import { formatCurrency } from '../../../lib/format'
 import { useAuth } from '../../auth/use-auth'
 import { periodStartForWeekEnding, roundMoney, suggestPeriodEnd } from '../lib/attendance'
+import { type AdjRow, rowsFromRecurring, rowsToDrafts, rowsTotals } from '../lib/payroll-lines'
+import { AdjustmentLinesEditor } from './adjustment-lines-editor'
 
 // ── Types ──────────────────────────────────────────────────────────────────
-
-type AdjRow = PayrollAdjustmentDraft & { key: string }
-
-function newAdjRow(): AdjRow {
-  return { amount: 0, key: `${Date.now()}-${Math.random()}`, kind: 'deduction', label: '' }
-}
 
 type StaffPreviewState =
   | { kind: 'idle' }
@@ -49,23 +45,16 @@ function computeRowNet(row: StaffRow): number {
   const advances = row.previewState.advances
     .filter((a) => row.selectedAdvanceIds.has(a.id))
     .reduce((s, a) => s + a.amount, 0)
-  let bonus = 0
-  let deduction = 0
-  for (const a of row.adjustments) {
-    if (!a.label.trim()) continue
-    if (a.kind === 'bonus') bonus += a.amount
-    else deduction += a.amount
-  }
-  return roundMoney(row.previewState.preview.grossPay + bonus - deduction - advances)
+  const { earningTotal, deductionTotal } = rowsTotals(row.adjustments)
+  return roundMoney(
+    row.previewState.preview.basePay + earningTotal - deductionTotal - advances,
+  )
 }
 
 // ── Styles ─────────────────────────────────────────────────────────────────
 
 const inputClass =
   'h-10 w-full rounded-md border border-[var(--border)] bg-[var(--background)] px-3 text-sm text-[var(--foreground)] outline-none focus:border-[var(--accent)] focus:ring-1 focus:ring-[var(--accent)]/30 transition placeholder:text-[var(--muted)]'
-
-const adjInputClass =
-  'h-9 rounded-md border border-[var(--border)] bg-[var(--background)]/80 px-3 text-sm text-[var(--foreground)] outline-none focus:border-[var(--accent)] focus:ring-1 focus:ring-[var(--accent)]/30 transition placeholder:text-[var(--muted)]'
 
 // ── Component ──────────────────────────────────────────────────────────────
 
@@ -106,9 +95,12 @@ export function ProcessPayrollDialog({ onClose, onProcessed, open }: Props) {
         setPayDate(format(new Date(), 'yyyy-MM-dd'))
         setNotes('')
         setSelected(new Set())
+        const recurringByStaff = await Promise.all(
+          staffList.map((s) => listStaffRecurringAdjustments(s.id, { activeOnly: true })),
+        )
         setRows(
-          staffList.map((s) => ({
-            adjustments: [],
+          staffList.map((s, i) => ({
+            adjustments: rowsFromRecurring(recurringByStaff[i] ?? []),
             expandedAdjust: false,
             previewState: { kind: 'idle' },
             processResult: null,
@@ -246,41 +238,10 @@ export function ProcessPayrollDialog({ onClose, onProcessed, open }: Props) {
     )
   }
 
-  function addAdjustment(staffId: number) {
+  function setAdjustmentsFor(staffId: number, updater: (prev: AdjRow[]) => AdjRow[]) {
     setRows((prev) =>
       prev.map((r) =>
-        r.staff.id === staffId
-          ? { ...r, adjustments: [...r.adjustments, newAdjRow()] }
-          : r,
-      ),
-    )
-  }
-
-  function updateAdjustment(
-    staffId: number,
-    key: string,
-    patch: Partial<Omit<AdjRow, 'key'>>,
-  ) {
-    setRows((prev) =>
-      prev.map((r) =>
-        r.staff.id === staffId
-          ? {
-              ...r,
-              adjustments: r.adjustments.map((a) =>
-                a.key === key ? { ...a, ...patch } : a,
-              ),
-            }
-          : r,
-      ),
-    )
-  }
-
-  function removeAdjustment(staffId: number, key: string) {
-    setRows((prev) =>
-      prev.map((r) =>
-        r.staff.id === staffId
-          ? { ...r, adjustments: r.adjustments.filter((a) => a.key !== key) }
-          : r,
+        r.staff.id === staffId ? { ...r, adjustments: updater(r.adjustments) } : r,
       ),
     )
   }
@@ -321,9 +282,7 @@ export function ProcessPayrollDialog({ onClose, onProcessed, open }: Props) {
       if (!preview) continue
 
       try {
-        const adjDrafts: PayrollAdjustmentDraft[] = r.adjustments
-          .filter((a) => a.label.trim())
-          .map(({ amount, kind, label }) => ({ amount, kind, label: label.trim() }))
+        const adjDrafts = rowsToDrafts(r.adjustments)
 
         await finalizePayroll(
           {
@@ -571,15 +530,16 @@ export function ProcessPayrollDialog({ onClose, onProcessed, open }: Props) {
                             .filter((a) => r.selectedAdvanceIds.has(a.id))
                             .reduce((s, a) => s + a.amount, 0)
                         : 0
-                    const adjBonus = r.adjustments
-                      .filter((a) => a.label.trim() && a.kind === 'bonus')
-                      .reduce((s, a) => s + a.amount, 0)
-                    const adjDeduction = r.adjustments
-                      .filter((a) => a.label.trim() && a.kind === 'deduction')
-                      .reduce((s, a) => s + a.amount, 0)
+                    const { earningTotal: adjEarning, deductionTotal: adjDeduction } = rowsTotals(
+                      r.adjustments,
+                    )
                     const totalDeductions = selectedAdvTotal + adjDeduction
+                    const grossPay =
+                      r.previewState.kind === 'ok'
+                        ? roundMoney(r.previewState.preview.basePay + adjEarning)
+                        : 0
                     const netPay = r.previewState.kind === 'ok'
-                      ? roundMoney(r.previewState.preview.grossPay + adjBonus - totalDeductions)
+                      ? roundMoney(grossPay - totalDeductions)
                       : 0
 
                     const hasAdjustments =
@@ -643,7 +603,7 @@ export function ProcessPayrollDialog({ onClose, onProcessed, open }: Props) {
 
                           {/* Gross */}
                           <td className="px-4 py-3 text-right tabular-nums">
-                            {r.previewState.kind === 'ok' ? formatCurrency(r.previewState.preview.grossPay) : '—'}
+                            {r.previewState.kind === 'ok' ? formatCurrency(grossPay) : '—'}
                           </td>
 
                           {/* Deductions */}
@@ -793,97 +753,29 @@ export function ProcessPayrollDialog({ onClose, onProcessed, open }: Props) {
                                   </p>
                                 )}
 
-                                {/* Adjustment lines */}
-                                <div className="space-y-2">
-                                  <div className="flex items-center justify-between">
-                                    <p className="text-sm font-medium text-[var(--foreground)]">
-                                      Adjustments
-                                      <span className="ml-1.5 text-xs font-normal text-[var(--muted)]">
-                                        bonuses / deductions
-                                      </span>
-                                    </p>
-                                    <button
-                                      className="inline-flex items-center gap-1 rounded-md border border-[var(--border)] px-2.5 py-1 text-xs font-medium text-[var(--muted)] transition hover:bg-[var(--background)] hover:text-[var(--foreground)]"
-                                      onClick={() => addAdjustment(r.staff.id)}
-                                      type="button"
-                                    >
-                                      <Plus className="h-3 w-3" />
-                                      Add line
-                                    </button>
-                                  </div>
-                                  {r.adjustments.length === 0 ? (
-                                    <p className="text-xs text-[var(--muted)]">
-                                      No adjustments added.
-                                    </p>
-                                  ) : (
-                                    <div className="space-y-2">
-                                      {r.adjustments.map((adj, idx) => (
-                                        <div
-                                          key={adj.key}
-                                          className="flex flex-wrap items-center gap-2 rounded-md border border-[var(--border)] bg-[var(--background)]/60 p-2"
-                                        >
-                                          <input
-                                            className={`${adjInputClass} min-w-[10rem] flex-1`}
-                                            onChange={(e) =>
-                                              updateAdjustment(r.staff.id, adj.key, {
-                                                label: e.target.value,
-                                              })
-                                            }
-                                            placeholder="Label (e.g. Incentive, SSS)"
-                                            value={adj.label}
-                                          />
-                                          <select
-                                            className={`${adjInputClass} w-32`}
-                                            onChange={(e) =>
-                                              updateAdjustment(r.staff.id, adj.key, {
-                                                kind: e.target.value as 'bonus' | 'deduction',
-                                              })
-                                            }
-                                            value={adj.kind}
-                                          >
-                                            <option value="deduction">Deduction</option>
-                                            <option value="bonus">Bonus</option>
-                                          </select>
-                                          <input
-                                            className={`${adjInputClass} w-28 tabular-nums`}
-                                            min={0}
-                                            onChange={(e) =>
-                                              updateAdjustment(r.staff.id, adj.key, {
-                                                amount: Number(e.target.value) || 0,
-                                              })
-                                            }
-                                            placeholder="0.00"
-                                            step="0.01"
-                                            type="number"
-                                            value={adj.amount || ''}
-                                          />
-                                          <button
-                                            aria-label={`Remove adjustment ${idx + 1}`}
-                                            className="rounded-md p-2 text-[var(--muted)] transition hover:bg-red-500/10 hover:text-red-400"
-                                            onClick={() => removeAdjustment(r.staff.id, adj.key)}
-                                            type="button"
-                                          >
-                                            <Trash2 className="h-3.5 w-3.5" />
-                                          </button>
-                                        </div>
-                                      ))}
-                                    </div>
-                                  )}
-                                </div>
+                                {/* Earnings & deductions */}
+                                <AdjustmentLinesEditor
+                                  overtimeMultiplier={r.previewState.preview.overtimeMultiplier}
+                                  rows={r.adjustments}
+                                  setRows={(updater) => setAdjustmentsFor(r.staff.id, updater)}
+                                  staffDefaultRate={r.previewState.preview.staffDefaultRate}
+                                  standardDayHours={r.previewState.preview.standardDayHours}
+                                  theme="dark"
+                                />
 
                                 {/* Per-employee net preview */}
                                 <div className="flex flex-wrap items-center gap-4 rounded-md border border-[var(--border)] bg-[var(--background)]/50 px-3 py-2 text-xs">
                                   <span className="text-[var(--muted)]">
                                     Gross:{' '}
                                     <span className="font-semibold tabular-nums text-[var(--foreground)]">
-                                      {formatCurrency(r.previewState.preview.grossPay)}
+                                      {formatCurrency(grossPay)}
                                     </span>
                                   </span>
-                                  {adjBonus > 0 && (
+                                  {adjEarning > 0 && (
                                     <span className="text-[var(--muted)]">
-                                      Bonus:{' '}
+                                      Earnings:{' '}
                                       <span className="font-semibold tabular-nums text-emerald-400">
-                                        +{formatCurrency(adjBonus)}
+                                        +{formatCurrency(adjEarning)}
                                       </span>
                                     </span>
                                   )}
@@ -910,7 +802,7 @@ export function ProcessPayrollDialog({ onClose, onProcessed, open }: Props) {
 
                                 {netPay < 0 && (
                                   <p className="text-xs font-medium text-red-400">
-                                    Net pay is negative. Reduce deductions or add bonuses before processing.
+                                    Net pay is negative. Reduce deductions or add earnings before processing.
                                   </p>
                                 )}
                               </div>

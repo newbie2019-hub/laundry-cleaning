@@ -1,6 +1,6 @@
-import type { FormEvent, ReactNode } from 'react'
-import { useCallback, useEffect, useMemo, useState } from 'react'
-import { useNavigate } from 'react-router-dom'
+import type { FormEvent } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { useNavigate, useSearchParams } from 'react-router-dom'
 import { format } from 'date-fns'
 import {
   AlertTriangle,
@@ -45,6 +45,13 @@ import { INVENTORY_TUTORIAL_STEPS } from '../../tutorials/inventory-tutorial-ste
 import { TutorialTriggerButton } from '../../tutorials/tutorial-trigger-button'
 import { InventoryBackupDialog } from '../components/inventory-backup-dialog'
 import { MaintenanceModal } from '../components/maintenance-modal'
+import {
+  ModalField,
+  modalInputClass,
+  modalPrimaryButtonClass,
+  modalSecondaryButtonClass,
+  modalSelectClass,
+} from '../components/modal-shell'
 import { QuickMovementModal } from '../components/quick-movement-modal'
 
 const CATEGORY_COLORS: Record<string, string> = {
@@ -128,32 +135,8 @@ function saveColumnPrefs(prefs: ColumnVisibility): void {
   }
 }
 
-function ModalField({
-  children,
-  dataTutorial,
-  label,
-  required,
-}: {
-  children: ReactNode
-  dataTutorial?: string
-  label: string
-  required?: boolean
-}) {
-  return (
-    <div className="flex flex-col gap-1.5" data-tutorial={dataTutorial}>
-      <label className="text-sm font-medium text-gray-700">
-        {label}
-        {required && <span className="ml-0.5 text-red-500">*</span>}
-      </label>
-      {children}
-    </div>
-  )
-}
-
-const inputClass =
-  'h-10 w-full rounded-md border border-gray-300 bg-gray-50 px-3 text-sm text-gray-900 outline-none focus:border-blue-500 focus:ring-1 focus:ring-blue-500/30 transition placeholder:text-gray-400'
-const selectClass =
-  'h-10 w-full rounded-md border border-gray-300 bg-gray-50 px-3 text-sm text-gray-900 outline-none focus:border-blue-500 focus:ring-1 focus:ring-blue-500/30 transition'
+const inputClass = modalInputClass
+const selectClass = modalSelectClass
 
 function formatQty(qty: number, unitLabel?: string) {
   const formatted = qty % 1 === 0 ? String(qty) : qty.toFixed(2)
@@ -202,14 +185,21 @@ function InventoryPageContent() {
   const { hasPermission, user } = useAuth()
   const canManage = hasPermission('manage_inventory')
   const navigate = useNavigate()
+  const [searchParams, setSearchParams] = useSearchParams()
 
   const [items, setItems] = useState<InventoryItem[]>([])
   const [categories, setCategories] = useState<InventoryCategory[]>([])
   const [loading, setLoading] = useState(false)
   const [search, setSearch] = useState('')
   const [categoryFilter, setCategoryFilter] = useState('')
-  const [stockFilter, setStockFilter] = useState<StockStatus>('all')
+  const [stockFilter, setStockFilter] = useState<StockStatus>(() => {
+    const s = searchParams.get('stock')
+    return s === 'low' || s === 'out' || s === 'in' ? s : 'all'
+  })
   const [showInactive, setShowInactive] = useState(false)
+  // Ensures the ?edit=<id> deep-link (from the item detail page) opens the edit
+  // modal only once, after items have loaded.
+  const handledEditParam = useRef(false)
 
   const [sortKey, setSortKey] = useState<SortKey>('name')
   const [sortDir, setSortDir] = useState<SortDir>('asc')
@@ -282,6 +272,23 @@ function InventoryPageContent() {
   useEffect(() => {
     loadItems()
   }, [loadItems])
+
+  // Open the edit modal when arriving via ?edit=<id> (e.g. from the item detail
+  // page). Runs once after items are available, then strips the param.
+  useEffect(() => {
+    if (handledEditParam.current) return
+    const editId = searchParams.get('edit')
+    if (!editId || items.length === 0) return
+    const target = items.find((i) => i.id === Number(editId))
+    if (target) {
+      handledEditParam.current = true
+      openEdit(target)
+      const next = new URLSearchParams(searchParams)
+      next.delete('edit')
+      setSearchParams(next, { replace: true })
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [items, searchParams])
 
   const categoryByCode = useMemo(() => new Map(categories.map((category) => [category.code, category])), [categories])
   const activeCategories = useMemo(() => categories.filter((category) => category.isActive), [categories])
@@ -560,8 +567,8 @@ function InventoryPageContent() {
     })
   }
 
-  function goToMovements(item: InventoryItem) {
-    navigate(`/inventory-movements?itemId=${item.id}`)
+  function goToDetail(item: InventoryItem) {
+    navigate(`/inventory/${item.id}`)
   }
 
   const activeFilterCount =
@@ -700,7 +707,16 @@ function InventoryPageContent() {
         data-tutorial="tutorial-inventory-table"
       >
         {loading ? (
-          <div className="flex items-center justify-center py-16 text-sm text-[var(--muted)]">Loading…</div>
+          <div className="divide-y divide-[var(--border)]">
+            {Array.from({ length: 6 }).map((_, i) => (
+              <div key={i} className="flex items-center gap-4 px-4 py-3.5">
+                <div className="h-4 flex-1 animate-pulse rounded bg-[var(--panel)]" />
+                <div className="h-4 w-20 animate-pulse rounded bg-[var(--panel)]" />
+                <div className="h-4 w-16 animate-pulse rounded bg-[var(--panel)]" />
+                <div className="h-4 w-24 animate-pulse rounded bg-[var(--panel)]" />
+              </div>
+            ))}
+          </div>
         ) : displayed.length === 0 ? (
           <div className="flex flex-col items-center justify-center gap-2 py-16 text-[var(--muted)]">
             <Box className="h-8 w-8 opacity-40" />
@@ -757,7 +773,8 @@ function InventoryPageContent() {
             }
 
             return (
-              <table className="w-full text-sm">
+              <div className="overflow-x-auto">
+              <table className="w-full min-w-[640px] text-sm">
                 <thead>
                   <tr className="border-b border-[var(--border)] bg-[var(--panel)] text-xs font-semibold uppercase tracking-wide text-[var(--muted)]">
                     {renderSortHeader('name', 'Item', 'left')}
@@ -777,8 +794,8 @@ function InventoryPageContent() {
                         !item.isActive ? 'opacity-50' : '',
                       ].join(' ')}
                       key={item.id}
-                      onClick={() => goToMovements(item)}
-                      title="View stock movements"
+                      onClick={() => goToDetail(item)}
+                      title="View item details"
                     >
                       <td className="px-4 py-3">
                         <div className="flex items-center gap-2">
@@ -899,6 +916,7 @@ function InventoryPageContent() {
                   </tr>
                 </tfoot>
               </table>
+              </div>
             )
           })()
         )}
@@ -907,12 +925,12 @@ function InventoryPageContent() {
       {/* ── ADD / EDIT ITEM MODAL ── */}
       {isModalOpen && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4">
-          <div className="flex w-full max-w-lg max-h-[90vh] flex-col rounded-xl bg-white shadow-xl">
-            <div className="flex shrink-0 items-center justify-between border-b border-gray-200 px-5 py-4">
-              <h2 className="text-base font-semibold text-gray-900">
+          <div className="flex w-full max-w-lg max-h-[90vh] flex-col rounded-xl border border-[var(--border)] bg-[var(--panel-solid)] shadow-xl">
+            <div className="flex shrink-0 items-center justify-between border-b border-[var(--border)] px-5 py-4">
+              <h2 className="text-base font-semibold text-[var(--foreground)]">
                 {editingId ? 'Edit Item' : 'Add Item'}
               </h2>
-              <button className="rounded p-1 text-gray-400 hover:bg-gray-100 hover:text-gray-600" onClick={() => setIsModalOpen(false)} type="button">
+              <button className="rounded p-1 text-[var(--muted)] transition hover:bg-[var(--background)] hover:text-[var(--foreground)]" onClick={() => setIsModalOpen(false)} type="button">
                 <X className="h-4 w-4" />
               </button>
             </div>
@@ -981,19 +999,19 @@ function InventoryPageContent() {
                 </ModalField>
               </div>
               <div
-                className="space-y-2 rounded-lg border border-gray-200 bg-gray-50/80 p-3"
+                className="space-y-2 rounded-lg border border-[var(--border)] bg-[var(--background)] p-3"
                 data-tutorial="tutorial-item-alt-units"
               >
                 <div className="flex items-start justify-between gap-2">
                   <div>
-                    <p className="text-sm font-medium text-gray-700">Smaller selling units (optional)</p>
-                    <p className="text-xs text-gray-500">
+                    <p className="text-sm font-medium text-[var(--foreground)]">Smaller selling units (optional)</p>
+                    <p className="text-xs text-[var(--muted)]">
                       Sell this item by another unit too — e.g. a {(formUnitLabel || 'gallon').toLowerCase()} item that you also sell by the cup.
                       Stock stays in {formUnitLabel || 'the base unit'}; sales convert automatically.
                     </p>
                   </div>
                   <button
-                    className="inline-flex shrink-0 items-center gap-1 rounded-md border border-gray-300 bg-white px-2.5 py-1.5 text-xs font-medium text-gray-700 hover:border-gray-400 hover:bg-gray-50"
+                    className="inline-flex shrink-0 items-center gap-1 rounded-md border border-[var(--border)] bg-[var(--panel)] px-2.5 py-1.5 text-xs font-medium text-[var(--foreground)] transition hover:bg-[var(--background)]"
                     onClick={() =>
                       setFormAltUnits((prev) => [
                         ...prev,
@@ -1013,8 +1031,8 @@ function InventoryPageContent() {
                   </button>
                 </div>
                 {formUnitType === 'liquid' && isKnownLiquidUnit(formUnitLabel) ? (
-                  <div className="rounded-md border border-blue-100 bg-blue-50/60 p-2">
-                    <p className="mb-1.5 text-[11px] font-medium uppercase tracking-wider text-blue-700/80">
+                  <div className="rounded-md border border-[var(--accent)]/30 bg-[var(--accent-soft)] p-2">
+                    <p className="mb-1.5 text-[11px] font-medium uppercase tracking-wider text-[var(--accent)]">
                       Quick-add liquid sub-units
                     </p>
                     <div className="flex flex-wrap gap-1.5">
@@ -1032,15 +1050,15 @@ function InventoryPageContent() {
                           <label
                             className={`inline-flex cursor-pointer items-center gap-1.5 rounded-md border px-2 py-1 text-xs transition-colors ${
                               checked
-                                ? 'border-blue-400 bg-white text-blue-700'
-                                : 'border-blue-200 bg-white/60 text-gray-600 hover:border-blue-300 hover:bg-white'
+                                ? 'border-[var(--accent)] bg-[var(--panel-solid)] text-[var(--accent)]'
+                                : 'border-[var(--border)] bg-[var(--panel)] text-[var(--muted)] hover:border-[var(--accent)]/50 hover:text-[var(--foreground)]'
                             }`}
                             key={u.label}
                             title={`${u.displayName} — ${ratio.toFixed(3).replace(/\.?0+$/, '')} per ${formUnitLabel}`}
                           >
                             <input
                               checked={checked}
-                              className="h-3 w-3 cursor-pointer accent-blue-600"
+                              className="h-3 w-3 cursor-pointer accent-[var(--accent)]"
                               onChange={(e) => {
                                 if (e.target.checked) {
                                   setFormAltUnits((prev) =>
@@ -1076,14 +1094,14 @@ function InventoryPageContent() {
                         )
                       })}
                     </div>
-                    <p className="mt-1.5 text-[10px] text-blue-700/70">
+                    <p className="mt-1.5 text-[10px] text-[var(--muted)]">
                       Ratios fill automatically. Edit the row below to override.
                     </p>
                   </div>
                 ) : null}
                 {formAltUnits.length > 0 ? (
                   <>
-                    <div className="hidden gap-2 px-1 text-[10px] font-medium uppercase tracking-wider text-gray-400 sm:flex">
+                    <div className="hidden gap-2 px-1 text-[10px] font-medium uppercase tracking-wider text-[var(--muted)] sm:flex">
                       <span className="flex-1">Unit name</span>
                       <span className="w-24 shrink-0 text-center">Per {formUnitLabel || 'base'}</span>
                       <span className="w-24 shrink-0 text-right">Default price</span>
@@ -1143,7 +1161,7 @@ function InventoryPageContent() {
                           </div>
                           <button
                             aria-label="Remove smaller unit"
-                            className="mt-1 shrink-0 rounded p-1.5 text-gray-400 hover:bg-red-50 hover:text-red-600"
+                            className="mt-1 shrink-0 rounded p-1.5 text-[var(--muted)] transition hover:bg-red-500/10 hover:text-red-500"
                             onClick={() =>
                               setFormAltUnits((prev) => prev.filter((r) => r.key !== row.key))
                             }
@@ -1192,20 +1210,20 @@ function InventoryPageContent() {
               )}
 
               {editingId && (
-                <label className="flex items-center gap-2 cursor-pointer select-none text-sm text-gray-700">
-                  <input checked={formIsActive} className="rounded" onChange={(e) => setFormIsActive(e.target.checked)} type="checkbox" />
+                <label className="flex items-center gap-2 cursor-pointer select-none text-sm text-[var(--foreground)]">
+                  <input checked={formIsActive} className="rounded accent-[var(--accent)]" onChange={(e) => setFormIsActive(e.target.checked)} type="checkbox" />
                   Active
                 </label>
               )}
 
-              {formError && <p className="rounded-md bg-red-50 px-3 py-2 text-sm text-red-600">{formError}</p>}
+              {formError && <p className="rounded-md bg-red-500/10 px-3 py-2 text-sm text-red-500">{formError}</p>}
               </div>
 
-              <div className="flex shrink-0 justify-end gap-2 border-t border-gray-200 px-5 py-4">
-                <button className="rounded-md border border-gray-300 bg-white px-4 py-2 text-sm font-medium text-gray-700 hover:bg-gray-50" onClick={() => setIsModalOpen(false)} type="button">
+              <div className="flex shrink-0 justify-end gap-2 border-t border-[var(--border)] px-5 py-4">
+                <button className={modalSecondaryButtonClass} onClick={() => setIsModalOpen(false)} type="button">
                   Cancel
                 </button>
-                <button className="rounded-md bg-blue-600 px-4 py-2 text-sm font-medium text-white hover:bg-blue-700 disabled:opacity-50" disabled={isSubmitting} type="submit">
+                <button className={modalPrimaryButtonClass} disabled={isSubmitting} type="submit">
                   {isSubmitting ? 'Saving…' : editingId ? 'Save Changes' : 'Add Item'}
                 </button>
               </div>
@@ -1258,13 +1276,13 @@ function InventoryPageContent() {
           onClick={() => setIsFilterOpen(false)}
         >
           <div
-            className="w-full max-w-md max-h-[90vh] overflow-y-auto rounded-xl bg-white shadow-xl"
+            className="w-full max-w-md max-h-[90vh] overflow-y-auto rounded-xl border border-[var(--border)] bg-[var(--panel-solid)] shadow-xl"
             onClick={(e) => e.stopPropagation()}
           >
-            <div className="flex items-center justify-between border-b border-gray-200 px-5 py-4">
-              <h2 className="text-base font-semibold text-gray-900">Filters & Columns</h2>
+            <div className="flex items-center justify-between border-b border-[var(--border)] px-5 py-4">
+              <h2 className="text-base font-semibold text-[var(--foreground)]">Filters & Columns</h2>
               <button
-                className="rounded p-1 text-gray-400 hover:bg-gray-100 hover:text-gray-600"
+                className="rounded p-1 text-[var(--muted)] transition hover:bg-[var(--background)] hover:text-[var(--foreground)]"
                 onClick={() => setIsFilterOpen(false)}
                 type="button"
               >
@@ -1274,7 +1292,7 @@ function InventoryPageContent() {
 
             <div className="space-y-5 p-5">
               <div className="space-y-1.5">
-                <label className="text-sm font-medium text-gray-700">Category</label>
+                <label className="text-sm font-medium text-[var(--foreground)]">Category</label>
                 <select
                   className={selectClass}
                   onChange={(e) => setCategoryFilter(e.target.value)}
@@ -1290,7 +1308,7 @@ function InventoryPageContent() {
               </div>
 
               <div className="space-y-1.5">
-                <label className="text-sm font-medium text-gray-700">Stock Status</label>
+                <label className="text-sm font-medium text-[var(--foreground)]">Stock Status</label>
                 <select
                   className={selectClass}
                   onChange={(e) => setStockFilter(e.target.value as StockStatus)}
@@ -1304,11 +1322,11 @@ function InventoryPageContent() {
               </div>
 
               <div className="space-y-1.5">
-                <label className="text-sm font-medium text-gray-700">Active</label>
-                <label className="flex items-center gap-2 cursor-pointer select-none text-sm text-gray-700">
+                <label className="text-sm font-medium text-[var(--foreground)]">Active</label>
+                <label className="flex items-center gap-2 cursor-pointer select-none text-sm text-[var(--foreground)]">
                   <input
                     checked={showInactive}
-                    className="rounded"
+                    className="rounded accent-[var(--accent)]"
                     onChange={(e) => setShowInactive(e.target.checked)}
                     type="checkbox"
                   />
@@ -1316,18 +1334,18 @@ function InventoryPageContent() {
                 </label>
               </div>
 
-              <div className="border-t border-gray-200 pt-4">
-                <p className="text-sm font-medium text-gray-700">Visible Columns</p>
-                <p className="mt-0.5 text-xs text-gray-500">Preferences are saved on this device.</p>
+              <div className="border-t border-[var(--border)] pt-4">
+                <p className="text-sm font-medium text-[var(--foreground)]">Visible Columns</p>
+                <p className="mt-0.5 text-xs text-[var(--muted)]">Preferences are saved on this device.</p>
                 <div className="mt-3 grid grid-cols-2 gap-2">
                   {COLUMN_DEFS.map((col) => (
                     <label
-                      className="flex items-center gap-2 rounded-md border border-gray-200 bg-gray-50 px-3 py-2 text-sm text-gray-700 cursor-pointer select-none hover:bg-gray-100"
+                      className="flex items-center gap-2 rounded-md border border-[var(--border)] bg-[var(--background)] px-3 py-2 text-sm text-[var(--foreground)] cursor-pointer select-none transition hover:bg-[var(--panel)]"
                       key={col.key}
                     >
                       <input
                         checked={columns[col.key]}
-                        className="rounded"
+                        className="rounded accent-[var(--accent)]"
                         onChange={(e) => updateColumn(col.key, e.target.checked)}
                         type="checkbox"
                       />
@@ -1338,9 +1356,9 @@ function InventoryPageContent() {
               </div>
             </div>
 
-            <div className="flex items-center justify-between gap-2 border-t border-gray-200 px-5 py-3">
+            <div className="flex items-center justify-between gap-2 border-t border-[var(--border)] px-5 py-3">
               <button
-                className="text-sm font-medium text-gray-600 hover:text-gray-800 disabled:opacity-40"
+                className="text-sm font-medium text-[var(--muted)] transition hover:text-[var(--foreground)] disabled:opacity-40"
                 disabled={!hasActiveFilters}
                 onClick={() => {
                   setCategoryFilter('')
@@ -1352,7 +1370,7 @@ function InventoryPageContent() {
                 Clear filters
               </button>
               <button
-                className="rounded-md bg-blue-600 px-4 py-2 text-sm font-medium text-white hover:bg-blue-700"
+                className={modalPrimaryButtonClass}
                 onClick={() => setIsFilterOpen(false)}
                 type="button"
               >

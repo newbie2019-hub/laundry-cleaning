@@ -11,13 +11,19 @@ import { CategoriesPage } from '../features/categories/pages/categories-page'
 import { CustomerDetailPage } from '../features/customers/pages/customer-detail-page'
 import { CustomersPage } from '../features/customers/pages/customers-page'
 import { DashboardPage } from '../features/dashboard/pages/dashboard-page'
+import { ExportsPage } from '../features/exports/pages/exports-page'
 import { IncidentReportsPage } from '../features/incident-reports/pages/incident-reports-page'
 import { IncomeSharePage } from '../features/income-share/pages/income-share-page'
 import { InventoryPage } from '../features/inventory/pages/inventory-page'
+import { ItemDetailPage } from '../features/inventory/pages/item-detail-page'
 import { InventoryMovementsPage } from '../features/inventory/pages/inventory-movements-page'
 import { InventoryCategoriesPage } from '../features/inventory/pages/inventory-categories-page'
 import { InventorySummaryPage } from '../features/inventory/pages/inventory-summary-page'
 import { InventoryTemplatesPage } from '../features/inventory/pages/inventory-templates-page'
+import { StockTakePage } from '../features/inventory/pages/stock-take-page'
+import { SuppliersPage } from '../features/inventory/pages/suppliers-page'
+import { PurchaseOrdersPage } from '../features/inventory/pages/purchase-orders-page'
+import { PurchaseOrderDetailPage } from '../features/inventory/pages/purchase-order-detail-page'
 import { SettingsPage } from '../features/settings/pages/settings-page'
 import { BulkPayrollPage } from '../features/staff/pages/bulk-payroll-page'
 import { PayrollDatePage } from '../features/staff/pages/payroll-date-page'
@@ -110,8 +116,29 @@ const router = createHashRouter([
                 element: <InventoryPage />,
               },
               {
+                // Must precede '/inventory/:id' so the literal wins over the param.
+                path: '/inventory/stock-take',
+                element: <StockTakePage />,
+              },
+              {
+                path: '/inventory/:id',
+                element: <ItemDetailPage />,
+              },
+              {
                 path: '/inventory-movements',
                 element: <InventoryMovementsPage />,
+              },
+              {
+                path: '/suppliers',
+                element: <SuppliersPage />,
+              },
+              {
+                path: '/purchase-orders',
+                element: <PurchaseOrdersPage />,
+              },
+              {
+                path: '/purchase-orders/:id',
+                element: <PurchaseOrderDetailPage />,
               },
               {
                 path: '/inventory-summary',
@@ -136,6 +163,10 @@ const router = createHashRouter([
               {
                 path: '/users',
                 element: <UsersPage />,
+              },
+              {
+                path: '/exports',
+                element: <ExportsPage />,
               },
               {
                 path: '/settings',

@@ -22,6 +22,7 @@ export const ATTENDANCE_STATUS_LABELS: Record<AttendanceStatus, string> = {
 export function defaultMultiplierForStatus(
   status: AttendanceStatus,
   holidayDefaultMultiplier: number,
+  overtimeMultiplier = 1.25,
 ): number {
   switch (status) {
     case 'present':
@@ -29,7 +30,7 @@ export function defaultMultiplierForStatus(
     case 'half':
       return 0.5
     case 'overtime':
-      return 1.25
+      return overtimeMultiplier
     case 'absent':
       return 0
     case 'holiday':
@@ -50,6 +51,56 @@ export function computeDayPay(
 ): number {
   const rate = rateOverride ?? defaultRate
   return roundMoney(rate * multiplier)
+}
+
+// ─── Flexible payroll line items ─────────────────────────────────────────────
+
+export type AdjustmentKind = 'earning' | 'deduction'
+export type AdjustmentSource = 'manual' | 'recurring' | 'cash_advance' | 'overtime'
+
+export type CategoryOption = { label: string; value: string }
+
+export const EARNING_CATEGORIES: CategoryOption[] = [
+  { label: 'Bonus', value: 'bonus' },
+  { label: 'Allowance', value: 'allowance' },
+  { label: 'Overtime', value: 'overtime' },
+  { label: 'Other earning', value: 'other' },
+]
+
+export const DEDUCTION_CATEGORIES: CategoryOption[] = [
+  { label: 'SSS', value: 'sss' },
+  { label: 'PhilHealth', value: 'philhealth' },
+  { label: 'Pag-IBIG', value: 'pagibig' },
+  { label: 'Loan', value: 'loan' },
+  { label: 'Cash advance', value: 'cash_advance' },
+  { label: 'Other deduction', value: 'other' },
+]
+
+export function categoriesForKind(kind: AdjustmentKind): CategoryOption[] {
+  return kind === 'earning' ? EARNING_CATEGORIES : DEDUCTION_CATEGORIES
+}
+
+const CATEGORY_LABELS: Record<string, string> = Object.fromEntries(
+  [...EARNING_CATEGORIES, ...DEDUCTION_CATEGORIES].map((c) => [c.value, c.label]),
+)
+
+export function categoryLabel(value: string): string {
+  return CATEGORY_LABELS[value] ?? value
+}
+
+/** Hourly rate derived from a day rate and the configured standard workday length. */
+export function hourlyRateFromDayRate(dayRate: number, standardDayHours: number): number {
+  const hours = standardDayHours > 0 ? standardDayHours : 8
+  return roundMoney(dayRate / hours)
+}
+
+/** Default per-hour overtime rate = hourly rate × overtime multiplier. */
+export function overtimeHourlyRate(
+  dayRate: number,
+  standardDayHours: number,
+  overtimeMultiplier: number,
+): number {
+  return roundMoney(hourlyRateFromDayRate(dayRate, standardDayHours) * overtimeMultiplier)
 }
 
 export function periodStartForWeekEnding(periodEndIso: string): string {

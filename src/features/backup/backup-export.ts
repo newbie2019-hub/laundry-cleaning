@@ -9,7 +9,7 @@
 import { format } from 'date-fns'
 import { getActiveBusinessId, BUSINESSES } from '../../lib/db/business'
 import { getDatabase } from '../../lib/db/client'
-import { saveBytesAsDownload } from '../../lib/save-file-download'
+import { saveBytesWithDialog } from '../../lib/save-file-download'
 import {
   BACKUP_FORMAT,
   BACKUP_FORMAT_VERSION,
@@ -366,21 +366,27 @@ function makeFilename(): string {
 }
 
 export type ExportResult = {
+  status: 'saved' | 'cancelled'
   filename: string
   byteLength: number
   counts: Partial<Record<EntityKey, number>>
 }
 
 /**
- * Build a `BackupFile` object from the active business's database, write it
- * as a single JSON file to Downloads, and return some metadata about it.
+ * Build a `BackupFile` object from the active business's database, prompt the
+ * user for a destination via a native "Save As" dialog, write it as a single
+ * JSON file, and return some metadata about it. If the user dismisses the
+ * dialog, `status` is `'cancelled'` and nothing is written.
  */
 export async function exportActiveBusinessToJson(): Promise<ExportResult> {
   const file = await buildBackupFile()
   const filename = makeFilename()
   const bytes = textEncoder.encode(JSON.stringify(file, null, 2))
-  await saveBytesAsDownload(filename, bytes, 'application/json')
+  const status = await saveBytesWithDialog(filename, bytes, 'application/json', [
+    { name: 'JSON Backup', extensions: ['json'] },
+  ])
   return {
+    status,
     filename,
     byteLength: bytes.byteLength,
     counts: file.counts,
@@ -1212,7 +1218,7 @@ async function buildPayroll(
     })),
     adjustments: adjustments.map<ExportStaffPayrollAdjustment>((a) => ({
       label: asString(a.label),
-      kind: a.kind === 'deduction' ? 'deduction' : 'bonus',
+      kind: a.kind === 'deduction' ? 'deduction' : 'earning',
       amount: asNumber(a.amount),
     })),
   }

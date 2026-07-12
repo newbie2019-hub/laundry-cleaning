@@ -88,11 +88,11 @@ function enrichRow(item: AllStaffPayrollItem, detail: PayrollDetail | null): Enr
   let otherDeductions = 0
   let bonuses = 0
   for (const adj of detail.adjustments) {
-    if (adj.kind === 'bonus') {
+    if (adj.kind === 'earning') {
       bonuses += adj.amount
     } else {
       // Cash advances are labeled "Cash advance · {date}"
-      if (adj.label.toLowerCase().startsWith('cash advance')) {
+      if (adj.category === 'cash_advance' || adj.label.toLowerCase().startsWith('cash advance')) {
         loanDeductions += adj.amount
       } else {
         otherDeductions += adj.amount

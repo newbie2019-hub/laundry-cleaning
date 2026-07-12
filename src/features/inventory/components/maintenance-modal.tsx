@@ -32,7 +32,7 @@ const STATUS_OPTIONS: Array<{ label: string; value: MaintenanceStatus }> = [
 ]
 
 const STATUS_COLORS: Record<MaintenanceStatus, string> = {
-  cancelled: 'bg-gray-500/15 text-gray-500',
+  cancelled: 'bg-gray-500/15 text-[var(--muted)]',
   completed: 'bg-emerald-500/15 text-emerald-600',
   in_progress: 'bg-amber-500/15 text-amber-600',
   scheduled: 'bg-blue-500/15 text-blue-600',
@@ -46,16 +46,16 @@ const STATUS_LABELS: Record<MaintenanceStatus, string> = {
 }
 
 const inputClass =
-  'h-10 w-full rounded-md border border-gray-300 bg-gray-50 px-3 text-sm text-gray-900 outline-none focus:border-blue-500 focus:ring-1 focus:ring-blue-500/30 transition placeholder:text-gray-400'
+  'h-10 w-full rounded-md border border-[var(--border)] bg-[var(--background)] px-3 text-sm text-[var(--foreground)] outline-none focus:border-[var(--accent)] focus:ring-1 focus:ring-[var(--accent)]/30 transition placeholder:text-[var(--muted)]'
 const selectClass =
-  'h-10 w-full rounded-md border border-gray-300 bg-gray-50 px-3 text-sm text-gray-900 outline-none focus:border-blue-500 focus:ring-1 focus:ring-blue-500/30 transition'
+  'h-10 w-full rounded-md border border-[var(--border)] bg-[var(--background)] px-3 text-sm text-[var(--foreground)] outline-none focus:border-[var(--accent)] focus:ring-1 focus:ring-[var(--accent)]/30 transition'
 const textareaClass =
-  'w-full rounded-md border border-gray-300 bg-gray-50 px-3 py-2 text-sm text-gray-900 outline-none focus:border-blue-500 focus:ring-1 focus:ring-blue-500/30 transition resize-none placeholder:text-gray-400'
+  'w-full rounded-md border border-[var(--border)] bg-[var(--background)] px-3 py-2 text-sm text-[var(--foreground)] outline-none focus:border-[var(--accent)] focus:ring-1 focus:ring-[var(--accent)]/30 transition resize-none placeholder:text-[var(--muted)]'
 
 function ModalField({ label, required, children }: { children: ReactNode; label: string; required?: boolean }) {
   return (
     <div className="flex flex-col gap-1.5">
-      <label className="text-sm font-medium text-gray-700">
+      <label className="text-sm font-medium text-[var(--foreground)]">
         {label}
         {required && <span className="ml-0.5 text-red-500">*</span>}
       </label>
@@ -207,21 +207,21 @@ export function MaintenanceModal({
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4">
-      <div className="w-full max-w-2xl max-h-[90vh] overflow-y-auto rounded-xl bg-white shadow-xl">
-        <div className="flex items-center justify-between border-b border-gray-200 px-5 py-4">
+      <div className="w-full max-w-2xl max-h-[90vh] overflow-y-auto rounded-xl border border-[var(--border)] bg-[var(--panel-solid)] shadow-xl">
+        <div className="flex items-center justify-between border-b border-[var(--border)] px-5 py-4">
           <div className="flex items-center gap-3">
             <span className="flex h-9 w-9 items-center justify-center rounded-lg bg-purple-500/10 text-purple-600">
               <Wrench className="h-4 w-4" />
             </span>
             <div>
-              <h2 className="text-base font-semibold text-gray-900">
+              <h2 className="text-base font-semibold text-[var(--foreground)]">
                 {mode === 'form' ? (editingId ? 'Edit Service Record' : 'New Service Record') : 'Service & Maintenance'}
               </h2>
-              <p className="text-xs text-gray-500 mt-0.5">{item.name}</p>
+              <p className="text-xs text-[var(--muted)] mt-0.5">{item.name}</p>
             </div>
           </div>
           <button
-            className="rounded p-1 text-gray-400 hover:bg-gray-100 hover:text-gray-600"
+            className="rounded p-1 text-[var(--muted)] hover:bg-[var(--background)] hover:text-[var(--muted)]"
             onClick={onClose}
             type="button"
           >
@@ -233,23 +233,23 @@ export function MaintenanceModal({
           <div className="p-5 space-y-4">
             {/* Summary cards */}
             <div className="grid grid-cols-3 gap-2">
-              <div className="rounded-md border border-gray-200 bg-gray-50 px-3 py-2.5">
-                <p className="text-[10px] font-semibold uppercase tracking-wide text-gray-500">Completed</p>
-                <p className="mt-0.5 text-lg font-semibold tabular-nums text-gray-900">{completedCount}</p>
+              <div className="rounded-md border border-[var(--border)] bg-[var(--background)] px-3 py-2.5">
+                <p className="text-[10px] font-semibold uppercase tracking-wide text-[var(--muted)]">Completed</p>
+                <p className="mt-0.5 text-lg font-semibold tabular-nums text-[var(--foreground)]">{completedCount}</p>
               </div>
-              <div className="rounded-md border border-gray-200 bg-gray-50 px-3 py-2.5">
-                <p className="text-[10px] font-semibold uppercase tracking-wide text-gray-500">Open</p>
-                <p className="mt-0.5 text-lg font-semibold tabular-nums text-gray-900">{openCount}</p>
+              <div className="rounded-md border border-[var(--border)] bg-[var(--background)] px-3 py-2.5">
+                <p className="text-[10px] font-semibold uppercase tracking-wide text-[var(--muted)]">Open</p>
+                <p className="mt-0.5 text-lg font-semibold tabular-nums text-[var(--foreground)]">{openCount}</p>
               </div>
-              <div className="rounded-md border border-gray-200 bg-gray-50 px-3 py-2.5">
-                <p className="text-[10px] font-semibold uppercase tracking-wide text-gray-500">Total Spent</p>
-                <p className="mt-0.5 text-lg font-semibold tabular-nums text-gray-900">{formatCurrency(totalCost)}</p>
+              <div className="rounded-md border border-[var(--border)] bg-[var(--background)] px-3 py-2.5">
+                <p className="text-[10px] font-semibold uppercase tracking-wide text-[var(--muted)]">Total Spent</p>
+                <p className="mt-0.5 text-lg font-semibold tabular-nums text-[var(--foreground)]">{formatCurrency(totalCost)}</p>
               </div>
             </div>
 
             {/* Current status banner */}
             {item.currentStatus && (
-              <div className="flex items-center gap-2 rounded-md border border-gray-200 bg-gray-50 px-3 py-2 text-xs text-gray-600">
+              <div className="flex items-center gap-2 rounded-md border border-[var(--border)] bg-[var(--background)] px-3 py-2 text-xs text-[var(--muted)]">
                 <CalendarClock className="h-3.5 w-3.5 shrink-0" />
                 <span>
                   Current status: <strong className="capitalize">{item.currentStatus.replace('_', ' ')}</strong>
@@ -264,9 +264,9 @@ export function MaintenanceModal({
 
             {/* Action row */}
             <div className="flex items-center justify-between">
-              <h3 className="text-sm font-semibold text-gray-900">Service History</h3>
+              <h3 className="text-sm font-semibold text-[var(--foreground)]">Service History</h3>
               <button
-                className="flex items-center gap-1.5 rounded-md bg-blue-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-blue-700"
+                className="flex items-center gap-1.5 rounded-md bg-[var(--accent)] px-3 py-1.5 text-xs font-medium text-white hover:opacity-90"
                 onClick={openAddForm}
                 type="button"
               >
@@ -277,9 +277,9 @@ export function MaintenanceModal({
 
             {/* Records list */}
             {loading ? (
-              <p className="py-8 text-center text-sm text-gray-500">Loading…</p>
+              <p className="py-8 text-center text-sm text-[var(--muted)]">Loading…</p>
             ) : records.length === 0 ? (
-              <div className="flex flex-col items-center justify-center gap-2 rounded-md border border-dashed border-gray-200 py-10 text-gray-400">
+              <div className="flex flex-col items-center justify-center gap-2 rounded-md border border-dashed border-[var(--border)] py-10 text-[var(--muted)]">
                 <ClipboardList className="h-8 w-8 opacity-50" />
                 <p className="text-sm">No service records yet.</p>
                 <button
@@ -295,34 +295,34 @@ export function MaintenanceModal({
                 {records.map((record) => (
                   <div
                     key={record.id}
-                    className="rounded-md border border-gray-200 bg-white p-3 transition hover:border-gray-300"
+                    className="rounded-md border border-[var(--border)] bg-[var(--panel)] p-3 transition hover:border-[var(--border)]"
                   >
                     <div className="flex items-start justify-between gap-3">
                       <div className="min-w-0 flex-1">
                         <div className="flex flex-wrap items-center gap-2">
-                          <span className="text-sm font-medium text-gray-900 tabular-nums">
+                          <span className="text-sm font-medium text-[var(--foreground)] tabular-nums">
                             {record.serviceDate}
                           </span>
-                          <span className="text-xs text-gray-500">·</span>
-                          <span className="text-xs font-medium text-gray-700">
+                          <span className="text-xs text-[var(--muted)]">·</span>
+                          <span className="text-xs font-medium text-[var(--foreground)]">
                             {SERVICE_TYPE_LABELS[record.serviceType] ?? record.serviceType}
                           </span>
                           <span className={`inline-flex items-center rounded px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide ${STATUS_COLORS[record.status]}`}>
                             {STATUS_LABELS[record.status]}
                           </span>
                           {record.cost > 0 && (
-                            <span className="text-xs font-semibold tabular-nums text-gray-700">
+                            <span className="text-xs font-semibold tabular-nums text-[var(--foreground)]">
                               {formatCurrency(record.cost)}
                             </span>
                           )}
                         </div>
                         {record.performedBy && (
-                          <p className="mt-1 text-xs text-gray-500">
-                            By <strong className="text-gray-700">{record.performedBy}</strong>
+                          <p className="mt-1 text-xs text-[var(--muted)]">
+                            By <strong className="text-[var(--foreground)]">{record.performedBy}</strong>
                           </p>
                         )}
                         {record.description && (
-                          <p className="mt-1.5 text-xs leading-relaxed text-gray-600">
+                          <p className="mt-1.5 text-xs leading-relaxed text-[var(--muted)]">
                             {record.description}
                           </p>
                         )}
@@ -336,7 +336,7 @@ export function MaintenanceModal({
                       <div className="flex items-center gap-1">
                         <button
                           aria-label="Edit"
-                          className="rounded p-1.5 text-gray-400 transition hover:bg-gray-100 hover:text-gray-700"
+                          className="rounded p-1.5 text-[var(--muted)] transition hover:bg-[var(--background)] hover:text-[var(--foreground)]"
                           onClick={() => openEditForm(record)}
                           type="button"
                         >
@@ -344,7 +344,7 @@ export function MaintenanceModal({
                         </button>
                         <button
                           aria-label="Delete"
-                          className="rounded p-1.5 text-gray-400 transition hover:bg-red-50 hover:text-red-500"
+                          className="rounded p-1.5 text-[var(--muted)] transition hover:bg-red-500/10 hover:text-red-500"
                           onClick={() => handleDelete(record.id)}
                           type="button"
                         >
@@ -438,18 +438,18 @@ export function MaintenanceModal({
               updates the last service date.
             </div>
 
-            {error && <p className="rounded-md bg-red-50 px-3 py-2 text-sm text-red-600">{error}</p>}
+            {error && <p className="rounded-md bg-red-500/10 px-3 py-2 text-sm text-red-500">{error}</p>}
 
             <div className="flex justify-end gap-2 pt-1">
               <button
-                className="rounded-md border border-gray-300 bg-white px-4 py-2 text-sm font-medium text-gray-700 hover:bg-gray-50"
+                className="rounded-md border border-[var(--border)] bg-[var(--panel)] px-4 py-2 text-sm font-medium text-[var(--foreground)] hover:bg-[var(--background)]"
                 onClick={() => { setMode('list'); resetForm() }}
                 type="button"
               >
                 Back
               </button>
               <button
-                className="rounded-md bg-blue-600 px-4 py-2 text-sm font-medium text-white hover:bg-blue-700 disabled:opacity-50"
+                className="rounded-md bg-[var(--accent)] px-4 py-2 text-sm font-medium text-white hover:opacity-90 disabled:opacity-50"
                 disabled={submitting}
                 type="submit"
               >

@@ -122,6 +122,17 @@ export async function validateAndPlan(file: File): Promise<ImportPlan> {
     ])
   }
 
+  // Normalize legacy payroll-adjustment kinds. Backups produced before the
+  // exporter was fixed carry the pre-migration-25 value 'bonus' for earnings,
+  // but the DB CHECK constraint now only accepts 'earning' | 'deduction'.
+  // Rewrite here — after the checksum check, so integrity still validates
+  // against the original bytes — so the dry-run diff and the insert agree.
+  for (const p of backup.entities.staffPayrolls ?? []) {
+    for (const adj of p.adjustments ?? []) {
+      if ((adj.kind as string) === 'bonus') adj.kind = 'earning'
+    }
+  }
+
   // Check 7: per-row schema validation (collected as `invalid` plan items
   // instead of throwing — so the user sees how many rows are skipped per
   // entity instead of one aggregated failure).
@@ -2237,9 +2248,14 @@ async function insertPayrollItemsAndAdjustments(
     )
   }
   for (const adj of row.adjustments) {
+    // Normalize the adjustment kind. Migration 25 replaced the legacy
+    // 'bonus' value with 'earning' in the CHECK constraint, but older
+    // backups (and exports before this was fixed) still carry 'bonus'.
+    // Map anything that isn't a deduction to 'earning' so those rows pass.
+    const kind = adj.kind === 'deduction' ? 'deduction' : 'earning'
     await db.execute(
       `INSERT INTO staff_payroll_adjustments (payroll_id, label, kind, amount) VALUES ($1, $2, $3, $4)`,
-      [payrollId, adj.label, adj.kind, adj.amount],
+      [payrollId, adj.label, kind, adj.amount],
     )
   }
 }

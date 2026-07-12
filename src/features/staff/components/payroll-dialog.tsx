@@ -1,27 +1,29 @@
 import type { FormEvent, ReactNode } from 'react'
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { format } from 'date-fns'
-import { ArrowDown, ArrowUp, ArrowUpDown, Plus, Trash2, X } from 'lucide-react'
+import { ArrowDown, ArrowUp, ArrowUpDown, X } from 'lucide-react'
 import { toast } from 'sonner'
 import {
   buildPayrollPreview,
   finalizePayroll,
   getPayrollSettings,
   listCashAdvances,
+  listStaffRecurringAdjustments,
   listUnpaidAttendanceDates,
   type CashAdvance,
-  type PayrollAdjustmentDraft,
   type PayrollPreview,
   type PayrollPreviewItem,
 } from '../../../lib/db/repository'
 import { formatCurrency } from '../../../lib/format'
 import { periodStartForWeekEnding, roundMoney, suggestPeriodEnd } from '../lib/attendance'
-
-type AdjRow = PayrollAdjustmentDraft & { key: string }
-
-function newAdjRow(): AdjRow {
-  return { amount: 0, key: `${Date.now()}-${Math.random()}`, kind: 'deduction', label: '' }
-}
+import {
+  type AdjRow,
+  firstInvalidRow,
+  rowsFromRecurring,
+  rowsToDrafts,
+  rowsTotals,
+} from '../lib/payroll-lines'
+import { AdjustmentLinesEditor } from './adjustment-lines-editor'
 
 type Props = {
   onClose: () => void
@@ -37,11 +39,6 @@ type SortDir = 'asc' | 'desc'
 
 const modalInputClass =
   'h-10 w-full rounded-md border border-gray-300 bg-gray-50 px-3 text-sm text-gray-900 outline-none focus:border-blue-500 focus:ring-1 focus:ring-blue-500/30 transition placeholder:text-gray-400'
-
-const modalSelectClass =
-  'h-10 w-full rounded-md border border-gray-300 bg-gray-50 px-3 text-sm text-gray-900 outline-none focus:border-blue-500 focus:ring-1 focus:ring-blue-500/30 transition'
-
-const errorInputClass = 'border-red-400 focus:border-red-500 focus:ring-red-500/30'
 
 function ModalField({
   label,
@@ -118,7 +115,6 @@ export function PayrollDialog({ onClose, onSuccess, open, staffDisplayName, staf
   const [formError, setFormError] = useState<string | null>(null)
   const [sortField, setSortField] = useState<SortField>('entryDate')
   const [sortDir, setSortDir] = useState<SortDir>('asc')
-  const [adjErrors, setAdjErrors] = useState<Record<string, string>>({})
   const [outstandingAdvances, setOutstandingAdvances] = useState<CashAdvance[]>([])
   const [selectedAdvanceIds, setSelectedAdvanceIds] = useState<Set<number>>(new Set())
 
@@ -152,7 +148,6 @@ export function PayrollDialog({ onClose, onSuccess, open, staffDisplayName, staf
     if (!open) return
     setNotes('')
     setAdjustments([])
-    setAdjErrors({})
     setFormError(null)
     setSortField('entryDate')
     setSortDir('asc')
@@ -171,6 +166,9 @@ export function PayrollDialog({ onClose, onSuccess, open, staffDisplayName, staf
           ? new Set(advances.map((a) => a.id))
           : new Set(),
       )
+      // Pre-populate standing (recurring) earnings/deductions for this staff.
+      const recurring = await listStaffRecurringAdjustments(staffId, { activeOnly: true })
+      setAdjustments(rowsFromRecurring(recurring))
       await loadPreview(suggestedStart, suggested)
     })()
   }, [open, staffId, loadPreview])
@@ -207,17 +205,17 @@ export function PayrollDialog({ onClose, onSuccess, open, staffDisplayName, staf
     return roundMoney(sum)
   }, [outstandingAdvances, selectedAdvanceIds])
 
+  const { earningTotal, deductionTotal } = useMemo(() => rowsTotals(adjustments), [adjustments])
+
+  const grossPay = useMemo(
+    () => (preview ? roundMoney(preview.basePay + earningTotal) : 0),
+    [preview, earningTotal],
+  )
+
   const netPay = useMemo(() => {
     if (!preview) return 0
-    let bonus = 0
-    let deduction = 0
-    for (const a of adjustments) {
-      if (!a.label.trim()) continue
-      if (a.kind === 'bonus') bonus += a.amount
-      else deduction += a.amount
-    }
-    return roundMoney(preview.grossPay + bonus - deduction - advanceDeductionTotal)
-  }, [preview, adjustments, advanceDeductionTotal])
+    return roundMoney(grossPay - deductionTotal - advanceDeductionTotal)
+  }, [preview, grossPay, deductionTotal, advanceDeductionTotal])
 
   function toggleAdvance(id: number) {
     setSelectedAdvanceIds((prev) => {
@@ -242,24 +240,17 @@ export function PayrollDialog({ onClose, onSuccess, open, staffDisplayName, staf
     setFormError(null)
     if (!preview || previewError) return
 
-    const nextAdjErrors: Record<string, string> = {}
-    for (const row of adjustments) {
-      if (!row.label.trim()) continue
-      if (!Number.isFinite(row.amount) || row.amount < 0) {
-        nextAdjErrors[row.key] = 'Amount must be zero or a positive number.'
-      }
-    }
-    setAdjErrors(nextAdjErrors)
-    if (Object.keys(nextAdjErrors).length > 0) return
-
-    if (netPay < 0) {
-      setFormError('Net pay cannot be negative. Reduce deductions or add bonuses.')
+    if (firstInvalidRow(adjustments)) {
+      setFormError('Every earning/deduction line needs an amount of zero or more.')
       return
     }
 
-    const adjDrafts: PayrollAdjustmentDraft[] = adjustments
-      .filter((a) => a.label.trim())
-      .map(({ amount, kind, label }) => ({ amount, kind, label: label.trim() }))
+    if (netPay < 0) {
+      setFormError('Net pay cannot be negative. Reduce deductions or add earnings.')
+      return
+    }
+
+    const adjDrafts = rowsToDrafts(adjustments)
 
     setSubmitting(true)
     try {
@@ -431,16 +422,24 @@ export function PayrollDialog({ onClose, onSuccess, open, staffDisplayName, staf
 
                 <div className="flex flex-wrap items-center justify-between gap-2 text-sm">
                   <span>
-                    <span className="text-gray-500">Gross:&nbsp;</span>
+                    <span className="text-gray-500">Base:&nbsp;</span>
                     <span className="font-semibold tabular-nums text-gray-900">
-                      {formatCurrency(preview.grossPay)}
+                      {formatCurrency(preview.basePay)}
                     </span>
                   </span>
-                  {advanceDeductionTotal > 0 ? (
+                  {earningTotal > 0 ? (
                     <span>
-                      <span className="text-gray-500">Cash advances:&nbsp;</span>
+                      <span className="text-gray-500">Earnings:&nbsp;</span>
+                      <span className="font-semibold tabular-nums text-emerald-700">
+                        +{formatCurrency(earningTotal)}
+                      </span>
+                    </span>
+                  ) : null}
+                  {deductionTotal + advanceDeductionTotal > 0 ? (
+                    <span>
+                      <span className="text-gray-500">Deductions:&nbsp;</span>
                       <span className="font-semibold tabular-nums text-amber-700">
-                        −{formatCurrency(advanceDeductionTotal)}
+                        −{formatCurrency(deductionTotal + advanceDeductionTotal)}
                       </span>
                     </span>
                   ) : null}
@@ -511,104 +510,16 @@ export function PayrollDialog({ onClose, onSuccess, open, staffDisplayName, staf
               </div>
             ) : null}
 
-            <div className="space-y-2">
-              <div className="flex items-center justify-between">
-                <label className="text-sm font-medium text-gray-700">
-                  Adjustments (bonuses / deductions)
-                </label>
-                <button
-                  className="inline-flex items-center gap-1 rounded-md border border-gray-300 bg-white px-2 py-1 text-xs font-medium text-gray-700 transition hover:bg-gray-50"
-                  onClick={() => setAdjustments((prev) => [...prev, newAdjRow()])}
-                  type="button"
-                >
-                  <Plus className="h-3.5 w-3.5" />
-                  Add line
-                </button>
-              </div>
-              <div className="space-y-2">
-                {adjustments.length === 0 ? (
-                  <p className="text-xs text-gray-500">
-                    Optional itemized lines (positive amounts).
-                  </p>
-                ) : (
-                  adjustments.map((row, index) => (
-                    <div
-                      key={row.key}
-                      className="flex flex-col gap-1 rounded-md border border-gray-200 bg-gray-50 p-2"
-                    >
-                      <div className="flex flex-wrap items-end gap-2">
-                        <input
-                          className={`${modalInputClass} h-9 min-w-[8rem] flex-1 bg-white`}
-                          onChange={(e) =>
-                            setAdjustments((prev) =>
-                              prev.map((r, i) => (i === index ? { ...r, label: e.target.value } : r)),
-                            )
-                          }
-                          placeholder="Label (e.g. Cash advance, Incentive)"
-                          value={row.label}
-                        />
-                        <select
-                          className={`${modalSelectClass} h-9 bg-white`}
-                          onChange={(e) =>
-                            setAdjustments((prev) =>
-                              prev.map((r, i) =>
-                                i === index
-                                  ? { ...r, kind: e.target.value as 'bonus' | 'deduction' }
-                                  : r,
-                              ),
-                            )
-                          }
-                          value={row.kind}
-                        >
-                          <option value="deduction">Deduction</option>
-                          <option value="bonus">Bonus</option>
-                        </select>
-                        <input
-                          className={`${modalInputClass} h-9 w-28 bg-white tabular-nums ${adjErrors[row.key] ? errorInputClass : ''}`}
-                          min={0}
-                          onChange={(e) => {
-                            const nextAmount = Number(e.target.value) || 0
-                            setAdjustments((prev) =>
-                              prev.map((r, i) => (i === index ? { ...r, amount: nextAmount } : r)),
-                            )
-                            if (adjErrors[row.key]) {
-                              setAdjErrors((prev) => {
-                                const next = { ...prev }
-                                delete next[row.key]
-                                return next
-                              })
-                            }
-                          }}
-                          step="0.01"
-                          type="number"
-                          value={row.amount || ''}
-                        />
-                        <button
-                          aria-label="Remove"
-                          className="rounded p-2 text-gray-400 transition hover:bg-red-50 hover:text-red-600"
-                          onClick={() => {
-                            setAdjustments((prev) => prev.filter((_, i) => i !== index))
-                            setAdjErrors((prev) => {
-                              const next = { ...prev }
-                              delete next[row.key]
-                              return next
-                            })
-                          }}
-                          type="button"
-                        >
-                          <Trash2 className="h-4 w-4" />
-                        </button>
-                      </div>
-                      {adjErrors[row.key] ? (
-                        <p className="px-0.5 text-xs font-medium text-red-600">
-                          {adjErrors[row.key]}
-                        </p>
-                      ) : null}
-                    </div>
-                  ))
-                )}
-              </div>
-            </div>
+            {preview ? (
+              <AdjustmentLinesEditor
+                overtimeMultiplier={preview.overtimeMultiplier}
+                rows={adjustments}
+                setRows={setAdjustments}
+                staffDefaultRate={preview.staffDefaultRate}
+                standardDayHours={preview.standardDayHours}
+                theme="light"
+              />
+            ) : null}
 
             <ModalField label="Notes">
               <textarea

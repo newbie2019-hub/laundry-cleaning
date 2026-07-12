@@ -15,6 +15,14 @@ export function toastBrowserExportSuccess() {
   })
 }
 
+/** Success toast for the Save As flow, where the user picked the destination. */
+export function toastExportSaved() {
+  toast.success('Export saved successfully.', {
+    icon: <Check aria-hidden className="h-5 w-5 shrink-0 text-emerald-600" strokeWidth={2.25} />,
+    classNames: successToastClassNames,
+  })
+}
+
 export function toastBrowserExportFailed(message: string) {
   toast.error('Export failed', { description: message })
 }

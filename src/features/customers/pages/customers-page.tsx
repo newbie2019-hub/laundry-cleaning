@@ -1,6 +1,18 @@
-import type { FormEvent } from 'react'
+import type { FormEvent, ReactNode } from 'react'
 import { useCallback, useEffect, useMemo, useState } from 'react'
-import { Pencil, Plus, Search, SlidersHorizontal, Trash2, X } from 'lucide-react'
+import {
+  Activity,
+  Gift,
+  Pencil,
+  Plus,
+  Search,
+  SlidersHorizontal,
+  Trash2,
+  Trophy,
+  UserPlus,
+  Users,
+  X,
+} from 'lucide-react'
 import { useNavigate } from 'react-router-dom'
 import { format } from 'date-fns'
 import { toast } from 'sonner'
@@ -142,6 +154,33 @@ function LoyaltyCell({
   )
 }
 
+function StatCard({
+  icon,
+  iconClass,
+  label,
+  value,
+  sub,
+}: {
+  icon: ReactNode
+  iconClass: string
+  label: string
+  value: string
+  sub?: ReactNode
+}) {
+  return (
+    <div className="rounded-lg border border-[var(--border)] bg-[var(--panel)] p-4">
+      <div className="flex items-center gap-2">
+        <span className={`flex h-7 w-7 items-center justify-center rounded-lg ${iconClass}`}>
+          {icon}
+        </span>
+        <span className="text-xs font-medium text-[var(--muted)]">{label}</span>
+      </div>
+      <p className="mt-2.5 text-2xl font-semibold tracking-tight tabular-nums">{value}</p>
+      {sub ? <p className="mt-0.5 text-xs text-[var(--muted)]">{sub}</p> : null}
+    </div>
+  )
+}
+
 export function CustomersPage() {
   const { activeBusiness, hasPermission, user } = useAuth()
   const isCleaningBusiness = activeBusiness === 'cleaning'
@@ -150,6 +189,10 @@ export function CustomersPage() {
 
   const [customers, setCustomers] = useState<CustomerSummary[]>([])
   const [loading, setLoading] = useState(true)
+  // Full (unfiltered) base used for summary cards + top customers, so they
+  // reflect the whole customer base rather than the current search results.
+  const [summaryCustomers, setSummaryCustomers] = useState<CustomerSummary[]>([])
+  const [summaryLoading, setSummaryLoading] = useState(true)
   const [search, setSearch] = useState('')
   const [debouncedSearch, setDebouncedSearch] = useState('')
 
@@ -194,6 +237,25 @@ export function CustomersPage() {
   useEffect(() => {
     void load()
   }, [load])
+
+  const loadSummary = useCallback(async () => {
+    setSummaryLoading(true)
+    try {
+      const rows = await listCustomerSummaries({ includeArchived: false })
+      setSummaryCustomers(rows)
+    } finally {
+      setSummaryLoading(false)
+    }
+  }, [])
+
+  useEffect(() => {
+    void loadSummary()
+  }, [loadSummary])
+
+  // Reload both the table and the summary after a mutation.
+  const refresh = useCallback(async () => {
+    await Promise.all([load(), loadSummary()])
+  }, [load, loadSummary])
 
   // Persist per-page setting
   useEffect(() => {
@@ -262,6 +324,48 @@ export function CustomersPage() {
     return n
   }, [appliedFilters])
 
+  // Summary metrics over the whole customer base (independent of search).
+  const stats = useMemo(() => {
+    const now = new Date()
+    const monthStart = new Date(now.getFullYear(), now.getMonth(), 1)
+    const monthStartStr = format(monthStart, 'yyyy-MM-dd')
+    const cutoff30 = new Date(now)
+    cutoff30.setDate(cutoff30.getDate() - 30)
+    const cutoff30Str = format(cutoff30, 'yyyy-MM-dd')
+
+    let newThisMonth = 0
+    let active30 = 0
+    let loyaltyEnrolled = 0
+    let rewardsReady = 0
+    let totalRevenue = 0
+
+    for (const c of summaryCustomers) {
+      if (c.createdAt && c.createdAt.slice(0, 10) >= monthStartStr) newThisMonth++
+      if (c.lastTransactionDate && c.lastTransactionDate.slice(0, 10) >= cutoff30Str) active30++
+      if (c.isLoyaltyEnabled) loyaltyEnrolled++
+      if (c.isEligibleForReward) rewardsReady++
+      totalRevenue += c.totalSpent
+    }
+
+    const total = summaryCustomers.length
+    return {
+      active30,
+      dormant: total - active30,
+      loyaltyEnrolled,
+      newThisMonth,
+      rewardsReady,
+      total,
+      totalRevenue,
+    }
+  }, [summaryCustomers])
+
+  const topCustomers = useMemo(() => {
+    return [...summaryCustomers]
+      .filter((c) => c.totalSpent > 0)
+      .sort((a, b) => b.totalSpent - a.totalSpent)
+      .slice(0, 5)
+  }, [summaryCustomers])
+
   function openFilter() {
     setDraftFilters({ ...appliedFilters })
     setIsFilterOpen(true)
@@ -327,7 +431,7 @@ export function CustomersPage() {
       )
       toast.success(editingId ? 'Customer updated.' : 'Customer added.')
       closeModal()
-      await load()
+      await refresh()
     } catch (err: unknown) {
       toast.error(err instanceof Error ? err.message : 'Unable to save customer.')
     } finally {
@@ -341,7 +445,7 @@ export function CustomersPage() {
       await archiveCustomer(id, user.id)
       setConfirmArchiveId(null)
       toast.success('Customer archived.')
-      await load()
+      await refresh()
     } catch (err: unknown) {
       toast.error(err instanceof Error ? err.message : 'Unable to archive customer.')
     }
@@ -352,7 +456,7 @@ export function CustomersPage() {
     try {
       await setCustomerLoyaltyEnabled(customer.id, next, user.id)
       toast.success(next ? 'Loyalty enabled.' : 'Loyalty disabled.')
-      await load()
+      await refresh()
     } catch (err: unknown) {
       toast.error(err instanceof Error ? err.message : 'Unable to update loyalty.')
     }
@@ -416,6 +520,115 @@ export function CustomersPage() {
           )}
         </div>
       </header>
+
+      {/* Summary cards */}
+      {summaryLoading ? (
+        <div className={`grid gap-3 sm:grid-cols-2 ${isCleaningBusiness ? 'lg:grid-cols-3' : 'lg:grid-cols-4'}`}>
+          {Array.from({ length: isCleaningBusiness ? 3 : 4 }).map((_, i) => (
+            <div
+              key={i}
+              className="h-[92px] animate-pulse rounded-lg border border-[var(--border)] bg-[var(--panel)]"
+            />
+          ))}
+        </div>
+      ) : (
+        <div className={`grid gap-3 sm:grid-cols-2 ${isCleaningBusiness ? 'lg:grid-cols-3' : 'lg:grid-cols-4'}`}>
+          <StatCard
+            icon={<Users className="h-4 w-4 text-[var(--accent-strong)]" />}
+            iconClass="bg-[var(--accent-soft)]"
+            label="Total customers"
+            sub={`${stats.newThisMonth} added this month`}
+            value={stats.total.toLocaleString()}
+          />
+          <StatCard
+            icon={<UserPlus className="h-4 w-4 text-sky-600" />}
+            iconClass="bg-sky-500/10"
+            label="New this month"
+            sub="Since the 1st"
+            value={stats.newThisMonth.toLocaleString()}
+          />
+          <StatCard
+            icon={<Activity className="h-4 w-4 text-emerald-600" />}
+            iconClass="bg-emerald-500/10"
+            label="Active (30 days)"
+            sub={`${stats.dormant.toLocaleString()} dormant`}
+            value={stats.active30.toLocaleString()}
+          />
+          {!isCleaningBusiness && (
+            <StatCard
+              icon={<Gift className="h-4 w-4 text-violet-600" />}
+              iconClass="bg-violet-500/10"
+              label="Loyalty enrolled"
+              sub={
+                stats.rewardsReady > 0 ? (
+                  <span className="font-medium text-violet-600">
+                    {stats.rewardsReady} reward{stats.rewardsReady !== 1 ? 's' : ''} ready
+                  </span>
+                ) : (
+                  'No rewards ready'
+                )
+              }
+              value={stats.loyaltyEnrolled.toLocaleString()}
+            />
+          )}
+        </div>
+      )}
+
+      {/* Top customers */}
+      {!summaryLoading && topCustomers.length > 0 && (
+        <div className="rounded-lg border border-[var(--border)] bg-[var(--panel)] p-5">
+          <div className="flex items-center gap-2">
+            <Trophy className="h-4 w-4 text-amber-500" />
+            <h2 className="text-sm font-semibold">Top customers</h2>
+            <span className="text-xs text-[var(--muted)]">by total spend</span>
+          </div>
+          <ul className="mt-4 space-y-2">
+            {topCustomers.map((c, i) => {
+              const rankClass =
+                i === 0
+                  ? 'bg-amber-500/15 text-amber-600'
+                  : i === 1
+                    ? 'bg-slate-400/15 text-slate-500'
+                    : i === 2
+                      ? 'bg-orange-500/15 text-orange-600'
+                      : 'bg-[var(--background)] text-[var(--muted)]'
+              return (
+                <li key={c.id}>
+                  <button
+                    className="flex w-full items-center gap-3 rounded-md border border-[var(--border)] bg-[var(--background)] px-3 py-2.5 text-left transition hover:border-[var(--accent)]"
+                    onClick={() => handleRowClick(c.id)}
+                    type="button"
+                  >
+                    <span
+                      className={`flex h-6 w-6 shrink-0 items-center justify-center rounded-full text-xs font-bold ${rankClass}`}
+                    >
+                      {i + 1}
+                    </span>
+                    <span className="min-w-0 flex-1">
+                      <span className="block truncate text-sm font-medium text-[var(--foreground)]">
+                        {c.name}
+                      </span>
+                      <span className="block truncate text-xs text-[var(--muted)]">
+                        {c.company || `${c.transactionCount} transaction${c.transactionCount !== 1 ? 's' : ''}`}
+                      </span>
+                    </span>
+                    <span className="shrink-0 text-right">
+                      <span className="block text-sm font-semibold tabular-nums">
+                        {formatCurrency(c.totalSpent)}
+                      </span>
+                      <span className="block text-xs text-[var(--muted)]">
+                        {c.lastTransactionDate
+                          ? `Last ${formatShortDate(c.lastTransactionDate)}`
+                          : '—'}
+                      </span>
+                    </span>
+                  </button>
+                </li>
+              )
+            })}
+          </ul>
+        </div>
+      )}
 
       {loading ? (
         <div className="flex items-center justify-center py-16 text-sm text-[var(--muted)]">Loading…</div>

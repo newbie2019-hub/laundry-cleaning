@@ -28,12 +28,17 @@ const demoUsers = [
 
 async function ensureDemoUsers(database: Database) {
   for (const user of demoUsers) {
+    // These demo users are seeded at runtime (after migration v27), so we set a
+    // deterministic sync uuid derived from the username. Without this the
+    // uuid-autogen trigger would give each device a random uuid for the same
+    // logical user, and they'd duplicate after the first sync. Mirrors the
+    // 'seed:user:<username>' scheme the v27 backfill uses for admin/manager/staff.
     await database.execute(
       `
-        INSERT OR IGNORE INTO users (username, password_hash, display_name, is_active)
-        VALUES ($1, $2, $3, 1)
+        INSERT OR IGNORE INTO users (username, password_hash, display_name, is_active, uuid)
+        VALUES ($1, $2, $3, 1, $4)
       `,
-      [user.username, SHARED_SEEDED_PASSWORD_HASH, user.displayName],
+      [user.username, SHARED_SEEDED_PASSWORD_HASH, user.displayName, `seed:user:${user.username}`],
     )
 
     await database.execute(
@@ -128,12 +133,15 @@ function loadBusinessDatabase(business: BusinessId) {
   })
 }
 
-export function getDatabase() {
-  const business = getActiveBusinessId()
+export function getDatabaseFor(business: BusinessId) {
   let promise = databasePromises.get(business)
   if (!promise) {
     promise = loadBusinessDatabase(business)
     databasePromises.set(business, promise)
   }
   return promise
+}
+
+export function getDatabase() {
+  return getDatabaseFor(getActiveBusinessId())
 }

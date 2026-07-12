@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { format, startOfMonth, endOfMonth } from 'date-fns'
-import { ArrowLeft, CalendarDays, HandCoins, Lock, Wallet } from 'lucide-react'
+import { ArrowLeft, CalendarDays, HandCoins, Lock, Receipt, Wallet } from 'lucide-react'
 import { Link, useParams } from 'react-router-dom'
 import { toast } from 'sonner'
 import {
@@ -20,6 +20,7 @@ import { useAuth } from '../../auth/use-auth'
 import { AttendanceCalendar } from '../components/attendance-calendar'
 import { AttendanceDayDialog } from '../components/attendance-day-dialog'
 import { CashAdvanceDialog } from '../components/cash-advance-dialog'
+import { DeductionsEarningsTab } from '../components/deductions-earnings-tab'
 import { PayrollDetailDialog } from '../components/payroll-detail-dialog'
 import { PayrollDialog } from '../components/payroll-dialog'
 
@@ -32,7 +33,7 @@ export function StaffDetailPage() {
 
   const [staff, setStaff] = useState<Staff | null>(null)
   const [loading, setLoading] = useState(true)
-  const [tab, setTab] = useState<'attendance' | 'payroll'>('attendance')
+  const [tab, setTab] = useState<'attendance' | 'payroll' | 'deductions'>('attendance')
   const [monthKey, setMonthKey] = useState(() => format(new Date(), 'yyyy-MM'))
   const [entries, setEntries] = useState<AttendanceEntry[]>([])
   const [holidayMultiplier, setHolidayMultiplier] = useState(1)
@@ -240,6 +241,19 @@ export function StaffDetailPage() {
           <Wallet className="h-4 w-4" />
           Payroll
         </button>
+        <button
+          className={[
+            'inline-flex items-center gap-1.5 rounded-md px-3 py-2 text-sm font-medium transition',
+            tab === 'deductions'
+              ? 'bg-[var(--accent-soft)] text-[var(--accent-strong)]'
+              : 'text-[var(--muted)] hover:bg-[var(--background)]',
+          ].join(' ')}
+          onClick={() => setTab('deductions')}
+          type="button"
+        >
+          <Receipt className="h-4 w-4" />
+          Deductions &amp; earnings
+        </button>
       </div>
 
       {tab === 'attendance' && (
@@ -371,6 +385,15 @@ export function StaffDetailPage() {
             </div>
           )}
         </div>
+      )}
+
+      {tab === 'deductions' && (
+        <DeductionsEarningsTab
+          canEdit={canProcessPayroll && Boolean(user)}
+          staffDisplayName={staff.displayName}
+          staffId={staff.id}
+          userId={user?.id ?? null}
+        />
       )}
 
       {user && dayDialog ? (

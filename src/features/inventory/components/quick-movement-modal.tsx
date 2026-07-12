@@ -7,7 +7,7 @@ import { saveInventoryMovement } from '../../../lib/db/repository'
 function ModalField({ label, required, children }: { children: ReactNode; label: string; required?: boolean }) {
   return (
     <div className="flex flex-col gap-1.5">
-      <label className="text-sm font-medium text-gray-700">
+      <label className="text-sm font-medium text-[var(--foreground)]">
         {label}
         {required && <span className="ml-0.5 text-red-500">*</span>}
       </label>
@@ -17,7 +17,7 @@ function ModalField({ label, required, children }: { children: ReactNode; label:
 }
 
 const inputClass =
-  'h-10 w-full rounded-md border border-gray-300 bg-gray-50 px-3 text-sm text-gray-900 outline-none focus:border-blue-500 focus:ring-1 focus:ring-blue-500/30 transition placeholder:text-gray-400'
+  'h-10 w-full rounded-md border border-[var(--border)] bg-[var(--background)] px-3 text-sm text-[var(--foreground)] outline-none focus:border-[var(--accent)] focus:ring-1 focus:ring-[var(--accent)]/30 transition placeholder:text-[var(--muted)]'
 
 const QUICK_NOTES_IN = ['Restock', 'Return', 'Adjustment']
 const QUICK_NOTES_OUT = ['Daily Usage', 'Damaged', 'Expired', 'Lost', 'Adjustment']
@@ -111,16 +111,16 @@ export function QuickMovementModal({
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4">
-      <div className="w-full max-w-md rounded-xl bg-white shadow-xl">
-        <div className="flex items-center justify-between border-b border-gray-200 px-5 py-4">
+      <div className="w-full max-w-md rounded-xl border border-[var(--border)] bg-[var(--panel-solid)] shadow-xl">
+        <div className="flex items-center justify-between border-b border-[var(--border)] px-5 py-4">
           <div>
-            <h2 className="text-base font-semibold text-gray-900">
+            <h2 className="text-base font-semibold text-[var(--foreground)]">
               {movType === 'IN' ? 'Restock' : 'Record Usage'}
             </h2>
-            <p className="text-xs text-gray-500 mt-0.5">{item.name}</p>
+            <p className="text-xs text-[var(--muted)] mt-0.5">{item.name}</p>
           </div>
           <button
-            className="rounded p-1 text-gray-400 hover:bg-gray-100 hover:text-gray-600"
+            className="rounded p-1 text-[var(--muted)] hover:bg-[var(--background)] hover:text-[var(--muted)]"
             onClick={onClose}
             type="button"
           >
@@ -137,9 +137,9 @@ export function QuickMovementModal({
                   'flex flex-1 items-center justify-center gap-2 rounded-md border py-2 text-sm font-medium transition',
                   movType === type
                     ? type === 'IN'
-                      ? 'border-emerald-500 bg-emerald-50 text-emerald-700'
-                      : 'border-red-400 bg-red-50 text-red-600'
-                    : 'border-gray-300 bg-gray-50 text-gray-500 hover:bg-gray-100',
+                      ? 'border-emerald-500 bg-emerald-500/10 text-emerald-500'
+                      : 'border-red-400 bg-red-500/10 text-red-500'
+                    : 'border-[var(--border)] bg-[var(--background)] text-[var(--muted)] hover:bg-[var(--background)]',
                 ].join(' ')}
                 onClick={() => setMovType(type)}
                 type="button"
@@ -150,7 +150,7 @@ export function QuickMovementModal({
             ))}
           </div>
 
-          <div className="rounded-md bg-gray-50 border border-gray-200 px-3 py-2 text-xs text-gray-600 flex gap-4">
+          <div className="rounded-md bg-[var(--background)] border border-[var(--border)] px-3 py-2 text-xs text-[var(--muted)] flex gap-4">
             <span>
               Current: <strong>{formatQty(item.currentStock, item.unitLabel)}</strong>
             </span>
@@ -204,7 +204,7 @@ export function QuickMovementModal({
                     'rounded-full border px-2.5 py-1 text-[11px] font-medium transition',
                     movNotes === note
                       ? 'border-blue-400 bg-blue-50 text-blue-700'
-                      : 'border-gray-200 bg-white text-gray-500 hover:bg-gray-50',
+                      : 'border-[var(--border)] bg-[var(--panel)] text-[var(--muted)] hover:bg-[var(--background)]',
                   ].join(' ')}
                   onClick={() => setMovNotes(note)}
                   type="button"
@@ -215,11 +215,11 @@ export function QuickMovementModal({
             </div>
           </ModalField>
 
-          {movError && <p className="rounded-md bg-red-50 px-3 py-2 text-sm text-red-600">{movError}</p>}
+          {movError && <p className="rounded-md bg-red-500/10 px-3 py-2 text-sm text-red-500">{movError}</p>}
 
           <div className="flex justify-end gap-2 pt-1">
             <button
-              className="rounded-md border border-gray-300 bg-white px-4 py-2 text-sm font-medium text-gray-700 hover:bg-gray-50"
+              className="rounded-md border border-[var(--border)] bg-[var(--panel)] px-4 py-2 text-sm font-medium text-[var(--foreground)] hover:bg-[var(--background)]"
               onClick={onClose}
               type="button"
             >

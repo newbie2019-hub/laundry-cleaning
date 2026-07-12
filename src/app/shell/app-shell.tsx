@@ -5,28 +5,38 @@ import {
   BarChart3,
   Building2,
   ChevronDown,
+  ClipboardCheck,
+  FileDown,
   HelpCircle,
   LayoutDashboard,
   LayoutTemplate,
   LogOut,
+  Menu,
   Package,
   PieChart,
   Settings,
+  ShoppingCart,
   Tags,
+  Truck,
   UserCog,
   UserRound,
   Users,
   Wallet,
   WalletCards,
+  X,
 } from "lucide-react"
 import { AssistantProvider } from "../../features/assistant/assistant-provider"
 import { AssistantLauncher } from "../../features/assistant/components/assistant-launcher"
-import { useCallback, useEffect, useState } from "react"
+import { useCallback, useEffect, useState, type ReactNode } from "react"
+import { createPortal } from "react-dom"
 import { NavLink, Outlet, useLocation, useNavigate } from "react-router-dom"
 import { loadAppSettings, type AppSettings } from "../../lib/app-settings"
 import { BUSINESSES } from "../../lib/db/business"
 import { useAuth } from "../../features/auth/use-auth"
+import { useLowStockCount } from "../../features/inventory/lib/use-low-stock-count"
 import { useTour } from "../../features/onboarding/use-tour"
+import { SyncWidget } from "../../features/sync/components/sync-widget"
+import { runSyncOnStartup } from "../../lib/sync"
 
 const SIDEBAR_COLLAPSED_KEY = "sidebar-collapsed"
 
@@ -62,6 +72,9 @@ const navigationItems: NavItem[] = [
     icon: Package,
     children: [
       { to: "/inventory-movements", label: "Movements", icon: ArrowLeftRight },
+      { to: "/purchase-orders", label: "Purchase orders", icon: ShoppingCart },
+      { to: "/suppliers", label: "Suppliers", icon: Truck },
+      { to: "/inventory/stock-take", label: "Stock take", icon: ClipboardCheck },
       { to: "/inventory-summary", label: "Summary", icon: BarChart3 },
       { to: "/inventory-categories", label: "Categories", icon: Tags },
       { to: "/inventory-templates", label: "Sale templates", icon: LayoutTemplate },
@@ -94,15 +107,17 @@ const navigationItems: NavItem[] = [
     icon: Users,
   },
   {
+    to: "/exports",
+    label: "Export",
+    icon: FileDown,
+    requiredPermission: "export_data",
+  },
+  {
     to: "/settings",
     label: "Settings",
     icon: Settings,
   },
 ]
-
-const allMobileItems = navigationItems.flatMap((item) =>
-  item.children ? [item, ...item.children] : [item],
-)
 
 function navClassName(isActive: boolean, collapsed: boolean) {
   return [
@@ -129,12 +144,65 @@ function UserAvatar({ name }: { name: string }) {
   )
 }
 
+function NavBadge({ count, className = '' }: { count: number; className?: string }) {
+  if (count <= 0) return null
+  return (
+    <span
+      className={[
+        'flex h-4 min-w-[1rem] items-center justify-center rounded-full bg-amber-500 px-1 text-[10px] font-semibold leading-none text-white',
+        className,
+      ].join(' ')}
+      title={`${count} item${count === 1 ? '' : 's'} low or out of stock`}
+    >
+      {count > 99 ? '99+' : count}
+    </span>
+  )
+}
+
+/**
+ * Hover tooltip anchored to the right of its child. Renders through a portal
+ * with fixed positioning so it is never clipped by the sidebar's overflow.
+ */
+function SidebarTooltip({
+  label,
+  children,
+}: {
+  label: string
+  children: ReactNode
+}) {
+  const [rect, setRect] = useState<DOMRect | null>(null)
+
+  return (
+    <div
+      className="relative"
+      onMouseEnter={(e) => setRect(e.currentTarget.getBoundingClientRect())}
+      onMouseLeave={() => setRect(null)}
+    >
+      {children}
+      {rect &&
+        createPortal(
+          <div
+            className="pointer-events-none fixed z-[200] -translate-y-1/2 whitespace-nowrap rounded-md bg-[var(--foreground)] px-2 py-1 text-xs font-medium text-[var(--background)] shadow-lg"
+            style={{ top: rect.top + rect.height / 2, left: rect.right + 10 }}
+          >
+            {label}
+          </div>,
+          document.body,
+        )}
+    </div>
+  )
+}
+
 function NavItemEntry({
   item,
   collapsed,
+  badge = 0,
+  onNavigate,
 }: {
   item: NavItem
   collapsed: boolean
+  badge?: number
+  onNavigate?: () => void
 }) {
   const location = useLocation()
   const parentActive =
@@ -152,41 +220,50 @@ function NavItemEntry({
   const Icon = item.icon
 
   if (!item.children) {
-    return (
+    const link = (
       <NavLink
         className={({ isActive }) => navClassName(isActive, collapsed)}
-        title={collapsed ? item.label : undefined}
+        onClick={onNavigate}
         to={item.to}
       >
         <Icon className="h-4 w-4 shrink-0" />
         {!collapsed && <span className="truncate">{item.label}</span>}
       </NavLink>
     )
+    return collapsed ? (
+      <SidebarTooltip label={item.label}>{link}</SidebarTooltip>
+    ) : (
+      link
+    )
   }
 
   if (collapsed) {
     return (
       <>
-        <NavLink
-          className={({ isActive }) =>
-            navClassName(isActive || childActive, true)
-          }
-          title={item.label}
-          to={item.to}
-        >
-          <Icon className="h-4 w-4 shrink-0" />
-        </NavLink>
+        <SidebarTooltip label={item.label}>
+          <NavLink
+            className={({ isActive }) =>
+              [navClassName(isActive || childActive, true), 'relative'].join(' ')
+            }
+            onClick={onNavigate}
+            to={item.to}
+          >
+            <Icon className="h-4 w-4 shrink-0" />
+            {badge > 0 && <NavBadge count={badge} className="absolute right-1 top-1" />}
+          </NavLink>
+        </SidebarTooltip>
         {item.children.map((child) => {
           const ChildIcon = child.icon
           return (
-            <NavLink
-              key={child.to}
-              className={({ isActive }) => navClassName(isActive, true)}
-              title={child.label}
-              to={child.to}
-            >
-              <ChildIcon className="h-4 w-4 shrink-0" />
-            </NavLink>
+            <SidebarTooltip key={child.to} label={child.label}>
+              <NavLink
+                className={({ isActive }) => navClassName(isActive, true)}
+                onClick={onNavigate}
+                to={child.to}
+              >
+                <ChildIcon className="h-4 w-4 shrink-0" />
+              </NavLink>
+            </SidebarTooltip>
           )
         })}
       </>
@@ -203,10 +280,12 @@ function NavItemEntry({
               "flex-1 min-w-0",
             ].join(" ")
           }
+          onClick={onNavigate}
           to={item.to}
         >
           <Icon className="h-4 w-4 shrink-0" />
           <span className="truncate">{item.label}</span>
+          {badge > 0 && <NavBadge count={badge} className="ml-auto" />}
         </NavLink>
         <button
           className="flex h-8 w-8 shrink-0 items-center justify-center rounded-md text-[var(--muted)] transition hover:bg-[var(--background)] hover:text-[var(--foreground)]"
@@ -227,6 +306,7 @@ function NavItemEntry({
               <NavLink
                 key={child.to}
                 className={({ isActive }) => navClassName(isActive, false)}
+                onClick={onNavigate}
                 to={child.to}
               >
                 <ChildIcon className="h-3.5 w-3.5 shrink-0" />
@@ -246,6 +326,7 @@ export function AppShell() {
   const navigate = useNavigate()
   const currentBusiness = BUSINESSES[activeBusiness]
   const canSwitchBusiness = user?.roles.includes("admin") ?? false
+  const { lowCount: lowStockCount } = useLowStockCount()
 
   function handleSwitchBusiness() {
     navigate("/select-business")
@@ -254,6 +335,13 @@ export function AppShell() {
   const [collapsed, setCollapsed] = useState(
     () => localStorage.getItem(SIDEBAR_COLLAPSED_KEY) === "true",
   )
+  const [mobileMenuOpen, setMobileMenuOpen] = useState(false)
+  const location = useLocation()
+
+  // Close the mobile drawer whenever the route changes.
+  useEffect(() => {
+    setMobileMenuOpen(false)
+  }, [location.pathname])
 
   const toggleCollapsed = useCallback(() => {
     setCollapsed((prev) => {
@@ -270,6 +358,15 @@ export function AppShell() {
     window.addEventListener("app-settings-updated", handleSettingsUpdate)
     return () =>
       window.removeEventListener("app-settings-updated", handleSettingsUpdate)
+  }, [])
+
+  // Auto-sync once shortly after the shell mounts (app open). Silent if the
+  // device hasn't been set up for sync yet or if sync isn't configured.
+  useEffect(() => {
+    const timer = setTimeout(() => {
+      void runSyncOnStartup()
+    }, 1500)
+    return () => clearTimeout(timer)
   }, [])
 
   function handleSignOut() {
@@ -326,6 +423,7 @@ export function AppShell() {
               .map((item) => (
                 <NavItemEntry
                   key={item.to}
+                  badge={item.to === '/inventory' ? lowStockCount : 0}
                   collapsed={collapsed}
                   item={item}
                 />
@@ -335,6 +433,9 @@ export function AppShell() {
 
         {/* Bottom section */}
         <div className="shrink-0 border-t border-[var(--border)] p-2 space-y-1">
+          {/* Sync status + control */}
+          <SyncWidget collapsed={collapsed} />
+
           {/* Active business badge */}
           {collapsed ? (
             <button
@@ -450,7 +551,15 @@ export function AppShell() {
 
       {/* Mobile top bar */}
       <div className="flex flex-1 flex-col overflow-hidden">
-        <div className="flex h-14 shrink-0 items-center justify-between border-b border-[var(--border)] bg-[var(--panel)] px-4 lg:hidden">
+        <div className="flex h-14 shrink-0 items-center gap-3 border-b border-[var(--border)] bg-[var(--panel)] px-4 lg:hidden">
+          <button
+            aria-label="Open menu"
+            className="flex items-center justify-center rounded-lg p-2 text-[var(--muted)] transition hover:bg-[var(--accent-soft)] hover:text-[var(--accent-strong)]"
+            onClick={() => setMobileMenuOpen(true)}
+            type="button"
+          >
+            <Menu className="h-5 w-5" />
+          </button>
           <div className="flex items-center gap-2">
             <div className="flex h-6 w-6 shrink-0 items-center justify-center rounded-md bg-[var(--accent)] overflow-hidden">
               {appSettings.logoDataUrl ? (
@@ -465,35 +574,86 @@ export function AppShell() {
             </div>
             <span className="text-sm font-semibold">{appSettings.name}</span>
           </div>
-          <div className="flex items-center gap-1">
-            {allMobileItems.filter((item) => !item.requiredPermission || hasPermission(item.requiredPermission)).map((item) => {
-              const Icon = item.icon
-              return (
-                <NavLink
-                  key={item.to}
-                  className={({ isActive }) =>
-                    [
-                      "flex items-center justify-center rounded-lg p-2 text-sm transition",
-                      isActive
-                        ? "bg-[var(--accent)] text-white shadow-sm"
-                        : "text-[var(--muted)]/90 hover:bg-[var(--accent-soft)] hover:text-[var(--accent-strong)]",
-                    ].join(" ")
-                  }
-                  to={item.to}
-                >
-                  <Icon className="h-4 w-4" />
-                </NavLink>
-              )
-            })}
-            <button
-              className="flex items-center justify-center rounded-lg p-2 text-[var(--muted)] transition hover:bg-[var(--background)]"
-              onClick={handleSignOut}
-              type="button"
-            >
-              <LogOut className="h-4 w-4" />
-            </button>
-          </div>
         </div>
+
+        {/* Mobile drawer */}
+        {mobileMenuOpen && (
+          <div className="fixed inset-0 z-50 lg:hidden">
+            <div
+              className="absolute inset-0 bg-black/50"
+              onClick={() => setMobileMenuOpen(false)}
+            />
+            <div className="absolute inset-y-0 left-0 flex w-72 max-w-[85%] flex-col bg-[var(--panel)] shadow-xl">
+              {/* Drawer header */}
+              <div className="flex h-16 shrink-0 items-center justify-between border-b border-[var(--border)] px-4">
+                <div className="flex items-center gap-2.5">
+                  <div className="flex h-7 w-7 shrink-0 items-center justify-center rounded-lg bg-[var(--accent)] overflow-hidden">
+                    {appSettings.logoDataUrl ? (
+                      <img
+                        alt="logo"
+                        className="h-full w-full object-contain"
+                        src={appSettings.logoDataUrl}
+                      />
+                    ) : (
+                      <WalletCards className="h-4 w-4 text-white" />
+                    )}
+                  </div>
+                  <span className="truncate text-sm font-semibold tracking-tight">
+                    {appSettings.name}
+                  </span>
+                </div>
+                <button
+                  aria-label="Close menu"
+                  className="flex items-center justify-center rounded-lg p-2 text-[var(--muted)] transition hover:bg-[var(--background)] hover:text-[var(--foreground)]"
+                  onClick={() => setMobileMenuOpen(false)}
+                  type="button"
+                >
+                  <X className="h-5 w-5" />
+                </button>
+              </div>
+
+              {/* Drawer nav */}
+              <nav className="flex-1 overflow-y-auto px-2 py-4">
+                <div className="space-y-0.5">
+                  {navigationItems
+                    .filter((item) => !item.requiredPermission || hasPermission(item.requiredPermission))
+                    .map((item) => (
+                      <NavItemEntry
+                        key={item.to}
+                        badge={item.to === '/inventory' ? lowStockCount : 0}
+                        collapsed={false}
+                        item={item}
+                        onNavigate={() => setMobileMenuOpen(false)}
+                      />
+                    ))}
+                </div>
+              </nav>
+
+              {/* Drawer footer */}
+              <div className="shrink-0 border-t border-[var(--border)] p-2">
+                <div className="flex items-center gap-3 rounded-md border border-[var(--border)] bg-[var(--background)] px-3 py-2.5">
+                  <UserAvatar name={displayName} />
+                  <div className="min-w-0 flex-1">
+                    <p className="truncate text-sm font-medium leading-tight">
+                      {displayName}
+                    </p>
+                    <p className="truncate text-xs text-[var(--muted)] leading-tight mt-0.5">
+                      {roleLabel}
+                    </p>
+                  </div>
+                  <button
+                    aria-label="Sign out"
+                    className="shrink-0 rounded p-1.5 text-[var(--muted)] transition hover:bg-red-500/10 hover:text-red-400"
+                    onClick={handleSignOut}
+                    type="button"
+                  >
+                    <LogOut className="h-4 w-4" />
+                  </button>
+                </div>
+              </div>
+            </div>
+          </div>
+        )}
 
         {/* Main content */}
         <main className="flex-1 overflow-y-auto p-5 lg:p-8">
