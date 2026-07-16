@@ -408,10 +408,10 @@ export function InventoryMovementsPage() {
           <div />
         )}
         <div className="flex flex-wrap items-center gap-2 sm:justify-end">
-          <div className="relative">
+          <div className="relative w-full sm:w-56">
             <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-[var(--muted)]" />
             <input
-              className="h-9 w-56 rounded-md border border-[var(--border)] bg-[var(--panel)] pl-9 pr-3 text-sm placeholder:text-[var(--muted)] focus:border-[var(--accent)] focus:outline-none focus:ring-1 focus:ring-[var(--accent)]/30"
+              className="h-9 w-full rounded-md border border-[var(--border)] bg-[var(--panel)] pl-9 pr-3 text-sm placeholder:text-[var(--muted)] focus:border-[var(--accent)] focus:outline-none focus:ring-1 focus:ring-[var(--accent)]/30"
               onChange={(e) => setSearch(e.target.value)}
               placeholder="Search movements…"
               type="search"
@@ -436,7 +436,7 @@ export function InventoryMovementsPage() {
       </div>
 
       {/* Table */}
-      <div className="rounded-xl border border-[var(--border)] overflow-hidden">
+      <div className="rounded-xl border border-[var(--border)] overflow-x-auto">
         {loading ? (
           <div className="flex items-center justify-center py-16 text-sm text-[var(--muted)]">Loading…</div>
         ) : displayed.length === 0 ? (
@@ -464,7 +464,7 @@ export function InventoryMovementsPage() {
             const colSpan = Math.max(1, visibleDataCols) + 1
 
             return (
-              <table className="w-full text-sm">
+              <table className="w-full min-w-[900px] text-sm">
                 <thead>
                   <tr className="border-b border-[var(--border)] bg-[var(--panel)] text-xs font-semibold uppercase tracking-wide text-[var(--muted)]">
                     {columns.date && <th className="px-4 py-2.5 text-left font-semibold">Date</th>}
@@ -626,7 +626,7 @@ export function InventoryMovementsPage() {
                 <input className={inputClass} onChange={(e) => setFormDate(e.target.value)} type="date" value={formDate} />
               </ModalField>
 
-              <div className="grid grid-cols-2 gap-3">
+              <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
                 <ModalField label="Quantity" required>
                   <input className={inputClass} min="0.001" onChange={(e) => setFormQty(e.target.value)} placeholder="0" step="any" type="number" value={formQty} />
                 </ModalField>
@@ -743,7 +743,7 @@ export function InventoryMovementsPage() {
               </ModalField>
 
               {draftPeriodMode === 'dateRange' ? (
-                <div className="grid grid-cols-2 gap-3">
+                <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
                   <ModalField label="From">
                     <input
                       className={inputClass}
@@ -794,7 +794,7 @@ export function InventoryMovementsPage() {
                 </select>
               </ModalField>
 
-              <div className="grid grid-cols-2 gap-3">
+              <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
                 <ModalField label="Quantity min">
                   <input
                     className={inputClass}
@@ -819,7 +819,7 @@ export function InventoryMovementsPage() {
                 </ModalField>
               </div>
 
-              <div className="grid grid-cols-2 gap-3">
+              <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
                 <ModalField label="Unit cost min">
                   <input
                     className={inputClass}

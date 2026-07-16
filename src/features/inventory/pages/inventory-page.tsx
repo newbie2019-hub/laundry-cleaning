@@ -675,10 +675,10 @@ function InventoryPageContent() {
           <div />
         )}
         <div className="flex flex-wrap items-center gap-2 sm:justify-end">
-          <div className="relative">
+          <div className="relative w-full sm:w-56">
             <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-[var(--muted)]" />
             <input
-              className="h-9 w-56 rounded-md border border-[var(--border)] bg-[var(--panel)] pl-9 pr-3 text-sm placeholder:text-[var(--muted)] focus:border-[var(--accent)] focus:outline-none focus:ring-1 focus:ring-[var(--accent)]/30"
+              className="h-9 w-full rounded-md border border-[var(--border)] bg-[var(--panel)] pl-9 pr-3 text-sm placeholder:text-[var(--muted)] focus:border-[var(--accent)] focus:outline-none focus:ring-1 focus:ring-[var(--accent)]/30"
               onChange={(e) => setSearch(e.target.value)}
               placeholder="Search items…"
               type="search"
@@ -937,7 +937,7 @@ function InventoryPageContent() {
 
             <form className="flex min-h-0 flex-1 flex-col" onSubmit={handleSubmit}>
               <div className="flex-1 min-h-0 overflow-y-auto space-y-4 p-5">
-              <div className="grid grid-cols-2 gap-3">
+              <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
                 <ModalField dataTutorial="tutorial-item-name" label="Item Name" required>
                   <input autoFocus className={inputClass} onChange={(e) => setFormName(e.target.value)} placeholder="e.g. Detergent Powder" type="text" value={formName} />
                 </ModalField>
@@ -955,7 +955,7 @@ function InventoryPageContent() {
                 </ModalField>
               </div>
 
-              <div className="grid grid-cols-2 gap-3">
+              <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
                 <ModalField dataTutorial="tutorial-item-unit-type" label="Unit Type" required>
                   <select className={selectClass} onChange={(e) => handleUnitTypeChange(e.target.value)} value={formUnitType}>
                     {UNIT_TYPE_OPTIONS.map((opt) => (
@@ -982,7 +982,7 @@ function InventoryPageContent() {
                 </ModalField>
               </div>
 
-              <div className="grid grid-cols-2 gap-3">
+              <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
                 <ModalField dataTutorial="tutorial-item-cost" label="Cost per Unit">
                   <input className={inputClass} min="0" onChange={(e) => setFormCostPerUnit(e.target.value)} placeholder="0.00" step="0.01" type="number" value={formCostPerUnit} />
                 </ModalField>
@@ -1185,7 +1185,7 @@ function InventoryPageContent() {
               </ModalField>
 
               {isEquipmentCategory && (
-                <div className="grid grid-cols-2 gap-3">
+                <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
                   <ModalField label="Status">
                     <select className={selectClass} onChange={(e) => setFormStatus(e.target.value)} value={formStatus}>
                       {EQUIPMENT_STATUSES.map((s) => (

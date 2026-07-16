@@ -563,7 +563,7 @@ export function TransactionDetailPage() {
                 <input className={inputClass} onChange={(e) => setFormDate(e.target.value)} type="date" value={formDate} />
               </ModalField>
 
-              <div className="grid grid-cols-2 gap-3">
+              <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
                 <ModalField label="Quantity" required>
                   <input
                     className={inputClass}

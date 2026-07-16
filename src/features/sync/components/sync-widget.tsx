@@ -1,7 +1,9 @@
 import { formatDistanceToNow } from 'date-fns'
 import { CloudOff, RefreshCw, TriangleAlert } from 'lucide-react'
 import { useState } from 'react'
+import { useAuth } from '../../auth/use-auth'
 import { useSync } from '../use-sync'
+import type { SyncRole } from '../../../lib/sync'
 import { SyncSetupDialog } from './sync-setup-dialog'
 
 function lastSyncedLabel(iso: string | null): string {
@@ -15,7 +17,17 @@ function lastSyncedLabel(iso: string | null): string {
 
 export function SyncWidget({ collapsed }: { collapsed: boolean }) {
   const { overview, sync, chooseRole } = useSync()
+  const { refreshSession } = useAuth()
   const [setupOpen, setSetupOpen] = useState(false)
+
+  // A secondary bootstrap changes the logged-in user's local id (users table is
+  // wiped+re-pulled), so re-resolve the session afterwards or saves fail with an
+  // FK violation. See sync-settings-section for the full explanation.
+  async function handleChoose(role: SyncRole) {
+    const result = await chooseRole(role)
+    if (role === 'secondary' && !result.error) await refreshSession()
+    return result
+  }
 
   // Sync isn't configured (no cloud credentials) — render nothing.
   if (!overview.configured) return null
@@ -58,7 +70,7 @@ export function SyncWidget({ collapsed }: { collapsed: boolean }) {
           )}
         </button>
         {setupOpen && (
-          <SyncSetupDialog onChoose={chooseRole} onClose={() => setSetupOpen(false)} />
+          <SyncSetupDialog onChoose={handleChoose} onClose={() => setSetupOpen(false)} />
         )}
       </>
     )
@@ -102,7 +114,7 @@ export function SyncWidget({ collapsed }: { collapsed: boolean }) {
         </div>
       </button>
       {setupOpen && (
-        <SyncSetupDialog onChoose={chooseRole} onClose={() => setSetupOpen(false)} />
+        <SyncSetupDialog onChoose={handleChoose} onClose={() => setSetupOpen(false)} />
       )}
     </>
   )

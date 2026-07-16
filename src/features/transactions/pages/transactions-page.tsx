@@ -1692,7 +1692,7 @@ function TransactionsPageContent() {
       </div>
 
       {/* Search + filter toolbar */}
-      <div className="flex items-center justify-between gap-2">
+      <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
         <button
           aria-label="Open filters"
           className="inline-flex items-center gap-1.5 rounded-md px-2 py-1 text-sm font-medium text-[var(--muted)] transition hover:bg-[var(--background)] hover:text-[var(--foreground)]"
@@ -1712,8 +1712,8 @@ function TransactionsPageContent() {
                     : 'All dates'}
           </span>
         </button>
-        <div className="flex items-center gap-2">
-          <div className="relative w-64">
+        <div className="flex w-full items-center gap-2 sm:w-auto">
+          <div className="relative w-full sm:w-64">
             <Search className="absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-[var(--muted)]" />
             <input
               className="h-9 w-full rounded-md border border-[var(--border)] bg-[var(--panel)] pl-8 pr-3 text-sm outline-none focus:border-[var(--accent)] transition"
@@ -2079,7 +2079,7 @@ function TransactionsPageContent() {
               </ModalField>
 
               {draftPeriodMode === 'dateRange' ? (
-                <div className="grid grid-cols-2 gap-3">
+                <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
                   <ModalField label="From">
                     <input
                       className={modalInputClass}
@@ -2260,7 +2260,7 @@ function TransactionsPageContent() {
 
                 {showLoadFields ? (
                   <div className="space-y-2">
-                    <div className={showKgInput ? 'grid grid-cols-2 gap-3' : ''}>
+                    <div className={showKgInput ? 'grid grid-cols-1 gap-3 sm:grid-cols-2' : ''}>
                       <ModalField label="Loads" required={!formRedeemReward}>
                         <input
                           className={modalInputClass}

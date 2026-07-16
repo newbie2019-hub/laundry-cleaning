@@ -1259,6 +1259,47 @@ export async function deleteTransaction(transactionId: number) {
   await database.execute('DELETE FROM transactions WHERE id = $1', [transactionId])
 }
 
+/** Entities the duplicate-cleanup tool can delete. Mirrors DedupEntityKey in
+ *  src/features/maintenance/dedup-scan.ts. Each maps to an existing per-entity
+ *  delete so FK cleanup, stock-cache triggers, and sync tombstones all fire. */
+export type DedupDeletableEntity =
+  | 'transactions'
+  | 'inventoryMovements'
+  | 'staffAttendance'
+  | 'incidentReports'
+  | 'inventoryMaintenanceRecords'
+
+/**
+ * Delete duplicate rows selected in the cleanup dialog. Reuses the same
+ * per-entity delete paths the UI uses elsewhere (rather than a raw bulk DELETE)
+ * so every row records a sync tombstone and the deletions propagate to other
+ * devices on the next sync — which is how cleaning one device fixes the rest.
+ * Returns a per-entity count of rows actually removed. Individual failures are
+ * collected so one bad row can't abort the whole run.
+ */
+export async function deleteDuplicateRecords(
+  items: ReadonlyArray<{ entity: DedupDeletableEntity; id: number }>,
+): Promise<{ deleted: number; failures: Array<{ entity: DedupDeletableEntity; id: number; message: string }> }> {
+  const deleters: Record<DedupDeletableEntity, (id: number) => Promise<void>> = {
+    transactions: deleteTransaction,
+    inventoryMovements: deleteInventoryMovement,
+    staffAttendance: deleteAttendance,
+    incidentReports: deleteIncidentReport,
+    inventoryMaintenanceRecords: deleteMaintenanceRecord,
+  }
+  let deleted = 0
+  const failures: Array<{ entity: DedupDeletableEntity; id: number; message: string }> = []
+  for (const { entity, id } of items) {
+    try {
+      await deleters[entity](id)
+      deleted += 1
+    } catch (err) {
+      failures.push({ entity, id, message: err instanceof Error ? err.message : 'Unknown error' })
+    }
+  }
+  return { deleted, failures }
+}
+
 type CustomerRow = {
   company: string
   email: string

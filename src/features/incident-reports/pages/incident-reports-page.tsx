@@ -509,11 +509,11 @@ export function IncidentReportsPage() {
       </header>
 
       {/* Search + Filter */}
-      <div className="flex items-center justify-end gap-2">
-        <div className="relative">
+      <div className="flex flex-wrap items-center justify-end gap-2">
+        <div className="relative w-full sm:w-64">
           <Search className="absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-[var(--muted)]" />
           <input
-            className="h-9 w-64 rounded-md border border-[var(--border)] bg-[var(--panel)] pl-8 pr-3 text-sm outline-none focus:border-[var(--accent)] transition"
+            className="h-9 w-full rounded-md border border-[var(--border)] bg-[var(--panel)] pl-8 pr-3 text-sm outline-none focus:border-[var(--accent)] transition"
             onChange={(e) => setSearchQuery(e.target.value)}
             placeholder="Customer, description, items…"
             type="search"
@@ -909,7 +909,7 @@ export function IncidentReportsPage() {
               </ModalField>
 
               {draftPeriodMode === 'dateRange' ? (
-                <div className="grid grid-cols-2 gap-3">
+                <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
                   <ModalField label="From">
                     <input
                       className={modalInputClass}
@@ -1047,7 +1047,7 @@ export function IncidentReportsPage() {
             >
               <div className="flex-1 space-y-4 overflow-y-auto p-5">
                 {/* Date + Time */}
-                <div className="grid grid-cols-2 gap-3">
+                <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
                   <ModalField label="Date" required>
                     <input
                       className={modalInputClass}
@@ -1101,7 +1101,7 @@ export function IncidentReportsPage() {
                   />
                 </ModalField>
 
-                <div className="grid grid-cols-2 gap-3">
+                <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
                   <ModalField label="Customer name">
                     <input
                       className={modalInputClass}
@@ -1152,7 +1152,7 @@ export function IncidentReportsPage() {
                   />
                 </ModalField>
 
-                <div className="grid grid-cols-2 gap-3">
+                <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
                   <ModalField label="Quantity">
                     <input
                       className={modalInputClass}

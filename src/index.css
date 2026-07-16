@@ -76,6 +76,15 @@ p {
   }
 }
 
+@keyframes slide-in-left {
+  from {
+    transform: translateX(-100%);
+  }
+  to {
+    transform: translateX(0);
+  }
+}
+
 /* Global table striping and hover */
 table tbody > tr {
   transition: background-color 0.15s ease;

@@ -343,6 +343,21 @@ export function AppShell() {
     setMobileMenuOpen(false)
   }, [location.pathname])
 
+  // While the full-screen mobile drawer is open, lock body scroll and close on Esc.
+  useEffect(() => {
+    if (!mobileMenuOpen) return
+    const prevOverflow = document.body.style.overflow
+    document.body.style.overflow = "hidden"
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") setMobileMenuOpen(false)
+    }
+    window.addEventListener("keydown", onKey)
+    return () => {
+      document.body.style.overflow = prevOverflow
+      window.removeEventListener("keydown", onKey)
+    }
+  }, [mobileMenuOpen])
+
   const toggleCollapsed = useCallback(() => {
     setCollapsed((prev) => {
       const next = !prev
@@ -360,13 +375,24 @@ export function AppShell() {
       window.removeEventListener("app-settings-updated", handleSettingsUpdate)
   }, [])
 
-  // Auto-sync once shortly after the shell mounts (app open). Silent if the
-  // device hasn't been set up for sync yet or if sync isn't configured.
+  // Auto-sync shortly after the shell mounts (app open), then keep syncing in
+  // the background so rows added on any device propagate to the others while
+  // online. Each run both pushes local changes and pulls remote ones, and
+  // runSync() dedupes concurrent runs, so a plain interval covers both
+  // directions. Also re-sync as soon as the network comes back. Silent if the
+  // device isn't set up for sync or sync isn't configured.
+  // ponytail: 30s poll, not realtime. Move to Supabase realtime if instant
+  // cross-device updates are needed.
   useEffect(() => {
-    const timer = setTimeout(() => {
-      void runSyncOnStartup()
-    }, 1500)
-    return () => clearTimeout(timer)
+    const timer = setTimeout(() => void runSyncOnStartup(), 1500)
+    const interval = window.setInterval(() => void runSyncOnStartup(), 30_000)
+    const onOnline = () => void runSyncOnStartup()
+    window.addEventListener("online", onOnline)
+    return () => {
+      clearTimeout(timer)
+      window.clearInterval(interval)
+      window.removeEventListener("online", onOnline)
+    }
   }, [])
 
   function handleSignOut() {
@@ -583,7 +609,7 @@ export function AppShell() {
               className="absolute inset-0 bg-black/50"
               onClick={() => setMobileMenuOpen(false)}
             />
-            <div className="absolute inset-y-0 left-0 flex w-72 max-w-[85%] flex-col bg-[var(--panel)] shadow-xl">
+            <div className="absolute inset-y-0 left-0 flex w-full max-w-none flex-col bg-[var(--panel)] shadow-xl animate-[slide-in-left_0.2s_ease-out]">
               {/* Drawer header */}
               <div className="flex h-16 shrink-0 items-center justify-between border-b border-[var(--border)] px-4">
                 <div className="flex items-center gap-2.5">

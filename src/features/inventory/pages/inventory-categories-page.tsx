@@ -183,7 +183,7 @@ export function InventoryCategoriesPage() {
           No categories found.
         </div>
       ) : (
-        <div className="overflow-hidden rounded-xl border border-[var(--border)] bg-[var(--panel)]">
+        <div className="overflow-x-auto rounded-xl border border-[var(--border)] bg-[var(--panel)]">
           <table className="w-full min-w-[700px] text-sm">
             <thead>
               <tr className="border-b border-[var(--border)] bg-[var(--background)] text-xs font-semibold uppercase tracking-wide text-[var(--muted)]">

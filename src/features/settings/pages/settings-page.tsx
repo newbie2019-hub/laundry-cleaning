@@ -16,6 +16,7 @@ import {
   Moon,
   RefreshCw,
   Save,
+  Search,
   Sun,
   Trash2,
   Upload,
@@ -30,6 +31,7 @@ import { useTheme } from "next-themes"
 import { toast } from "sonner"
 import { useAuth } from "../../auth/use-auth"
 import { BackupImportDialog } from "../../backup/backup-import-dialog"
+import { DedupDialog } from "../../maintenance/dedup-dialog"
 import { exportActiveBusinessToJson } from "../../backup/backup-export"
 import { SyncSettingsSection } from "../../sync/components/sync-settings-section"
 import {
@@ -106,6 +108,7 @@ export function SettingsPage() {
   const [jsonExportMessage, setJsonExportMessage] = useState<string | null>(null)
   const [importDialogOpen, setImportDialogOpen] = useState(false)
   const [importRefreshKey, setImportRefreshKey] = useState(0)
+  const [dedupDialogOpen, setDedupDialogOpen] = useState(false)
 
   const [profileDisplayName, setProfileDisplayName] = useState(
     user?.displayName ?? "",
@@ -1225,6 +1228,34 @@ export function SettingsPage() {
           </div>
         </div>
 
+        {/* Data cleanup — find & remove duplicates */}
+        {canManageMasterData && (
+          <div className="grid grid-cols-1 gap-x-10 gap-y-4 py-8 md:grid-cols-[280px_1fr]">
+            <div>
+              <div className="flex items-center gap-2">
+                <Search className="h-4 w-4 text-[var(--muted)]" />
+                <h2 className="text-sm font-semibold">Find &amp; remove duplicates</h2>
+              </div>
+              <p className="mt-1 text-xs leading-relaxed text-[var(--muted)]">
+                Scan for records that appear more than once — exact copies, blank
+                entries that mirror a labelled one, and same-day near-matches. You
+                review everything before anything is removed, and removals sync to
+                your other devices.
+              </p>
+            </div>
+            <div className="w-full max-w-[480px] md:justify-self-end">
+              <button
+                className="inline-flex items-center gap-2 rounded-lg border border-[var(--border)] bg-[var(--background)] px-4 py-2.5 text-sm font-medium text-[var(--foreground)] transition hover:border-[var(--accent)]/50 hover:text-[var(--accent)]"
+                onClick={() => setDedupDialogOpen(true)}
+                type="button"
+              >
+                <Search className="h-4 w-4" />
+                Scan for duplicates…
+              </button>
+            </div>
+          </div>
+        )}
+
         {/* Danger zone (admin only) */}
         {isAdmin && (
           <div className="grid grid-cols-1 gap-x-10 gap-y-4 py-8 md:grid-cols-[280px_1fr]">
@@ -1356,6 +1387,16 @@ export function SettingsPage() {
           setImportRefreshKey((k) => k + 1)
         }}
         open={importDialogOpen}
+      />
+
+      <DedupDialog
+        onApplied={() => {
+          void Promise.all([getLoyaltySettings(), getPayrollSettings()]).catch(() => {
+            /* best-effort cache refresh */
+          })
+        }}
+        onClose={() => setDedupDialogOpen(false)}
+        open={dedupDialogOpen}
       />
     </section>
   )

@@ -148,10 +148,10 @@ export function SuppliersPage() {
       ) : null}
 
       <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-        <div className="relative">
+        <div className="relative w-full sm:w-64">
           <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-[var(--muted)]" />
           <input
-            className="h-9 w-64 rounded-md border border-[var(--border)] bg-[var(--panel)] pl-9 pr-3 text-sm placeholder:text-[var(--muted)] focus:border-[var(--accent)] focus:outline-none focus:ring-1 focus:ring-[var(--accent)]/30"
+            className="h-9 w-full rounded-md border border-[var(--border)] bg-[var(--panel)] pl-9 pr-3 text-sm placeholder:text-[var(--muted)] focus:border-[var(--accent)] focus:outline-none focus:ring-1 focus:ring-[var(--accent)]/30"
             onChange={(e) => setSearch(e.target.value)}
             placeholder="Search suppliers…"
             type="search"
@@ -182,7 +182,7 @@ export function SuppliersPage() {
           ) : null}
         </div>
       ) : (
-        <div className="overflow-hidden rounded-xl border border-[var(--border)] bg-[var(--panel)]">
+        <div className="overflow-x-auto rounded-xl border border-[var(--border)] bg-[var(--panel)]">
           <table className="w-full min-w-[820px] text-sm">
             <thead>
               <tr className="border-b border-[var(--border)] bg-[var(--background)] text-xs font-semibold uppercase tracking-wide text-[var(--muted)]">
@@ -298,7 +298,7 @@ export function SuppliersPage() {
                 value={draft.contactName}
               />
             </ModalField>
-            <div className="grid grid-cols-2 gap-3">
+            <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
               <ModalField label="Phone">
                 <input
                   className={modalInputClass}

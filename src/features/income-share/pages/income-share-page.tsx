@@ -155,7 +155,7 @@ export function IncomeSharePage() {
 
       {/* ── Rules section ── */}
       <div className="rounded-lg border border-[var(--border)] bg-[var(--panel)]">
-        <div className="flex items-center justify-between border-b border-[var(--border)] px-5 py-4">
+        <div className="flex flex-col gap-3 border-b border-[var(--border)] px-5 py-4 sm:flex-row sm:items-center sm:justify-between">
           <div>
             <h2 className="text-sm font-semibold">Share Rules</h2>
             <p className="mt-0.5 text-xs text-[var(--muted)]">
@@ -250,7 +250,7 @@ export function IncomeSharePage() {
 
       {/* ── Monthly percentages section ── */}
       <div className="rounded-lg border border-[var(--border)] bg-[var(--panel)]">
-        <div className="flex items-center justify-between border-b border-[var(--border)] px-5 py-4">
+        <div className="flex flex-col gap-3 border-b border-[var(--border)] px-5 py-4 sm:flex-row sm:items-center sm:justify-between">
           <div>
             <h2 className="text-sm font-semibold">Monthly Percentages</h2>
             <p className="mt-0.5 text-xs text-[var(--muted)]">

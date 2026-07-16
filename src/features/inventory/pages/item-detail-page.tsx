@@ -268,7 +268,7 @@ export function ItemDetailPage() {
           <div className="py-10 text-center text-sm text-[var(--muted)]">No stock movements yet.</div>
         ) : (
           <div className="overflow-x-auto">
-            <table className="w-full text-sm">
+            <table className="w-full min-w-[720px] text-sm">
               <thead>
                 <tr className="border-b border-[var(--border)] text-xs font-semibold uppercase tracking-wide text-[var(--muted)]">
                   <th className="px-4 py-2 text-left">Date</th>

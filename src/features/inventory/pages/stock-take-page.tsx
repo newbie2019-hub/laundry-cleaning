@@ -135,10 +135,10 @@ export function StockTakePage() {
       </div>
 
       <div className="flex flex-wrap items-center justify-between gap-2">
-        <div className="relative">
+        <div className="relative w-full sm:w-56">
           <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-[var(--muted)]" />
           <input
-            className="h-9 w-56 rounded-md border border-[var(--border)] bg-[var(--panel)] pl-9 pr-3 text-sm placeholder:text-[var(--muted)] focus:border-[var(--accent)] focus:outline-none focus:ring-1 focus:ring-[var(--accent)]/30"
+            className="h-9 w-full rounded-md border border-[var(--border)] bg-[var(--panel)] pl-9 pr-3 text-sm placeholder:text-[var(--muted)] focus:border-[var(--accent)] focus:outline-none focus:ring-1 focus:ring-[var(--accent)]/30"
             onChange={(e) => setSearch(e.target.value)}
             placeholder="Search items…"
             type="search"

@@ -70,8 +70,14 @@ export function AuthProvider({ children }: PropsWithChildren) {
       isAuthenticated: user !== null,
       async refreshSession() {
         if (!user) return
-        const refreshed = await getUserSession(user.id)
-        if (refreshed) setUser(refreshed)
+        // Re-resolve by the stable username, not the stale integer id: after a
+        // secondary bootstrap wipes+re-pulls, the user's local id changes but
+        // the username (a seeded key) does not. A by-id lookup would miss.
+        const refreshed = await getUserSessionByUsername(user.username)
+        if (refreshed) {
+          setUser(refreshed)
+          window.localStorage.setItem(SESSION_STORAGE_KEY, String(refreshed.id))
+        }
       },
       async selectBusiness(business: BusinessId) {
         const previous = getActiveBusinessId()

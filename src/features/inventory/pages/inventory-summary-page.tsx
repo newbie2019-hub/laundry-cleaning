@@ -990,7 +990,7 @@ export function InventorySummaryPage() {
             />
             <div className="mb-3 flex flex-wrap items-center gap-2">
               <input
-                className="h-9 w-48 rounded-md border border-[var(--border)] bg-[var(--panel)] px-3 text-sm placeholder:text-[var(--muted)] focus:border-[var(--accent)] focus:outline-none focus:ring-1 focus:ring-[var(--accent)]/30"
+                className="h-9 w-full sm:w-48 rounded-md border border-[var(--border)] bg-[var(--panel)] px-3 text-sm placeholder:text-[var(--muted)] focus:border-[var(--accent)] focus:outline-none focus:ring-1 focus:ring-[var(--accent)]/30"
                 onChange={(e) => setTableSearch(e.target.value)}
                 placeholder="Search items…"
                 type="search"

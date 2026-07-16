@@ -662,7 +662,7 @@ export function TransactionsSummaryPage() {
               title="Income shares"
             />
             <div className="overflow-x-auto">
-              <table className="w-full text-sm">
+              <table className="w-full min-w-[560px] text-sm">
                 <thead>
                   <tr className="border-b border-[var(--border)] text-xs font-semibold uppercase tracking-wide text-[var(--muted)]">
                     <th className="py-2 pr-3 text-left font-semibold">Share</th>
@@ -1058,7 +1058,7 @@ export function TransactionsSummaryPage() {
                 title="Top categories"
               />
               <div className="overflow-x-auto">
-                <table className="w-full text-sm">
+                <table className="w-full min-w-[560px] text-sm">
                   <thead>
                     <tr className="border-b border-[var(--border)] text-xs font-semibold uppercase tracking-wide text-[var(--muted)]">
                       <th className="py-2 pr-3 text-left font-semibold">Category</th>
@@ -1141,7 +1141,7 @@ export function TransactionsSummaryPage() {
                 title="Monthly breakdown"
               />
               <div className="overflow-x-auto">
-                <table className="w-full text-sm">
+                <table className="w-full min-w-[560px] text-sm">
                   <thead>
                     <tr className="border-b border-[var(--border)] text-xs font-semibold uppercase tracking-wide text-[var(--muted)]">
                       <th className="py-2 pr-3 text-left font-semibold">Month</th>
@@ -1234,7 +1234,7 @@ export function TransactionsSummaryPage() {
               </div>
 
               {draftPreset === 'custom' ? (
-                <div className="grid grid-cols-2 gap-3">
+                <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
                   <label className="flex flex-col gap-1 text-xs font-medium text-[var(--muted)]">
                     From
                     <input

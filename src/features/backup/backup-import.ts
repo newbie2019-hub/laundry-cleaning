@@ -16,6 +16,7 @@ import { format } from 'date-fns'
 import { getActiveBusinessId } from '../../lib/db/business'
 import { getDatabase } from '../../lib/db/client'
 import { findTransactionByIdentity } from '../../lib/db/repository'
+import { clearResetPending, getRole, isResetPending } from '../../lib/sync/state'
 import { buildBackupFile, canonicalJson } from './backup-export'
 import {
   BACKUP_FORMAT,
@@ -1101,6 +1102,36 @@ export async function applyImportPlan(
 
   const db = await getDatabase()
 
+  // Deterministic import uuids (Fix 2a) are derived from a content fingerprint,
+  // but a fingerprint is content-only: two genuinely distinct rows with
+  // identical content (e.g. a second "Supplies · 200" the same day) share it.
+  // A plain INSERT would then hit UNIQUE(uuid) and drop the second real row.
+  // Suffix the Nth repeat within this import so every row keeps a stable,
+  // distinct uuid while the first occurrence keeps the bare `prefix:fingerprint`
+  // (so already-converged rows are unaffected).
+  const importUuidSeen = new Map<string, number>()
+  function importUuid(prefix: string, fingerprint: string): string {
+    const base = `${prefix}:${fingerprint}`
+    const n = (importUuidSeen.get(base) ?? 0) + 1
+    importUuidSeen.set(base, n)
+    return n === 1 ? base : `${base}#${n}`
+  }
+
+  // Reset arms a pull-only "restore from cloud" on the next sync. Importing in
+  // that window is only dangerous for a device that's about to PULL a populated
+  // cloud (a secondary): the imported rows would collide with the cloud copies
+  // and duplicate. A SOURCE re-seeding after a reset is the opposite — the
+  // import IS the intended data, so allow it and cancel the restore mode so the
+  // next sync pushes the imported data up.
+  if (await isResetPending(db)) {
+    if ((await getRole(db)) === 'secondary') {
+      throw new Error(
+        'This device was reset and is waiting to restore from the cloud. Finish syncing before importing a backup.',
+      )
+    }
+    await clearResetPending(db)
+  }
+
   // Disable FK checks for the duration of the import — same pattern as
   // resetAllData(). Some of our parent inserts happen after their children
   // for cyclic refs (transactions ↔ payrolls ↔ cash_advances).
@@ -1457,7 +1488,7 @@ export async function applyImportPlan(
     for (const item of plan.perEntity.transactions.insert) {
       await applyRow(summary.perEntity.transactions, item, async () => {
         const row = findInFile(plan.file.entities.transactions, item.fingerprint)!
-        await insertTransactionWithLineItems(db, row, userId)
+        await insertTransactionWithLineItems(db, row, userId, importUuid('txn', item.fingerprint))
         return 'inserted'
       })
     }
@@ -1517,10 +1548,11 @@ export async function applyImportPlan(
 
         await db.execute(
           `
-            INSERT INTO inventory_movements (item_id, movement_type, quantity, unit_cost, notes, movement_date, created_by, transaction_id)
-            VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+            INSERT INTO inventory_movements (uuid, item_id, movement_type, quantity, unit_cost, notes, movement_date, created_by, transaction_id)
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
           `,
-          [itemId, row.movementType, row.quantity, row.unitCost, row.notes, row.movementDate, userId, transactionId],
+          // Deterministic uuid — see the transactions insert for why.
+          [importUuid('mov', item.fingerprint), itemId, row.movementType, row.quantity, row.unitCost, row.notes, row.movementDate, userId, transactionId],
         )
         return 'inserted'
       })
@@ -1555,11 +1587,13 @@ export async function applyImportPlan(
         await db.execute(
           `
             INSERT INTO inventory_maintenance_records (
-              item_id, service_date, service_type, performed_by, cost,
+              uuid, item_id, service_date, service_type, performed_by, cost,
               description, next_service_date, status, created_by
-            ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+            ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
           `,
           [
+            // Deterministic uuid — see the transactions insert for why.
+            importUuid('maint', item.fingerprint),
             itemId,
             row.serviceDate,
             row.serviceType,
@@ -1611,10 +1645,12 @@ export async function applyImportPlan(
         await db.execute(
           `
             INSERT OR IGNORE INTO staff_attendance (
-              staff_id, attendance_date, status, multiplier, rate_override, computed_pay, notes
-            ) VALUES ($1, $2, $3, $4, $5, $6, $7)
+              uuid, staff_id, attendance_date, status, multiplier, rate_override, computed_pay, notes
+            ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
           `,
           [
+            // Deterministic uuid — see the transactions insert for why.
+            `att:${item.fingerprint}`,
             staffId,
             row.attendanceDate,
             row.status,
@@ -1710,12 +1746,14 @@ export async function applyImportPlan(
         await db.execute(
           `
             INSERT INTO incident_reports (
-              incident_date, incident_time, staff_on_duty, incident_type,
+              uuid, incident_date, incident_time, staff_on_duty, incident_type,
               what_happened, customer_name, contact_number, action_taken,
               handled_by, estimated_loss, quantity, items_involved, remarks, created_by
-            ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
+            ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)
           `,
           [
+            // Deterministic uuid — see the transactions insert for why.
+            importUuid('inc', item.fingerprint),
             row.incidentDate,
             row.incidentTime,
             row.staffOnDuty,
@@ -2029,6 +2067,7 @@ async function insertTransactionWithLineItems(
   db: Awaited<ReturnType<typeof getDatabase>>,
   row: ExportTransaction,
   userId: number,
+  uuid: string,
 ) {
   const typeId = await fetchTransactionTypeIdByCode(db, row.transactionTypeCode)
   if (typeId == null) throw new Error(`Transaction type "${row.transactionTypeCode}" not found locally.`)
@@ -2047,12 +2086,18 @@ async function insertTransactionWithLineItems(
   const result = await db.execute(
     `
       INSERT INTO transactions (
-        entry_date, transaction_type_id, category_id, description, amount,
+        uuid, entry_date, transaction_type_id, category_id, description, amount,
         staff_count, customer_id, kg, loads, is_loyalty_reward,
         created_by, updated_by
-      ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $11)
+      ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $12)
     `,
     [
+      // Deterministic uuid from the content fingerprint (not the random trigger)
+      // so the same logical row converges to ONE uuid across devices/re-imports
+      // — otherwise sync keys on a fresh random uuid and re-inserts a duplicate.
+      // Repeats within one import are suffixed by importUuid() so two genuinely
+      // identical-content rows don't collide on UNIQUE(uuid).
+      uuid,
       row.entryDate,
       typeId,
       categoryId,

@@ -14,6 +14,7 @@ import {
   TriangleAlert,
 } from 'lucide-react'
 import { useState } from 'react'
+import { useAuth } from '../../auth/use-auth'
 import { useSync } from '../use-sync'
 import type { SyncRole } from '../../../lib/sync'
 
@@ -28,6 +29,7 @@ function lastSyncedLabel(iso: string | null): string {
 
 export function SyncSettingsSection() {
   const { overview, sync, chooseRole, fullResync } = useSync()
+  const { refreshSession } = useAuth()
   const [busyRole, setBusyRole] = useState<SyncRole | null>(null)
   const [resyncing, setResyncing] = useState(false)
 
@@ -38,7 +40,11 @@ export function SyncSettingsSection() {
   async function handleChoose(role: SyncRole) {
     setBusyRole(role)
     try {
-      await chooseRole(role)
+      const result = await chooseRole(role)
+      // A secondary bootstrap wiped+re-pulled the users table, so the logged-in
+      // user's local id changed. Re-resolve the session (by username) or new
+      // rows get created_by = stale id → FK violation ("Unable to save").
+      if (role === 'secondary' && !result.error) await refreshSession()
     } finally {
       setBusyRole(null)
     }

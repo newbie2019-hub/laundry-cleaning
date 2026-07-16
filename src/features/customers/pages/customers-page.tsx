@@ -478,10 +478,10 @@ export function CustomersPage() {
 
         <div className="flex flex-wrap items-center gap-2">
           {/* Search bar */}
-          <div className="relative">
+          <div className="relative w-full sm:w-56">
             <Search className="absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-[var(--muted)]" />
             <input
-              className="h-9 w-56 rounded-md border border-[var(--border)] bg-[var(--panel)] pl-8 pr-3 text-sm outline-none focus:border-[var(--accent)] transition"
+              className="h-9 w-full rounded-md border border-[var(--border)] bg-[var(--panel)] pl-8 pr-3 text-sm outline-none focus:border-[var(--accent)] transition"
               onChange={(e) => setSearch(e.target.value)}
               placeholder="Search customers…"
               type="search"

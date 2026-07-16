@@ -173,7 +173,7 @@ export function PurchaseOrdersPage() {
         </select>
       </div>
 
-      <div className="overflow-hidden rounded-xl border border-[var(--border)] bg-[var(--panel)]">
+      <div className="overflow-x-auto rounded-xl border border-[var(--border)] bg-[var(--panel)]">
         {loading ? (
           <div className="flex items-center justify-center py-16 text-sm text-[var(--muted)]">Loading…</div>
         ) : orders.length === 0 ? (
